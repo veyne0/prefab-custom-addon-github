@@ -1,0 +1,37 @@
+modLoader="javafml"
+loaderVersion="[4.0,)"
+license="MIT"
+showAsResourcePack=false
+
+[[mods]]
+modId="prefab_custom_addon"
+version="1.0.0"
+displayName="Prefab Custom Addon"
+authors="veyne"
+description='''
+Prefab 自带的建筑就那么几个，玩久了腻。
+
+这个附属加了一套拓展包系统：游戏里按 Z 能下别人做好的包，按 X 能自己做。
+
+下载器：浏览社区拓展包列表，选中直接装到 prefab-extension，进了世界就能用。
+
+制作器：本地工作区模式，填表 + 选 NBT + 选封面，几次点击产出一个标准格式的拓展包（含 zip）。所有创作产物都在游戏根目录的 prefab-work/ 下，NBT 用游戏自带的结构方块导出就行。
+
+前置：Prefab 1.0.7+、LDLib2 2.2+。运行环境：NeoForge 21.1.233、MC 1.21.1、Java 21+。
+'''
+
+# 依赖 Prefab 主模组 - 不强制顺序，NeoForge 自己决定
+[[dependencies.prefab_custom_addon]]
+modId="prefab"
+mandatory=true
+versionRange="[1.0.7,)"
+ordering="NONE"
+side="BOTH"
+
+# 依赖 LDLib2 模组
+[[dependencies.prefab_custom_addon]]
+modId="ldlib2"
+mandatory=true
+versionRange="[2.2,)"
+ordering="NONE"
+side="CLIENT"

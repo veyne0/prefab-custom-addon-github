@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "id": "prefab_custom_addon",
+  "versionId": "1.0.0",
+  "name": "Prefab Custom Addon",
+  "description": "Prefab 自带的建筑就那么几个，玩久了腻。这个附属加了一套拓展包系统：游戏里按 Z 能下别人做好的包，按 X 能自己做。",
+  "authors": ["veyne"],
+  "contact": {
+    "homepage": "https://github.com/veyne0/prefab-custom-addon",
+    "sources": "https://github.com/veyne0/prefab-custom-addon",
+    "issues": "https://github.com/veyne0/prefab-custom-addon/issues"
+  },
+  "license": "MIT",
+  "icon": "https://raw.githubusercontent.com/veyne0/prefab-custom-addon/main/docs/mod_cover.png",
+  "environment": "client",
+  "gameVersions": ["1.21.1"],
+  "loaders": ["neoforge"],
+  "dependencies": {
+    "neoforge": ">=21.1.233",
+    "minecraft": ">=1.21.1",
+    "prefab": {
+      "projectId": "prefab",
+      "versionRange": ">=1.0.7",
+      "relation": "required"
+    },
+    "ldlib2": {
+      "projectId": "ldlib2",
+      "versionRange": ">=2.2.18",
+      "relation": "required"
+    }
+  },
+  "custom": {
+    "modrinthProjectId": "prefab-custom-addon"
+  }
+}

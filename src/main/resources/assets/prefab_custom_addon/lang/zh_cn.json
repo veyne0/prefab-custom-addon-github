@@ -1,0 +1,14 @@
+{
+  "item.prefab_custom_addon.custom_blueprint": "自定义蓝图",
+  "item.prefab_custom_addon.custom_blueprint.desc": "右键打开自定义建筑选择界面",
+  "itemGroup.prefab_custom_addon": "预制建筑拓展",
+  "gui.prefab_custom_addon.title": "自定义建筑",
+  "gui.prefab_custom_addon.extension_packs": "拓展包",
+  "gui.prefab_custom_addon.constructions": "建筑",
+  "gui.prefab_custom_addon.no_packs": "未找到拓展包",
+  "gui.prefab_custom_addon.place_packs": "请将拓展包放入 prefab-extension 文件夹",
+  "gui.prefab_custom_addon.select": "选择",
+  "gui.prefab_custom_addon.detail": "详情",
+  "gui.prefab_custom_addon.back": "返回",
+  "gui.prefab_custom_addon.build": "建造"
+}

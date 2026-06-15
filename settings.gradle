@@ -1,0 +1,16 @@
+pluginManagement {
+    repositories {
+        maven { url = 'https://maven.aliyun.com/repository/neoforge' }
+        maven { url = 'https://maven.aliyun.com/repository/forge' }
+        maven { url = 'https://maven.aliyun.com/repository/spongepowered' }
+        maven { url = 'https://maven.aliyun.com/repository/gradle-plugin' }
+        maven { url = 'https://maven.aliyun.com/repository/public' }
+        maven { url = 'https://maven.neoforged.net/releases/' }
+        maven { url = 'https://repo.spongepowered.org/maven/' }
+        maven { url = 'https://maven.parchmentmc.org' } // Parchment mappings
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+
+rootProject.name = 'PrefabCustomAddon'

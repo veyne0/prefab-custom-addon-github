@@ -1,0 +1,1 @@
+{"type": "minecraft:crafting_shaped", "pattern": ["PLP", "PIP", "PLP"], "key": {"P": {"item": "minecraft:paper"}, "L": {"item": "minecraft:lapis_lazuli"}, "I": {"item": "minecraft:iron_pickaxe"}}, "result": {"id": "prefab_custom_addon:custom_blueprint", "count": 1}}

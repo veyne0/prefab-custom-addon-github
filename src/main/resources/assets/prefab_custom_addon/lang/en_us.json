@@ -1,0 +1,14 @@
+{
+  "item.prefab_custom_addon.custom_blueprint": "Custom Blueprint",
+  "item.prefab_custom_addon.custom_blueprint.desc": "Right-click to open custom structure selection",
+  "itemGroup.prefab_custom_addon": "Prefab Custom Addon",
+  "gui.prefab_custom_addon.title": "Custom Structures",
+  "gui.prefab_custom_addon.extension_packs": "Extension Packs",
+  "gui.prefab_custom_addon.constructions": "Constructions",
+  "gui.prefab_custom_addon.no_packs": "No extension packs found",
+  "gui.prefab_custom_addon.place_packs": "Place packs in prefab-extension folder",
+  "gui.prefab_custom_addon.select": "Select",
+  "gui.prefab_custom_addon.detail": "Detail",
+  "gui.prefab_custom_addon.back": "Back",
+  "gui.prefab_custom_addon.build": "Build"
+}

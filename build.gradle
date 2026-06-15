@@ -1,0 +1,157 @@
+plugins {
+    id 'java-library'
+    id 'maven-publish'
+    id 'net.neoforged.moddev' version '2.0.141'
+    id 'idea'
+}
+
+tasks.named('wrapper', Wrapper).configure {
+    distributionType = Wrapper.DistributionType.BIN
+}
+
+version = mod_version
+group = mod_group_id
+
+repositories {
+    mavenLocal()
+    flatDir {
+        dirs 'libs'
+    }
+    maven { url = 'https://maven.aliyun.com/repository/public' }
+    maven { url = 'https://maven.aliyun.com/repository/gradle-plugin' }
+    maven { url = 'https://maven.neoforged.net/releases/' }
+    maven { url = 'https://maven.parchmentmc.org' } // Parchment mappings
+    maven { url = 'https://jitpack.io' }
+    mavenCentral()
+}
+
+base {
+    archivesName = archives_base_name
+}
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(21)
+
+neoForge {
+    version = project.neo_version
+
+    // 启用 Parchment mappings（与 NeoForge 主模组保持一致）
+    parchment {
+        mappingsVersion = project.parchment_mappings_version
+        minecraftVersion = project.parchment_minecraft_version
+    }
+
+    runs {
+        configureEach {
+            systemProperty 'forge.logging.markers', 'REGISTRIES'
+            logLevel = org.slf4j.event.Level.WARN
+        }
+
+        client {
+            client()
+        }
+
+        server {
+            server()
+        }
+    }
+}
+
+dependencies {
+    implementation 'com.google.code.gson:gson:2.10.1'
+    implementation name: 'ldlib2', version: '2.2.18'
+    // Prefab 主模组（用于复用其 GuiStructure、Structure、BuildBlock 等类）
+    compileOnly files('libs/prefab-neoforge-1.0.8.jar')
+    compileOnly 'org.appliedenergistics.yoga:yoga:1.0.0'
+    compileOnly 'dev.vfyjxf:taffy:1.1.4'
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.compilerArgs.add('-Xlint:deprecation')
+}
+
+jar {
+    manifest {
+        attributes(
+            'Specification-Title': 'PrefabCustomAddon',
+            'Specification-Vendor': 'veyne',
+            'Specification-Version': '1',
+            'Implementation-Title': project.name,
+            'Implementation-Version': project.version,
+            'Implementation-Vendor': 'veyne'
+        )
+    }
+}
+
+// 图标纹理已由 generateTexture 任务生成并提交到 src/main/resources
+// 如需重新生成，取消下方注释
+
+/*
+tasks.register('generateTexture') {
+    description = 'Generate a valid blueprint icon PNG'
+    outputs.file file('src/main/resources/assets/prefab_custom_addon/textures/item/custom_blueprint.png')
+    doLast {
+        def texFile = file('src/main/resources/assets/prefab_custom_addon/textures/item/custom_blueprint.png')
+        def script = new File('build/gen_texture.java')
+        script.parentFile.mkdirs()
+        script.text = '''
+import javax.imageio.ImageIO;
+import java.awt.*;
+import java.awt.image.BufferedImage;
+import java.io.File;
+
+public class gen_texture {
+    public static void main(String[] args) throws Exception {
+        int size = 16;
+        BufferedImage img = new BufferedImage(size, size, BufferedImage.TYPE_INT_ARGB);
+        Graphics2D g = img.createGraphics();
+        g.setColor(new Color(0xF0, 0xE8, 0xC0));
+        g.fillRect(0, 0, size, size);
+        g.setColor(new Color(0x8B, 0x5A, 0x2B));
+        g.drawRect(0, 0, size-1, size-1);
+        g.drawRect(1, 1, size-3, size-3);
+        g.setColor(new Color(0x6F, 0x9E, 0xD0));
+        g.fillRect(3, 3, 10, 10);
+        g.setColor(Color.WHITE);
+        g.drawLine(4, 5, 8, 5);
+        g.drawLine(8, 5, 12, 5);
+        g.drawLine(5, 6, 11, 6);
+        g.drawRect(5, 7, 6, 5);
+        g.drawRect(7, 9, 2, 3);
+        g.fillRect(6, 8, 1, 1);
+        g.fillRect(9, 8, 1, 1);
+        g.dispose();
+        File out = new File(args[0]);
+        out.getParentFile().mkdirs();
+        ImageIO.write(img, "PNG", out);
+        System.out.println("Generated: " + out.getAbsolutePath());
+    }
+}
+'''
+        def javaHome = System.getProperty('java.home')
+        def javac = new File(javaHome, 'bin/javac.exe')
+        def java = new File(javaHome, 'bin/java.exe')
+
+        new ProcessBuilder(javac.absolutePath, '-d', 'build/tex_classes', 'build/gen_texture.java')
+            .directory(projectDir).start().waitFor()
+
+        new ProcessBuilder(java.absolutePath, '-cp', 'build/tex_classes', 'gen_texture', texFile.absolutePath)
+            .directory(projectDir).start().waitFor()
+
+        println "Blueprint icon regenerated: ${texFile.absolutePath}"
+    }
+}
+*/
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            artifact jar
+        }
+    }
+    repositories {
+        maven {
+            url "file:///${project.projectDir}/mcmodsrepo"
+        }
+    }
+}
