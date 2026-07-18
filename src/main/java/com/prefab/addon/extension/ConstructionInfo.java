@@ -8,6 +8,8 @@ public class ConstructionInfo {
     private String name;
     private String author;
     private String size;
+    /** 蓝图格式: nbt / litematic / schem / 未知. 空 = 未知 (旧建筑). */
+    private String format;
     private String description;
     private List<String> dependencies;
     private ZipEntry nbtEntry;
@@ -31,6 +33,19 @@ public class ConstructionInfo {
 
     public String getSize() { return size; }
     public void setSize(String size) { this.size = size; }
+
+    /**
+     * 蓝图格式 (nbt / litematic / schem). 创建建筑时用户填的, 保存到 construction/<id>.txt 里.
+     * <p>空字符串 = "未知" (旧建筑没填过格式字段, 或加载失败).</p>
+     */
+    public String getFormat() { return format; }
+    public void setFormat(String format) { this.format = format; }
+
+    /** 显示用的格式字符串: 永远不返回 null, 空白也按"未知"算. */
+    public String getFormatDisplay() {
+        if (format == null || format.isBlank()) return "未知";
+        return format;
+    }
 
     public String getDescription() { return description; }
     public void setDescription(String description) { this.description = description; }

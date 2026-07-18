@@ -14,6 +14,8 @@ public class AddonConfig {
 
     public static final ModConfigSpec.ConfigValue<String> DOWNLOAD_SERVER_URL;
     public static final ModConfigSpec.ConfigValue<List<? extends String>> TRUSTED_SERVERS;
+    /** 是否启用 自定义蓝图 配方 (默认 true). 设 false 后配方被 NeoForge 条件系统过滤掉, 玩家无法合成. */
+    public static final ModConfigSpec.BooleanValue ENABLE_CUSTOM_BLUEPRINT_RECIPE;
 
     static {
         BUILDER.comment("Prefab Custom Addon common config")
@@ -32,6 +34,17 @@ public class AddonConfig {
         TRUSTED_SERVERS = tmp;
 
         BUILDER.pop();
+
+        // 单独分组: 玩法
+        BUILDER.comment("Gameplay settings")
+                .push("gameplay");
+
+        ENABLE_CUSTOM_BLUEPRINT_RECIPE = BUILDER
+                .comment("是否启用 自定义蓝图 配方 (true=可以合成, false=无法合成, 蓝图只能通过指令/创造栏获得)")
+                .define("enableCustomBlueprintRecipe", true);
+
+        BUILDER.pop();
+
         COMMON_SPEC = BUILDER.build();
     }
 
@@ -46,5 +59,10 @@ public class AddonConfig {
             if (o != null) list.add(o.toString());
         }
         return list;
+    }
+
+    /** 是否启用 自定义蓝图 配方. 配方 JSON 用 neoforge:conditions + 自定义 condition 检查这个值. */
+    public static boolean isCustomBlueprintRecipeEnabled() {
+        return ENABLE_CUSTOM_BLUEPRINT_RECIPE.get();
     }
 }

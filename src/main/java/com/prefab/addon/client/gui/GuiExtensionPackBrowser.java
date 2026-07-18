@@ -9,6 +9,8 @@ import com.prefab.addon.PrefabCustomAddon;
 import com.prefab.addon.extension.ConstructionInfo;
 import com.prefab.addon.extension.ExtensionPack;
 import com.prefab.addon.extension.ExtensionPackManager;
+import com.prefab.addon.work.DependencyChecker;
+import com.prefab.addon.work.FolderOpener;
 import com.prefab.gui.GuiBase;
 import com.prefab.gui.controls.ExtendedButton;
 
@@ -54,9 +56,17 @@ public class GuiExtensionPackBrowser extends GuiBase {
     // 按钮
     private ExtendedButton btnClose;
     private ExtendedButton btnDownload;  // 打开下载界面
+    private ExtendedButton btnCheckDeps; // 检测依赖 (对比 mods 文件夹)
+    private ExtendedButton btnOpenFolder; // 打开拓展包文件夹
+    // 注: 建造速度滑动条已移至 SettingsGui (O 键打开), 不再在此显示
 
     // 缓存封面图纹理
     private ResourceLocation coverTextureLocation;
+
+    // 依赖检测结果 (按选中包索引缓存)
+    private final java.util.Map<Integer, DependencyChecker.CheckResult> depCheckResults = new java.util.HashMap<>();
+    private int depResultTick = 0;  // 显示计时
+    private int lastDepDrawKey = -1;  // 上一次画依赖时的 (size | status) key, 用于去重日志
 
     /** 静态记忆：上次打开时选中的拓展包索引。关闭 detail 回到这里时恢复。 */
     private static int rememberedPackIndex = -1;
@@ -93,7 +103,7 @@ public class GuiExtensionPackBrowser extends GuiBase {
     @Override
     protected void Initialize() {
         super.Initialize();
-        // 紧凑布局：460x260 面板，留出顶部标题和底部按钮空间
+        // 紧凑布局：460x260 面板 (恢复原高度, 建造滑动条已移走)
         this.modifiedInitialXAxis = 230;
         this.modifiedInitialYAxis = 130;
         this.imagePanelWidth = 460;
@@ -122,10 +132,19 @@ public class GuiExtensionPackBrowser extends GuiBase {
 
         // 关闭按钮（放在面板底部中央）
         this.btnClose = this.createAndAddButton(
-            grayBoxX + 280, grayBoxY + 232, 75, 20, "关闭");
+            grayBoxX + 290, grayBoxY + 232, 100, 20, "关闭");
         // 下载拓展包按钮
         this.btnDownload = this.createAndAddButton(
-            grayBoxX + 100, grayBoxY + 232, 120, 20, "下载拓展包");
+            grayBoxX + 185, grayBoxY + 232, 100, 20, "下载拓展包");
+        // 检测依赖按钮 (对比 mods/ 文件夹)
+        this.btnCheckDeps = this.createAndAddButton(
+            grayBoxX + 8, grayBoxY + 232, 70, 20, "检测依赖");
+        // 打开拓展包文件夹按钮 (在系统文件管理器中)
+        this.btnOpenFolder = this.createAndAddButton(
+            grayBoxX + 80, grayBoxY + 232, 100, 20, "打开拓展包文件夹");
+
+        PrefabCustomAddon.LOGGER.info("[BROWSER] Initialize: listX={} detailX={} detailW={} grayBoxX={}",
+            listX, detailX, detailWidth, grayBoxX);
     }
 
     @Override
@@ -190,6 +209,13 @@ public class GuiExtensionPackBrowser extends GuiBase {
     }
 
     @Override
+    public void tick() {
+        super.tick();
+        if (this.statusTick > 0) this.statusTick--;
+        if (this.depResultTick > 0) this.depResultTick--;
+    }
+
+    @Override
     protected void postButtonRender(GuiGraphics guiGraphics, int x, int y, int mouseX, int mouseY, float partialTicks) {
         // 标题（顶部，紧凑）
         guiGraphics.drawCenteredString(this.font, "拓展包管理", this.getCenteredXAxis(), y + 4, this.textColor);
@@ -208,6 +234,16 @@ public class GuiExtensionPackBrowser extends GuiBase {
                     this.detailX + this.detailWidth / 2, this.detailY + this.detailHeight / 2 - 6, 0xAAAAAA);
             guiGraphics.drawCenteredString(this.font, "(只显示带 information/ 子目录的标准格式包)",
                     this.detailX + this.detailWidth / 2, this.detailY + this.detailHeight / 2 + 8, 0x888888);
+        }
+
+        // 状态栏 (在标题栏下方)
+        if (this.statusMessage != null && this.statusTick > 0) {
+            int statusY = y + 28;
+            int sw = this.font.width(this.statusMessage);
+            int statusX = this.getCenteredXAxis() - sw / 2;
+            // 半透明背景
+            guiGraphics.fill(statusX - 6, statusY - 2, statusX + sw + 6, statusY + 12, 0xC0000000);
+            guiGraphics.drawString(this.font, this.statusMessage, statusX, statusY, this.statusColor);
         }
     }
 
@@ -298,11 +334,57 @@ public class GuiExtensionPackBrowser extends GuiBase {
             ? p.getFileName() : p.getPackageName();
         guiGraphics.drawString(this.font, "标识: " + packageName, tx, ty + lineH * 2, 0xFFFFFF);
 
-        // 依赖
-        String deps = (p.getDependencies() == null || p.getDependencies().isEmpty())
-            ? "无" : String.join(", ", p.getDependencies());
-        if (deps.length() > 28) deps = deps.substring(0, 26) + "..";
-        guiGraphics.drawString(this.font, "依赖: " + deps, tx, ty + lineH * 3, 0xFFFFFF);
+        // 依赖 (每行一个, 颜色区分已安装/缺失)
+        java.util.List<String> depList = p.getDependencies();
+        int depBaseY = ty + lineH * 3;
+        guiGraphics.drawString(this.font, "依赖:", tx, depBaseY, 0xFFFFFF);
+        if (depList == null || depList.isEmpty()) {
+            guiGraphics.drawString(this.font, "无", tx + 32, depBaseY, 0x888888);
+        } else {
+            DependencyChecker.CheckResult cached = this.depCheckResults.get(this.selectedPackIndex);
+            int dy = depBaseY;
+            // 第一行依赖在 label 右侧
+            int firstDepX = tx + 32;
+            int maxX = this.detailX + this.detailWidth - 4;
+            int cursorX = firstDepX;
+            int rowIdx = 0;
+            for (String d : depList) {
+                boolean present = cached != null && !cached.missing.contains(d);
+                int color = cached == null ? 0xFFFFFF : (present ? 0x55FF55 : 0xFF5555);
+                String dep = DependencyChecker.displayName(d);  // 友好显示名
+                int depW = this.font.width(dep);
+                if (cursorX + depW > maxX) {
+                    // 换行
+                    rowIdx++;
+                    cursorX = firstDepX;
+                    dy += lineH;
+                }
+                guiGraphics.drawString(this.font, dep, cursorX, dy, color);
+                cursorX += depW + 8;  // 间距
+            }
+            if (cached != null && !cached.missing.isEmpty()) {
+                // 底部提示 (用显示名)
+                int hintY = dy + lineH;
+                if (hintY < this.detailY + 84) {  // 不要遮挡描述/建筑列表标题
+                    StringBuilder miss = new StringBuilder();
+                    for (String m : cached.missing) {
+                        if (miss.length() > 0) miss.append(", ");
+                        miss.append(DependencyChecker.displayName(m));
+                    }
+                    guiGraphics.drawString(this.font, "✗ 缺少: " + miss,
+                        tx, hintY, 0xFFAA55);
+                }
+            }
+            // 优化: 每帧打印太刷屏, 改成只在数量/缺失状态变化时打
+            int drawKey = (depList.size() << 8)
+                | (cached == null ? 0 : (cached.missing.isEmpty() ? 1 : 2));
+            if (drawKey != this.lastDepDrawKey) {
+                this.lastDepDrawKey = drawKey;
+                PrefabCustomAddon.LOGGER.info("[BROWSER] drew {} deps for pack '{}', cached={}, missing={}",
+                    depList.size(), p.getName(), cached != null,
+                    cached != null ? cached.missing : "(no check)");
+            }
+        }
 
         // 描述
         String desc = (p.getDescription() == null || p.getDescription().isEmpty()) ? "无" : p.getDescription();
@@ -426,8 +508,49 @@ public class GuiExtensionPackBrowser extends GuiBase {
         }
         if (button == this.btnDownload) {
             GuiExtensionPackDownloader.open();
+            return;
+        }
+        if (button == this.btnCheckDeps) {
+            runDependencyCheck();
+            return;
+        }
+        if (button == this.btnOpenFolder) {
+            PrefabCustomAddon.LOGGER.info("[BROWSER] open extension folder clicked");
+            boolean ok = FolderOpener.openExtensionFolder();
+            if (ok) {
+                setStatus("已打开拓展包文件夹", 0x55FF55);
+            } else {
+                setStatus("打开失败, 请手动访问: " + com.prefab.addon.download.PackDownloadManager.getExtensionRoot(),
+                    0xFFAA55);
+            }
+            return;
         }
     }
+
+    private void runDependencyCheck() {
+        if (this.selectedPackIndex < 0 || this.selectedPackIndex >= this.discoverablePacks.size()) {
+            PrefabCustomAddon.LOGGER.info("[BROWSER] dep check ignored: no pack selected");
+            return;
+        }
+        ExtensionPack p = this.discoverablePacks.get(this.selectedPackIndex);
+        List<String> deps = p.getDependencies();
+        PrefabCustomAddon.LOGGER.info("[BROWSER] dep check for pack '{}': declared deps = {}",
+            p.getName(), deps);
+        DependencyChecker.CheckResult r = DependencyChecker.check(deps);
+        this.depCheckResults.put(this.selectedPackIndex, r);
+        this.depResultTick = 200;  // 显示 ~10s
+        setStatus(r.summary, r.missing.isEmpty() ? 0x55FF55 : 0xFFAA55);
+    }
+
+    private void setStatus(String msg, int color) {
+        this.statusMessage = msg;
+        this.statusColor = color;
+        this.statusTick = 200;
+    }
+
+    private String statusMessage = null;
+    private int statusColor = 0x55FF55;
+    private int statusTick = 0;
 
     @Override
     public void onClose() {

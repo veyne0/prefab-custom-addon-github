@@ -4,28 +4,62 @@ import com.mojang.blaze3d.platform.InputConstants;
 import com.prefab.addon.PrefabCustomAddon;
 import com.prefab.addon.client.gui.GuiExtensionPackBrowser;
 import com.prefab.addon.client.gui.GuiExtensionPackCreator;
+import com.prefab.addon.client.gui.SettingsGui;
+import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.client.event.ClientTickEvent;
+import net.neoforged.neoforge.client.event.RegisterKeyMappingsEvent;
 import org.lwjgl.glfw.GLFW;
+import net.neoforged.bus.api.EventPriority;
 
 /**
- * 键盘监听器：
+ * 键盘绑定:
  *   Z 键 → 打开拓展包管理界面 (浏览/下载)
  *   X 键 → 打开拓展包制作界面 (创建/编辑本地工作区)
- * 任何时候都能按 (不要求手持蓝图)。可去 Options→Controls 改键。
+ *   O 键 → 打开设置界面 (挑战模式 / 预览速度 / 建造速度)
+ *
+ * 用了 Minecraft 标准的 KeyMapping, 所以这些键会出现在
+ * Options → Controls → Prefab Custom Addon 分组里, 玩家可以改键.
  */
 @EventBusSubscriber(modid = PrefabCustomAddon.MOD_ID, value = Dist.CLIENT)
 public class PackBrowserKeyHandler {
-    /** 主键：Z。打开拓展包管理界面 (浏览/下载) */
-    public static final int BROWSE_KEY = GLFW.GLFW_KEY_Z;
-    /** 制作键：X。打开拓展包制作界面 */
-    public static final int CREATE_KEY = GLFW.GLFW_KEY_X;
 
-    private static boolean zWasDown = false;
-    private static boolean xWasDown = false;
+    public static final String KEY_CATEGORY = "key.categories.prefab_custom_addon";
+
+    public static KeyMapping OPEN_BROWSER;  // Z 默认
+    public static KeyMapping OPEN_CREATOR;  // X 默认
+    public static KeyMapping OPEN_SETTINGS; // O 默认
+
+    /** 构造, 在 mod 启动时调用 */
+    public static void register() {
+        OPEN_BROWSER = new KeyMapping(
+            "key.prefab_custom_addon.open_browser",
+            InputConstants.Type.KEYSYM,
+            GLFW.GLFW_KEY_Z,
+            KEY_CATEGORY);
+        OPEN_CREATOR = new KeyMapping(
+            "key.prefab_custom_addon.open_creator",
+            InputConstants.Type.KEYSYM,
+            GLFW.GLFW_KEY_X,
+            KEY_CATEGORY);
+        OPEN_SETTINGS = new KeyMapping(
+            "key.prefab_custom_addon.open_settings",
+            InputConstants.Type.KEYSYM,
+            GLFW.GLFW_KEY_O,
+            KEY_CATEGORY);
+    }
+
+    /** NeoForge 会在合适时机调用这个把 key mapping 注册到 Controls 菜单 */
+    @SubscribeEvent(priority = EventPriority.NORMAL)
+    public static void onRegisterKeyMappings(RegisterKeyMappingsEvent event) {
+        if (OPEN_BROWSER == null) register();
+        event.register(OPEN_BROWSER);
+        event.register(OPEN_CREATOR);
+        event.register(OPEN_SETTINGS);
+    }
 
     @SubscribeEvent
     public static void onClientTick(ClientTickEvent.Post event) {
@@ -34,22 +68,24 @@ public class PackBrowserKeyHandler {
         if (mc.level == null) return;
         if (mc.screen != null) return;  // 已有 GUI 打开时不响应
 
-        long window = mc.getWindow().getWindow();
+        if (OPEN_BROWSER == null) return;  // 还没注册
 
         // Z 键 → 拓展包管理 (浏览/下载)
-        boolean zDown = InputConstants.isKeyDown(window, BROWSE_KEY);
-        if (zDown && !zWasDown) {
+        while (OPEN_BROWSER.consumeClick()) {
             PrefabCustomAddon.LOGGER.info("[Z-KEY] Opening extension pack browser");
             Minecraft.getInstance().setScreen(new GuiExtensionPackBrowser());
         }
-        zWasDown = zDown;
 
         // X 键 → 拓展包制作
-        boolean xDown = InputConstants.isKeyDown(window, CREATE_KEY);
-        if (xDown && !xWasDown) {
+        while (OPEN_CREATOR.consumeClick()) {
             PrefabCustomAddon.LOGGER.info("[X-KEY] Opening extension pack creator");
-            Minecraft.getInstance().setScreen(new GuiExtensionPackCreator());
+            GuiExtensionPackCreator.open();
         }
-        xWasDown = xDown;
+
+        // O 键 → 设置 (挑战模式 / 预览速度 / 建造速度)
+        while (OPEN_SETTINGS.consumeClick()) {
+            PrefabCustomAddon.LOGGER.info("[O-KEY] Opening settings GUI");
+            SettingsGui.open();
+        }
     }
 }

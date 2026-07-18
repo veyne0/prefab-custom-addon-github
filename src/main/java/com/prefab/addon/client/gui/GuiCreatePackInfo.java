@@ -1,330 +1,427 @@
 package com.prefab.addon.client.gui;
 
+import com.lowdragmc.lowdraglib2.gui.holder.ModularUIScreen;
+import com.lowdragmc.lowdraglib2.gui.ui.ModularUI;
+import com.lowdragmc.lowdraglib2.gui.ui.UI;
+import com.lowdragmc.lowdraglib2.gui.ui.UIElement;
+import com.lowdragmc.lowdraglib2.gui.ui.data.Horizontal;
+import com.lowdragmc.lowdraglib2.gui.ui.data.ScrollerMode;
+import com.lowdragmc.lowdraglib2.gui.ui.elements.Button;
+import com.lowdragmc.lowdraglib2.gui.ui.elements.Label;
+import com.lowdragmc.lowdraglib2.gui.ui.elements.ScrollerView;
+import com.lowdragmc.lowdraglib2.gui.ui.elements.TextField;
+import com.lowdragmc.lowdraglib2.gui.ui.style.StylesheetManager;
+import com.lowdragmc.lowdraglib2.gui.ui.styletemplate.Sprites;
 import com.prefab.addon.PrefabCustomAddon;
 import com.prefab.addon.work.PackCreator;
-import com.prefab.gui.GuiBase;
-import com.prefab.gui.controls.ExtendedButton;
+import dev.vfyjxf.taffy.style.AlignContent;
+import dev.vfyjxf.taffy.style.AlignItems;
+import dev.vfyjxf.taffy.style.FlexDirection;
+import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.gui.GuiGraphics;
-import net.minecraft.client.gui.components.AbstractButton;
-import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.network.chat.Component;
 
+import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.nio.file.Files;
-import javax.imageio.ImageIO;
 import java.util.concurrent.CompletableFuture;
 
 /**
- * 创建 / 编辑 拓展包信息表单。
+ * 创建 / 编辑 拓展包信息表单 (LDLib2 实现).
  *
- * 字段顺序参考 d:\MC-Prefab-Main\预制建筑拓展包示例\information\test1.txt:
- *   作者 / 版本 / 标识符 / 拓展包名 / 相关链接 / 依赖模组 / 描述
+ * <p>字段顺序参考 d:\MC-Prefab-Main\预制建筑拓展包示例\information\test1.txt:
+ * <ul>
+ *   <li>标识符 / 拓展包名 / 作者 / 版本 / 相关链接 / 描述 / 封面 PNG</li>
+ * </ul>
  *
- * 编辑模式: 传入 editing != null
- * 创建模式: editing == null
+ * <p>编辑模式: 传入 editing != null, 标识符字段不可改.
+ * <br>创建模式: editing == null, 作者默认为玩家名, 版本默认 1.0.0.
+ *
+ * <p>依赖模组字段 (原 {@code fieldDeps}) 在 UI 上不显示, 永远传空字符串
+ * (子建筑的依赖在导出时自动合并).
  */
-public class GuiCreatePackInfo extends GuiBase {
+public final class GuiCreatePackInfo {
 
-    private final GuiExtensionPackCreator parent;
-    private final PackCreator.PackWorkInfo editing;  // null = 创建模式
-    private final boolean createMode;
+    private GuiCreatePackInfo() {}
 
-    // 输入框
-    private EditBox fieldId;
-    private EditBox fieldName;
-    private EditBox fieldAuthor;
-    private EditBox fieldVersion;
-    private EditBox fieldLink;
-    private EditBox fieldDeps;
-    private EditBox fieldDesc;
-
-    // 按钮
-    private ExtendedButton btnSave;
-    private ExtendedButton btnCancel;
-    private ExtendedButton btnChoosePng;
-    private ExtendedButton btnClearPng;
-
-    // 选中的 PNG 数据
-    private byte[] coverPng = null;
-    private String coverPngPath = "(未选择)";
-
-    // 状态信息
-    private String statusMessage = null;
-    private int statusColor = 0x55FF55;
-    private int statusTick = 0;
-
-    // 表单布局起点
-    private int formX, formY;
-    private int grayBoxX, grayBoxY;
-    private int panelW, panelH;
-    private static final int FIELD_W = 280;
-    private static final int FIELD_H = 16;
-    private static final int ROW_H = 20;        // 紧凑行高 (原 24, 缩小)
-    private static final int GAP_BEFORE_SAVE = 6; // PNG 行到保存按钮的间隔
-
-    public GuiCreatePackInfo(PackCreator.PackWorkInfo editing, GuiExtensionPackCreator parent) {
-        super(editing == null ? "创建拓展包" : "编辑拓展包");
-        this.editing = editing;
-        this.parent = parent;
-        this.createMode = (editing == null);
-    }
-
-    public static void open(PackCreator.PackWorkInfo editing, GuiExtensionPackCreator parent) {
-        Minecraft.getInstance().setScreen(new GuiCreatePackInfo(editing, parent));
-    }
-
-    @Override
-    protected void Initialize() {
-        super.Initialize();
-        // 紧凑布局: 8 行 (7 字段 + 1 PNG) + 顶部标题 + 底部保存按钮
-        // 总高度 = 标题(20) + 8*20 + 间距(6) + 保存按钮(20) + 余量(10) = 216
-        this.panelW = 380;
-        this.panelH = 230;
-        this.modifiedInitialXAxis = panelW / 2;
-        this.modifiedInitialYAxis = panelH / 2;
-        this.imagePanelWidth = panelW;
-        this.imagePanelHeight = panelH;
-        this.shownImageHeight = 1;
-        this.shownImageWidth = 1;
-
-        this.grayBoxX = (this.width / 2) - this.modifiedInitialXAxis;
-        this.grayBoxY = (this.height / 2) - this.modifiedInitialYAxis;
-
-        // 表单起点 (左侧标签 + 右侧输入框)
-        this.formX = grayBoxX + 14;
-        this.formY = grayBoxY + 24;  // 标题占 20px
-
-        int inputX = formX + 70;
-        int y = formY;
-
-        // 标识符
-        this.fieldId = addField(inputX, y, FIELD_W - 70);
-        if (createMode) {
-            this.fieldId.setHint(Component.literal("标识符 (字母/数字/_/-)"));
-            this.fieldId.setValue("");
-        } else {
-            this.fieldId.setValue(editing.id);
-            this.fieldId.setEditable(false);
-            this.fieldId.setBordered(false);
-        }
-        y += ROW_H;
-
-        // 拓展包名
-        this.fieldName = addField(inputX, y, FIELD_W - 70);
-        this.fieldName.setHint(Component.literal("中文名称"));
-        y += ROW_H;
-
-        // 作者
-        this.fieldAuthor = addField(inputX, y, FIELD_W - 70);
-        this.fieldAuthor.setHint(Component.literal("你的名字"));
-        y += ROW_H;
-
-        // 版本
-        this.fieldVersion = addField(inputX, y, FIELD_W - 70);
-        this.fieldVersion.setHint(Component.literal("例如 1.0.0"));
-        y += ROW_H;
-
-        // 相关链接
-        this.fieldLink = addField(inputX, y, FIELD_W - 70);
-        this.fieldLink.setHint(Component.literal("https://..."));
-        y += ROW_H;
-
-        // 依赖模组
-        this.fieldDeps = addField(inputX, y, FIELD_W - 70);
-        this.fieldDeps.setHint(Component.literal("建筑用到了哪些模组里的物品就填哪些模组"));
-        y += ROW_H;
-
-        // 描述
-        this.fieldDesc = addField(inputX, y, FIELD_W - 70);
-        this.fieldDesc.setHint(Component.literal("这个拓展包是做什么的"));
-        y += ROW_H;
-
-        // 封面 PNG 行
-        this.btnChoosePng = this.createAndAddButton(inputX, y - 1, 90, 18, "选择图片...");
-        this.btnClearPng = this.createAndAddButton(inputX + 95, y - 1, 45, 18, "清除");
-        y += ROW_H - 2;
-
-        // 预填编辑值
-        if (!createMode) {
-            this.fieldName.setValue(safeStr(editing.name));
-            this.fieldAuthor.setValue(safeStr(editing.author));
-            this.fieldVersion.setValue(safeStr(editing.version));
-            this.fieldLink.setValue(safeStr(editing.link));
-            this.fieldDeps.setValue(safeStr(editing.dependencies));
-            this.fieldDesc.setValue(safeStr(editing.description));
-        }
-
-        // 保存/创建按钮 (放在 PNG 行下方, 一定可见)
-        int btnY = formY + 8 * ROW_H + GAP_BEFORE_SAVE - 1;
-        this.btnSave = this.createAndAddButton(grayBoxX + 175, btnY, 90, 20,
-            createMode ? "保存并创建" : "保存");
-        this.btnCancel = this.createAndAddButton(grayBoxX + 270, btnY, 90, 20, "取消");
-    }
-
-    private EditBox addField(int x, int y, int w) {
-        EditBox box = new EditBox(this.font, x, y, w, FIELD_H, Component.literal(""));
-        box.setMaxLength(512);
-        this.addRenderableWidget(box);
-        return box;
-    }
-
-    private static String safeStr(String s) { return s == null ? "" : s; }
-
-    @Override
-    public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
-        if (keyCode == 256) {  // GLFW_KEY_ESCAPE
-            this.onClose();
-            return true;
-        }
-        return super.keyPressed(keyCode, scanCode, modifiers);
-    }
-
-    @Override
-    public void tick() {
-        super.tick();
-        if (statusTick > 0) statusTick--;
-    }
-
-    private void setStatus(String msg, int color) {
-        this.statusMessage = msg;
-        this.statusColor = color;
-        this.statusTick = 100;
-    }
-
-    @Override
-    protected void preButtonRender(GuiGraphics guiGraphics, int x, int y, int mouseX, int mouseY, float partialTicks) {
-        this.drawControlBackground(guiGraphics, x, y, this.imagePanelWidth, this.imagePanelHeight);
-    }
-
-    @Override
-    protected void postButtonRender(GuiGraphics guiGraphics, int x, int y, int mouseX, int mouseY, float partialTicks) {
-        // 标题
-        guiGraphics.drawCenteredString(this.font,
-            createMode ? "创建拓展包" : "编辑拓展包 - " + (editing == null ? "" : editing.id),
-            this.getCenteredXAxis(), y + 6, this.textColor);
-
-        // 字段标签
-        guiGraphics.drawString(this.font, "标识符:", formX, formY + 4, 0xAAAAAA);
-        guiGraphics.drawString(this.font, "拓展包名:",   formX, formY + ROW_H * 1 + 4, 0xAAAAAA);
-        guiGraphics.drawString(this.font, "作者:",       formX, formY + ROW_H * 2 + 4, 0xAAAAAA);
-        guiGraphics.drawString(this.font, "版本:",       formX, formY + ROW_H * 3 + 4, 0xAAAAAA);
-        guiGraphics.drawString(this.font, "相关链接:",    formX, formY + ROW_H * 4 + 4, 0xAAAAAA);
-        guiGraphics.drawString(this.font, "依赖模组:",    formX, formY + ROW_H * 5 + 4, 0xAAAAAA);
-        guiGraphics.drawString(this.font, "描述:",       formX, formY + ROW_H * 6 + 4, 0xAAAAAA);
-        guiGraphics.drawString(this.font, "封面PNG:",    formX, formY + ROW_H * 7 + 4, 0xAAAAAA);
-
-        // PNG 路径
-        int pngY = formY + ROW_H * 7;
-        int pngPathX = formX + 145;
-        String pathShort = coverPngPath;
-        if (pathShort.length() > 50) pathShort = "..." + pathShort.substring(pathShort.length() - 47);
-        int col = coverPng == null ? 0x888888 : 0x55FF55;
-        guiGraphics.drawString(this.font, pathShort, pngPathX, pngY + 4, col);
-
-        // 状态
-        if (statusMessage != null && statusTick > 0) {
-            int sy = grayBoxY + panelH - 14;
-            guiGraphics.drawString(this.font, statusMessage, grayBoxX + 10, sy, statusColor);
-        }
-    }
-
-    @Override
-    public void buttonClicked(AbstractButton button) {
-        if (button == this.btnCancel) {
-            this.onClose();
-            return;
-        }
-        if (button == this.btnSave) {
-            doSave();
-            return;
-        }
-        if (button == this.btnChoosePng) {
-            openPngChooser();
-            return;
-        }
-        if (button == this.btnClearPng) {
-            this.coverPng = null;
-            this.coverPngPath = "(未选择)";
-            return;
-        }
+    // === 内部状态: 跨异步回调和 doSave 共享 ===
+    private static final class FormState {
+        PackCreator.PackWorkInfo editing;
+        GuiExtensionPackCreator parent;
+        boolean createMode;
+        byte[] coverPng = null;
+        String coverPngPath = "(未选择)";
     }
 
     /**
-     * 用 PowerShell 调 Windows 原生 OpenFileDialog 选 PNG。
+     * 打开创建 / 编辑 拓展包信息表单.
+     *
+     * @param editing  null = 创建模式; 非 null = 编辑模式 (标识符字段不可改)
+     * @param parent   父窗口 (保存后回调 onChildClosed 触发刷新); 可为 null
      */
-    private void openPngChooser() {
-        setStatus("正在打开文件选择器...", 0x55AAFF);
+    public static void open(PackCreator.PackWorkInfo editing, GuiExtensionPackCreator parent) {
+        FormState state = new FormState();
+        state.editing = editing;
+        state.parent = parent;
+        state.createMode = (editing == null);
+
+        ModularUI modularUI = createUI(state);
+        String title = state.createMode
+            ? "创建拓展包"
+            : "编辑拓展包 - " + (editing == null ? "" : editing.id);
+        Minecraft.getInstance().setScreen(new ModularUIScreen(modularUI, Component.literal(title)));
+    }
+
+    private static ModularUI createUI(FormState state) {
+        // === 输入框 ===
+        // 标识符
+        TextField fieldId = new TextField();
+        fieldId.setAnyString();
+        fieldId.textFieldStyle(s -> s.placeholder(Component.literal("标识符 (字母/数字/_/-)")));
+
+        // 拓展包名
+        TextField fieldName = new TextField();
+        fieldName.setAnyString();
+        fieldName.textFieldStyle(s -> s.placeholder(Component.literal("中文名称")));
+
+        // 作者
+        TextField fieldAuthor = new TextField();
+        fieldAuthor.setAnyString();
+
+        // 版本
+        TextField fieldVersion = new TextField();
+        fieldVersion.setAnyString();
+
+        // 相关链接
+        TextField fieldLink = new TextField();
+        fieldLink.setAnyString();
+
+        // 描述
+        TextField fieldDesc = new TextField();
+        fieldDesc.setAnyString();
+
+        // 预填编辑值
+        if (!state.createMode) {
+            fieldId.setText(safeStr(state.editing.id));
+            fieldId.setActive(false);
+            fieldName.setText(safeStr(state.editing.name));
+            fieldAuthor.setText(safeStr(state.editing.author));
+            fieldVersion.setText(safeStr(state.editing.version));
+            fieldLink.setText(safeStr(state.editing.link));
+            fieldDesc.setText(safeStr(state.editing.description));
+        } else {
+            // 新建: 作者用玩家名, 版本默认 1.0.0
+            fieldId.setText("");
+            fieldAuthor.setText(playerName());
+            fieldVersion.setText("1.0.0");
+        }
+
+        // === 标签 ===
+        // 封面路径 (默认灰色 "未选择")
+        Label pathLabel = new Label();
+        pathLabel.setText(Component.literal("(未选择)").withStyle(ChatFormatting.GRAY));
+        pathLabel.textStyle(t -> t.textAlignHorizontal(Horizontal.LEFT));
+
+        // 状态信息
+        Label statusLabel = new Label();
+        statusLabel.setText(Component.literal(""));
+        statusLabel.textStyle(t -> t.textAlignHorizontal(Horizontal.LEFT));
+
+        // === 滚动主区内容 (440 宽, 12 padding, 8 gap) ===
+        UIElement content = new UIElement();
+        content.layout(l -> l
+            .width(440)
+            .paddingAll(12)
+            .gapAll(8)
+            .flexDirection(FlexDirection.COLUMN)
+        );
+        content.style(s -> s.background(Sprites.BORDER));
+
+        // 表单行 (label + input)
+        content.addChild(makeRow("标识符:", fieldId));
+        content.addChild(makeRow("拓展包名:", fieldName));
+        content.addChild(makeRow("作者:", fieldAuthor));
+        content.addChild(makeRow("版本:", fieldVersion));
+        content.addChild(makeRow("相关链接:", fieldLink));
+        content.addChild(makeRow("描述:", fieldDesc));
+
+        // 封面 PNG 行: [label 60] [选择图片... 90] [清除 50]
+        UIElement pngRow = new UIElement();
+        pngRow.layout(l -> l
+            .widthPercent(100)
+            .height(22)
+            .flexDirection(FlexDirection.ROW)
+            .gapAll(8)
+            .alignItems(AlignItems.CENTER)
+        );
+        Label pngLabel = new Label();
+        pngLabel.setText(Component.literal("封面PNG:").withStyle(ChatFormatting.GRAY));
+        pngLabel.textStyle(t -> t.textAlignHorizontal(Horizontal.LEFT));
+        pngLabel.layout(l -> l.width(60).height(18));
+        pngRow.addChild(pngLabel);
+
+        Button btnChoosePng = new Button();
+        btnChoosePng.setText(Component.literal("选择图片..."));
+        btnChoosePng.layout(l -> l.width(90).height(18));
+        btnChoosePng.setOnClick(e -> openPngChooser(state, pathLabel, statusLabel));
+        pngRow.addChild(btnChoosePng);
+
+        Button btnClearPng = new Button();
+        btnClearPng.setText(Component.literal("清除"));
+        btnClearPng.layout(l -> l.width(50).height(18));
+        btnClearPng.setOnClick(e -> {
+            state.coverPng = null;
+            state.coverPngPath = "(未选择)";
+            pathLabel.setText(Component.literal(state.coverPngPath).withStyle(ChatFormatting.GRAY));
+        });
+        pngRow.addChild(btnClearPng);
+        content.addChild(pngRow);
+
+        // 封面路径
+        pathLabel.layout(l -> l.widthPercent(100).height(12));
+        content.addChild(pathLabel);
+
+        // 状态行
+        statusLabel.layout(l -> l.widthPercent(100).height(12));
+        content.addChild(statusLabel);
+
+        // === ScrollerView 包裹 (456 宽, 200 高) - 留出顶部 24+28 + 底部 40 ===
+        ScrollerView scrollerView = new ScrollerView();
+        scrollerView.layout(l -> l
+            .width(456)
+            .height(200)
+        );
+        scrollerView.scrollerStyle(style -> style.mode(ScrollerMode.VERTICAL));
+        scrollerView.addScrollViewChild(content);
+
+        // === 根容器 (456 x 24+28+200+40=292) ===
+        UIElement root = new UIElement();
+        root.layout(l -> l
+            .width(456)
+            .height(292)
+            .flexDirection(FlexDirection.COLUMN)
+            .paddingAll(0)
+            .gapAll(0)
+        );
+        root.style(s -> s.background(Sprites.BORDER));
+
+        // 标题栏 (固定 24px) - 居中显示标题, 不放按钮 (避免被游戏顶部菜单遮挡)
+        UIElement titleBar = new UIElement();
+        titleBar.layout(l -> l
+            .widthPercent(100)
+            .height(24)
+            .paddingHorizontal(8)
+            .justifyContent(AlignContent.CENTER)
+        );
+        titleBar.style(s -> s.background(Sprites.RECT_DARK));
+        Label title = new Label();
+        title.setText(Component.literal(state.createMode
+            ? "创建拓展包"
+            : "编辑拓展包 - " + (state.editing == null ? "" : state.editing.id)));
+        title.textStyle(t -> t
+            .textAlignHorizontal(Horizontal.CENTER)
+            .textColor(0xFFFFFFFF)
+        );
+        titleBar.addChild(title);
+        root.addChild(titleBar);
+
+        // 工具栏 (固定 28px) - 放 [← 返回] 和 [保存] 按钮, 不会被遮挡
+        UIElement toolbar = new UIElement();
+        toolbar.layout(l -> l
+            .widthPercent(100)
+            .height(28)
+            .paddingHorizontal(8)
+            .paddingVertical(4)
+            .flexDirection(FlexDirection.ROW)
+            .alignItems(AlignItems.CENTER)
+            .justifyContent(AlignContent.SPACE_BETWEEN)
+        );
+        toolbar.style(s -> s.background(Sprites.RECT_DARK));
+        toolbar.setOverflowVisible(false);
+
+        Button btnBack = new Button();
+        btnBack.setText(Component.literal("← 返回"));
+        btnBack.layout(l -> l.width(60).height(18));
+        btnBack.setOnClick(e -> {
+            if (state.parent != null) {
+                state.parent.onChildClosed();
+            } else {
+                Minecraft.getInstance().setScreen(null);
+            }
+        });
+        toolbar.addChild(btnBack);
+
+        Button btnSave = new Button();
+        btnSave.setText(Component.literal(state.createMode ? "保存并创建" : "保存"));
+        btnSave.layout(l -> l.width(90).height(18));
+        btnSave.setOnClick(e -> doSave(state, fieldId, fieldName, fieldAuthor,
+            fieldVersion, fieldLink, fieldDesc, statusLabel));
+        toolbar.addChild(btnSave);
+
+        root.addChild(toolbar);
+
+        // 滚动主区
+        root.addChild(scrollerView);
+
+        // 底部按钮栏 (固定 40px, 右对齐) - 保留作为备选入口
+        UIElement buttonBar = new UIElement();
+        buttonBar.layout(l -> l
+            .widthPercent(100)
+            .height(40)
+            .paddingAll(8)
+            .gapAll(8)
+            .flexDirection(FlexDirection.ROW)
+            .justifyContent(AlignContent.FLEX_END)
+        );
+
+        Button btnCancel = new Button();
+        btnCancel.setText(Component.literal("取消"));
+        btnCancel.layout(l -> l.width(80).height(24));
+        btnCancel.setOnClick(e -> {
+            if (state.parent != null) {
+                state.parent.onChildClosed();
+            } else {
+                Minecraft.getInstance().setScreen(null);
+            }
+        });
+        buttonBar.addChild(btnCancel);
+        root.addChild(buttonBar);
+
+        PrefabCustomAddon.LOGGER.info("[CREATOR] GuiCreatePackInfo open: createMode={} editingId={}",
+            state.createMode,
+            state.editing == null ? "(new)" : state.editing.id);
+
+        return ModularUI.of(UI.of(root,
+            StylesheetManager.INSTANCE.getStylesheetSafe(StylesheetManager.MC)));
+    }
+
+    // === 辅助 ===
+
+    /** 构造一行: 左 60px 标签 + 右 flex 输入框 */
+    private static UIElement makeRow(String labelText, TextField input) {
+        UIElement row = new UIElement();
+        row.layout(l -> l
+            .widthPercent(100)
+            .height(22)
+            .flexDirection(FlexDirection.ROW)
+            .gapAll(8)
+            .alignItems(AlignItems.CENTER)
+        );
+        Label label = new Label();
+        label.setText(Component.literal(labelText).withStyle(ChatFormatting.GRAY));
+        label.textStyle(t -> t.textAlignHorizontal(Horizontal.LEFT));
+        label.layout(l -> l.width(60).height(18));
+        row.addChild(label);
+
+        input.layout(l -> l.flex(1).height(18));
+        row.addChild(input);
+        return row;
+    }
+
+    /** 用 PowerShell 调 Windows 原生 OpenFileDialog 选 PNG */
+    private static void openPngChooser(FormState state, Label pathLabel, Label statusLabel) {
+        setStatus(statusLabel, "正在打开文件选择器...", ChatFormatting.AQUA);
         SystemFilePicker.openAsync("选择封面 PNG", "png", r -> {
             if (r.isOk()) {
-                handlePngSelected(r.file);
+                handlePngSelected(state, r.file, pathLabel, statusLabel);
             } else if (r.isCancelled()) {
-                setStatus("✗ 已取消", 0x888888);
+                setStatus(statusLabel, "\u2717 已取消", ChatFormatting.GRAY);
             } else {
-                setStatus("✗ 选择器错误: " + r.message, 0xFF5555);
+                setStatus(statusLabel, "\u2717 选择器错误: " + r.message, ChatFormatting.RED);
             }
         });
     }
 
-    private void handlePngSelected(File f) {
+    private static void handlePngSelected(FormState state, File f, Label pathLabel, Label statusLabel) {
         try {
             byte[] data = Files.readAllBytes(f.toPath());
             try (ByteArrayInputStream bis = new ByteArrayInputStream(data)) {
                 BufferedImage img = ImageIO.read(bis);
                 if (img == null) {
-                    setStatus("✗ 无效的 PNG 文件", 0xFF5555);
+                    setStatus(statusLabel, "\u2717 无效的 PNG 文件", ChatFormatting.RED);
                     return;
                 }
             }
-            this.coverPng = data;
-            this.coverPngPath = f.getAbsolutePath();
-            setStatus("✓ 已选择封面: " + f.getName(), 0x55FF55);
+            state.coverPng = data;
+            state.coverPngPath = f.getAbsolutePath();
+            String shortPath = state.coverPngPath;
+            if (shortPath.length() > 50) {
+                shortPath = "..." + shortPath.substring(shortPath.length() - 47);
+            }
+            pathLabel.setText(Component.literal(shortPath).withStyle(ChatFormatting.GREEN));
+            setStatus(statusLabel, "\u2713 已选择封面: " + f.getName(), ChatFormatting.GREEN);
         } catch (Throwable t) {
             PrefabCustomAddon.LOGGER.error("[CREATOR] read PNG failed", t);
-            setStatus("✗ 读取失败: " + t.getMessage(), 0xFF5555);
+            setStatus(statusLabel, "\u2717 读取失败: " + t.getMessage(), ChatFormatting.RED);
         }
     }
 
-    private void doSave() {
+    private static void setStatus(Label statusLabel, String msg, ChatFormatting color) {
+        statusLabel.setText(Component.literal(msg).withStyle(color));
+    }
+
+    private static void doSave(FormState state,
+                               TextField fieldId, TextField fieldName, TextField fieldAuthor,
+                               TextField fieldVersion, TextField fieldLink, TextField fieldDesc,
+                               Label statusLabel) {
         String id = fieldId.getValue().trim();
         String name = fieldName.getValue().trim();
         if (id.isEmpty()) {
-            setStatus("✗ 标识符不能为空", 0xFF5555);
+            setStatus(statusLabel, "\u2717 标识符不能为空", ChatFormatting.RED);
             return;
         }
-        if (createMode && !id.matches("[A-Za-z0-9_\\-]+")) {
-            setStatus("✗ 标识符只能含字母数字下划线连字符", 0xFF5555);
+        if (state.createMode && !id.matches("[A-Za-z0-9_\\-]+")) {
+            setStatus(statusLabel, "\u2717 标识符只能含字母数字下划线连字符", ChatFormatting.RED);
             return;
         }
         if (name.isEmpty()) {
-            setStatus("✗ 包名不能为空", 0xFF5555);
+            setStatus(statusLabel, "\u2717 包名不能为空", ChatFormatting.RED);
             return;
         }
 
         String author = fieldAuthor.getValue().trim();
         String version = fieldVersion.getValue().trim();
         String link = fieldLink.getValue().trim();
-        String deps = fieldDeps.getValue().trim();
+        // deps 字段在 UI 上不显示, 永远传空 (子建筑依赖在导出时自动合并)
+        String deps = "";
         String desc = fieldDesc.getValue().trim();
 
         try {
-            if (createMode) {
-                PackCreator.getInstance().createPack(id, name, author, version, deps, link, desc, coverPng);
-                setStatus("✓ 已创建拓展包: " + id, 0x55FF55);
+            if (state.createMode) {
+                PackCreator.getInstance().createPack(id, name, author, version, deps, link, desc, state.coverPng);
+                setStatus(statusLabel, "\u2713 已创建拓展包: " + id, ChatFormatting.GREEN);
             } else {
-                PackCreator.getInstance().updatePack(id, name, author, version, deps, link, desc, coverPng);
-                setStatus("✓ 已保存: " + id, 0x55FF55);
+                PackCreator.getInstance().updatePack(id, name, author, version, deps, link, desc, state.coverPng);
+                setStatus(statusLabel, "\u2713 已保存: " + id, ChatFormatting.GREEN);
             }
-            if (parent != null) parent.onChildClosed();
+            if (state.parent != null) {
+                state.parent.onChildClosed();
+                return;
+            }
+            // 没有 parent, 直接关闭 (X 键直接打开的情况下)
+            // 800ms 后关闭, 让用户看到 "✓ 已创建" 提示
             CompletableFuture.runAsync(() -> {
-                try { Thread.sleep(800); } catch (InterruptedException ignored) {}
-                Minecraft.getInstance().execute(this::onClose);
+                try {
+                    Thread.sleep(800);
+                } catch (InterruptedException ignored) {}
+                Minecraft.getInstance().execute(() -> Minecraft.getInstance().setScreen(null));
             });
         } catch (Exception e) {
             PrefabCustomAddon.LOGGER.error("[CREATOR] save pack failed", e);
-            setStatus("✗ 保存失败: " + e.getMessage(), 0xFF5555);
+            setStatus(statusLabel, "\u2717 保存失败: " + e.getMessage(), ChatFormatting.RED);
         }
+    }
+
+    private static String playerName() {
+        if (Minecraft.getInstance().player != null) {
+            return Minecraft.getInstance().player.getName().getString();
+        }
+        return "anonymous";
+    }
+
+    private static String safeStr(String s) {
+        return s == null ? "" : s;
     }
 }

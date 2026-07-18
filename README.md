@@ -1,25 +1,25 @@
 # Prefab Custom Addon
 
-Prefab 自带的建筑就那么几个，玩久了腻。
+Prefab ships with a handful of buildings. After a while you get bored of them.
 
-这个附属加了一套拓展包系统：游戏里按 Z 能下别人做好的包，按 X 能自己做。
+This addon adds an extension pack system: press **Z** in-game to browse and download community-made packs, or press **X** to make your own.
 
-下载器：浏览社区拓展包列表，选中直接装到 prefab-extension，进了世界就能用。
+**Downloader** — browse community packs, pick one, drops into `prefab-extension/`, ready to use next time you load a world.
 
-制作器：本地工作区模式，填表 + 选 NBT + 选封面，几次点击产出一个标准格式的拓展包（含 zip）。所有创作产物都在游戏根目录的 prefab-work/ 下，NBT 用游戏自带的结构方块导出就行。
+**Creator** — local workspace mode. Fill in a form, pick an NBT, pick a cover image, a few clicks and you have a standard extension pack (with ZIP). Everything lives in `prefab-work/` at your game root. Export NBT files using the vanilla Structure Block.
 
-前置：Prefab 1.0.7+、LDLib2 2.2+。运行环境：NeoForge 21.1.233、MC 1.21.1、Java 21+。
+Requires: Prefab 1.0.7+, LDLib2 2.2+. Tested on NeoForge 21.1.233 / MC 1.21.1 / Java 21+.
 
-## 键位
+## Keybindings
 
-| 按键 | 作用 |
+| Key | Action |
 |---|---|
-| Z | 打开拓展包下载器 |
-| X | 打开拓展包制作器 |
+| Z | Open extension pack downloader |
+| X | Open extension pack creator |
 
-## 目录结构
+## Folder Layout
 
-工作区目录和发布的拓展包目录结构完全一致：
+The workspace folder mirrors the published pack format:
 
 ```
 prefab-work/
@@ -31,36 +31,36 @@ prefab-work/
 │       ├── <building_id>.nbt
 │       ├── <building_id>.png
 │       └── <building_id>.txt
-└── <pack_id>.zip          ← 自动打包
+└── <pack_id>.zip          ← auto-generated
 ```
 
-`prefab-work/<id>/` 的任何改动都会自动重新打包到 `prefab-work/<id>.zip`。把 zip 解压放到 `prefab-extension/<id>/` 即可使用。
+Any change under `prefab-work/<id>/` triggers an automatic repack into `prefab-work/<id>.zip`. To install a pack manually, unzip the file into `prefab-extension/<id>/`.
 
-## 构建
+## Building from Source
 
-需要 Java 21+。
+Java 21+ required.
 
-1. 下载 Prefab 主模组的 jar（[CurseForge](https://www.curseforge.com/minecraft/mc-mods/prefab) / [Modrinth](https://modrinth.com/mod/prefab)），放到 `libs/prefab-neoforge-1.0.8.jar`
-2. 下载 LDLib2 的 jar（[Modrinth](https://modrinth.com/mod/ldlib2)），放到 `libs/ldlib2-2.2.18.jar`
-3. 跑 `gradlew build`，产物在 `build/libs/`
+1. Grab the Prefab jar from [CurseForge](https://www.curseforge.com/minecraft/mc-mods/prefab) or [Modrinth](https://modrinth.com/mod/prefab) and put it at `libs/prefab-neoforge-1.0.8.jar`
+2. Grab the LDLib2 jar from [Modrinth](https://modrinth.com/mod/ldlib2) and put it at `libs/ldlib2-2.2.18.jar`
+3. Run `gradlew build`. Output goes to `build/libs/`
 
-构建时如果 `compileOnly` 找不到 Prefab 类，参考上面的两个文件路径。
+If the build complains about missing Prefab classes, double-check the two jar paths above.
 
-## 依赖
+## Dependencies
 
-| 模组 | 版本 | 强制 | 用途 |
+| Mod | Version | Required | Purpose |
 |---|---|---|---|
-| Prefab | 1.0.7+ | 是 | 核心，提供 GuiStructure、BuildBlock 等类 |
-| LDLib2 | 2.2+ | 是 | UI 工具库 |
+| Prefab | 1.0.7+ | yes | core — provides `GuiStructure`, `BuildBlock`, etc. |
+| LDLib2 | 2.2+ | yes | UI utilities |
 
-NeoForge 21.1.233、MC 1.21.1。
+NeoForge 21.1.233 on Minecraft 1.21.1.
 
-## 许可证
+## License
 
-MIT。详见 [LICENSE](LICENSE)。
+MIT. See [LICENSE](LICENSE).
 
-## 相关链接
+## Links
 
-- [Prefab 主模组](https://www.curseforge.com/minecraft/mc-mods/prefab)
+- [Prefab on CurseForge](https://www.curseforge.com/minecraft/mc-mods/prefab)
 - [NeoForge](https://neoforged.net/)
-- [LDLib2](https://modrinth.com/mod/ldlib2)
+- [LDLib2 on Modrinth](https://modrinth.com/mod/ldlib2)

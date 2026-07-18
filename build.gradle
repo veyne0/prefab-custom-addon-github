@@ -70,28 +70,56 @@ tasks.withType(JavaCompile).configureEach {
     options.compilerArgs.add('-Xlint:deprecation')
 }
 
+// 把 gradle.properties 里的 mod_version 等占位符替换到 resources 里的 ${mod_version}
+// (NeoForge 默认只替换 mod id/displayName 之类, 不替换任意 ${xxx}, 所以这里手工做)
+// 关键: filter 默认会用 JVM 默认编码 (Windows 是 GBK), 写入 toml 时把 UTF-8 中文破坏成乱码,
+// 之后 NeoForge 的 JarModsDotTomlModFileReader 解析 toml 失败 → mod type = null →
+// "File ... is not a valid mod file" → 整个 mod 加载阶段被中断 → 后续 mods 找不到 block 引用的资源 → ItemColors.register 拿到 null → 崩.
+// 这里显式指定 UTF-8 编码, 保证中文说明 / 注释不被破坏.
+tasks.named('processResources').configure {
+    def modVersion = project.findProperty('mod_version') ?: 'unknown'
+    // 把整个 task 的字符集都设成 UTF-8 (读取源文件 + 写回目标文件), 避免 GBK 默认编码破坏中文.
+    filteringCharset = 'UTF-8'
+    filesMatching('**/*.toml') {
+        filteringCharset = 'UTF-8'
+        filter { line -> line.replace('${mod_version}', modVersion) }
+    }
+    filesMatching('**/*.json') {
+        filteringCharset = 'UTF-8'
+    }
+    filesMatching('**/*.lang') {
+        filteringCharset = 'UTF-8'
+    }
+    filesMatching('**/*.properties') {
+        filteringCharset = 'UTF-8'
+    }
+}
+
 jar {
     manifest {
         attributes(
             'Specification-Title': 'PrefabCustomAddon',
-            'Specification-Vendor': 'veyne',
+            'Specification-Vendor': 'YourName',
             'Specification-Version': '1',
             'Implementation-Title': project.name,
             'Implementation-Version': project.version,
-            'Implementation-Vendor': 'veyne'
+            'Implementation-Vendor': 'YourName'
         )
     }
 }
 
-// 图标纹理已由 generateTexture 任务生成并提交到 src/main/resources
-// 如需重新生成，取消下方注释
-
-/*
+// 自动生成合法PNG贴图（避免损坏的源文件导致"Bad PNG Signature"）
 tasks.register('generateTexture') {
     description = 'Generate a valid blueprint icon PNG'
     outputs.file file('src/main/resources/assets/prefab_custom_addon/textures/item/custom_blueprint.png')
     doLast {
         def texFile = file('src/main/resources/assets/prefab_custom_addon/textures/item/custom_blueprint.png')
+        // 用Java程序生成一个 16x16 的简单蓝图图标PNG
+        file('build.gradle.parent').parentFile.mkdirs()
+
+        def proc = new ProcessBuilder(['java', '-cp', new File(gradle.gradleHomeDir, 'lib/gradle-launcher.jar').absolutePath,
+                                        '-e', ''])
+        // 直接用Java代码生成PNG
         def script = new File('build/gen_texture.java')
         script.parentFile.mkdirs()
         script.text = '''
@@ -105,22 +133,36 @@ public class gen_texture {
         int size = 16;
         BufferedImage img = new BufferedImage(size, size, BufferedImage.TYPE_INT_ARGB);
         Graphics2D g = img.createGraphics();
+
+        // 背景 - 深灰色（蓝图纸）
         g.setColor(new Color(0xF0, 0xE8, 0xC0));
         g.fillRect(0, 0, size, size);
+
+        // 边框 - 棕色
         g.setColor(new Color(0x8B, 0x5A, 0x2B));
         g.drawRect(0, 0, size-1, size-1);
         g.drawRect(1, 1, size-3, size-3);
+
+        // 蓝图内部 - 浅蓝色
         g.setColor(new Color(0x6F, 0x9E, 0xD0));
         g.fillRect(3, 3, 10, 10);
+
+        // 蓝图线条 - 白色
         g.setColor(Color.WHITE);
+        // 屋顶
         g.drawLine(4, 5, 8, 5);
         g.drawLine(8, 5, 12, 5);
         g.drawLine(5, 6, 11, 6);
+        // 房屋
         g.drawRect(5, 7, 6, 5);
+        // 门
         g.drawRect(7, 9, 2, 3);
+        // 窗户
         g.fillRect(6, 8, 1, 1);
         g.fillRect(9, 8, 1, 1);
+
         g.dispose();
+
         File out = new File(args[0]);
         out.getParentFile().mkdirs();
         ImageIO.write(img, "PNG", out);
@@ -132,16 +174,22 @@ public class gen_texture {
         def javac = new File(javaHome, 'bin/javac.exe')
         def java = new File(javaHome, 'bin/java.exe')
 
-        new ProcessBuilder(javac.absolutePath, '-d', 'build/tex_classes', 'build/gen_texture.java')
+        def compileResult = new ProcessBuilder(javac.absolutePath, '-d', 'build/tex_classes', 'build/gen_texture.java')
             .directory(projectDir).start().waitFor()
+        if (compileResult != 0) throw new Exception("javac failed")
 
-        new ProcessBuilder(java.absolutePath, '-cp', 'build/tex_classes', 'gen_texture', texFile.absolutePath)
+        def runResult = new ProcessBuilder(java.absolutePath, '-cp', 'build/tex_classes', 'gen_texture', texFile.absolutePath)
             .directory(projectDir).start().waitFor()
+        if (runResult != 0) throw new Exception("java failed")
 
         println "Blueprint icon regenerated: ${texFile.absolutePath}"
     }
 }
-*/
+
+// 手工生成贴图，不需要gradle任务
+//tasks.named('processResources').configure {
+//    dependsOn 'generateTexture'
+//}
 
 publishing {
     publications {

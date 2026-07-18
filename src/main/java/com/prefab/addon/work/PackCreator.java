@@ -298,6 +298,7 @@ public class PackCreator {
     public BuildingWorkInfo saveBuilding(String packId, String buildingId,
                                          String name, String author, String size,
                                          String dependencies, String description,
+                                         String format,
                                          byte[] nbtData, byte[] pngData) throws IOException {
         if (buildingId == null || buildingId.isEmpty()) {
             throw new IllegalArgumentException("建筑 ID 不能为空");
@@ -317,7 +318,7 @@ public class PackCreator {
             Files.write(pngPath, pngData);
         }
         Path txtPath = dir.resolve(buildingId + ".txt");
-        String content = buildBuildingInfoText(buildingId, name, author, size, dependencies, description);
+        String content = buildBuildingInfoText(buildingId, name, author, size, dependencies, description, format);
         Files.writeString(txtPath, content, StandardCharsets.UTF_8);
 
         // 自动更新父拓展包的依赖 (合并所有建筑的依赖)
@@ -413,7 +414,7 @@ public class PackCreator {
     }
 
     private String buildBuildingInfoText(String id, String name, String author, String size,
-                                         String dependencies, String description) {
+                                         String dependencies, String description, String format) {
         StringBuilder sb = new StringBuilder();
         sb.append("作者:").append(nullSafe(author)).append('\n');
         sb.append("建筑名:").append(nullSafe(name)).append('\n');
@@ -421,6 +422,7 @@ public class PackCreator {
         sb.append("描述:").append(nullSafe(description)).append('\n');
         sb.append("建筑标识符:").append(id).append('\n');
         sb.append("依赖模组:").append(nullSafe(dependencies)).append('\n');
+        sb.append("蓝图格式:").append(nullSafe(format)).append('\n');
         return sb.toString();
     }
 

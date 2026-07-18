@@ -42,6 +42,13 @@ public class StructurePreviewKeyHandler {
     private static final long MOVE_INTERVAL_MS = 150L;
     private static long lastMoveTimeMs = 0L;
 
+    // prefab 原版建筑预览时, 我们已经向聊天栏发过 "该预览模式由附属模组提供" 提示,
+    // 防止每个 tick / 每次移动都重复发. 用 prefab.currentStructure 的 identityHashCode
+    // 作 key — 同一个预览结构对象, 移动/旋转都不变; 玩家切换到另一个建筑预览时
+    // reference 变, key 跟着变, 我们再发一次. 之前用 cfg.pos.toString() + identityHashCode
+    // 失败: cfg.pos 每次方向键移动都变, key 跟着变 → 每次移动都触发发消息 → 刷屏.
+    private static int addonPreviewNoticeStructureHash = 0;
+
     @SubscribeEvent
     public static void onClientTick(ClientTickEvent.Post event) {
         Minecraft mc = Minecraft.getInstance();
@@ -56,7 +63,44 @@ public class StructurePreviewKeyHandler {
         StructureConfiguration cfg = StructureRenderHandler.currentConfiguration;
         Structure currentStructure = StructureRenderHandler.currentStructure;
         if (cfg == null || cfg.pos == null || currentStructure == null) {
+            // 预览已结束 (setStructure(null, null)), 清掉我们自己的来源追踪.
+            com.prefab.addon.client.gui.CustomStructureGui.clearAddonPreviewFlag();
+            // 通知标记也清掉, 下次 prefab 原版预览时还能再发.
+            addonPreviewNoticeStructureHash = 0;
             return;
+        }
+
+        // packName/constructionId 不在这里取 — ALT 那个分支单独取 (line 267-268).
+        // 这里只判预览来源, 跟 packName 无关.
+        // isCurrentPreviewStartedByAddon() 用 atomicReference 记下我们 setStructure 时的
+        // structure 引用, 跟 prefab.currentStructure == 比对, prefab 自己 setStructure
+        // 之后引用必变, 自动识别为"原版预览".
+        boolean isAddonPreview = com.prefab.addon.client.gui.CustomStructureGui.isCurrentPreviewStartedByAddon();
+        // **关键**: isPrefabOriginalPreview 不要再加 (packName.isEmpty()||constructionId.isEmpty()) 条件.
+        // 之前 (line 90) 是: !isAddonPreview && (packName.isEmpty()||constructionId.isEmpty())
+        // 跟 ALT 那个分支 (line 205) 的判断不一致 → 玩家先打开我们的 GUI 改过一个自定义建筑
+        // (currentConstruction 被缓存, packName/constructionId 不空), 然后再去开 prefab 的
+        // GuiStructure 预览原版建筑, 此时:
+        //   - isAddonPreview = false (currentStructure 引用换了)
+        //   - packName.isEmpty() = false (currentConstruction 还残留)
+        //   - isPrefabOriginalPreview = false  ← 错!
+        // → 移动/旋转**不会**调 triggerPrefabRebuild, prefab 的 previewChunks 不重建,
+        // 玩家看着预览卡在初始位置, 按键毫无反应 — 这就是用户反馈的"原版建筑预览又无法移动".
+        // 修: 用 !isAddonPreview 单独判断, 不要碰 packName/constructionId. 跟 ALT 那个分支对齐.
+        boolean isPrefabOriginalPreview = !isAddonPreview;
+
+        // prefab 原版预览时, 第一次向聊天栏发提示 "由附属模组提供预览"
+        if (isPrefabOriginalPreview) {
+            int hash = System.identityHashCode(currentStructure);
+            if (hash != addonPreviewNoticeStructureHash) {
+                addonPreviewNoticeStructureHash = hash;
+                mc.player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
+                    "ℹ 该预览模式由附属模组提供, 可用方向键 / CTRL / ALT 操作")
+                    .withStyle(net.minecraft.ChatFormatting.AQUA));
+            }
+        } else {
+            // 自定义预览时不需要这条提示
+            addonPreviewNoticeStructureHash = 0;
         }
 
         long window = mc.getWindow().getWindow();
@@ -112,8 +156,19 @@ public class StructurePreviewKeyHandler {
             BlockPos oldPos = cfg.pos;
             BlockPos newPos = oldPos.offset(dx * step, dy * step, dz * step);
             cfg.pos = newPos;
-            // 关键：Prefab 把结构烘焙到 previewChunks 网格，必须 setStructure 触发 needsRebuild=true
-            StructureRenderHandler.setStructure(currentStructure, cfg);
+            // **关键**: 同步更新每个 BuildBlock.blockPos, 否则 renderer 用的是旧位置
+            // (CustomStructurePreviewRenderer 读 buildBlock.blockPos, 不是 cfg.pos)
+            // 必须传 cfg.houseFacing: 用户已经旋转过, 移动后还要保持旋转, 不传会导致预览方块错位.
+            com.prefab.addon.structure.CustomStructureBuilder.offsetStructureBlocks(currentStructure, newPos, cfg.houseFacing);
+            // prefab 原版预览: prefab 自己的 StructureRenderHandler.renderStructurePreview
+            // 用的是 previewChunks 缓存 (按 chunk 位置 key), 不调 setStructure 它永远显示旧位置.
+            // 我们调一次 setStructure(currentStructure, cfg) 让 prefab 重建缓存.
+            // 但 setStructure 会把 showedMessage 设回 false → 下次 render prefab 会再次发
+            // "右击任何方块即可移除预览" / "黄色轮廓是您单击的块" 聊天消息.
+            // 调完后立即把 showedMessage 改回 true, 阻止聊天消息.
+            if (isPrefabOriginalPreview) {
+                triggerPrefabRebuild();
+            }
             lastMoveTimeMs = now;
             PrefabCustomAddon.LOGGER.info("[PREVIEW-MOVE] player={} dx={} dz={} dy={} step={}  {} -> {}",
                 playerFacing, dx, dz, dy, step, oldPos, newPos);
@@ -125,17 +180,42 @@ public class StructurePreviewKeyHandler {
             Direction newFacing = rotateCounterClockwise(cfg.houseFacing);
             Direction oldFacing = cfg.houseFacing;
             cfg.houseFacing = newFacing;
-            StructureRenderHandler.setStructure(currentStructure, cfg);
+            // 关键: offsetStructureBlocks 第三个参数 houseFacing 控制旋转步数
+            // 之前只调 (structure, pos) 不传 houseFacing → blockPos 永远不旋转, 预览的"半旋转"
+            // 来自 Prefab 自己的 model rotation, 但我们的 renderer 读 blockPos 还是老位置 → 错位
+            com.prefab.addon.structure.CustomStructureBuilder.offsetStructureBlocks(currentStructure, cfg.pos, cfg.houseFacing);
+            // 同上: prefab 原版预览时强制 rebuild
+            if (isPrefabOriginalPreview) {
+                triggerPrefabRebuild();
+            }
             lastMoveTimeMs = now;
             PrefabCustomAddon.LOGGER.info("[PREVIEW-ROTATE] houseFacing {} -> {}", oldFacing, newFacing);
         }
 
         // === ALT 键 → 直接建造（节流：1 秒最多 1 次） ===
+        // packName/constructionId 为空 = prefab 原版建筑预览, 我们不知道发什么 build packet,
+        // 直接放弃 ALT 建造 (让用户用 prefab 自己的 build 按钮 / 或者回到 prefab GUI)
         boolean altDown = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_LEFT_ALT) == GLFW.GLFW_PRESS
                 || GLFW.glfwGetKey(window, GLFW.GLFW_KEY_RIGHT_ALT) == GLFW.GLFW_PRESS;
         if (altDown) {
             if (lastAction != GLFW.GLFW_KEY_LEFT_ALT && lastAction != GLFW.GLFW_KEY_RIGHT_ALT) {
-                triggerBuildAtPreview(cfg, currentStructure);
+                // 关键: 走"prefab 原版建造"还是"我们的自定义建造"用 isAddonPreview 判,
+                // 不要用 packName.isEmpty() — 之前就是这里错: packName 来自 currentConstruction
+                // (上次编辑的自定义建筑缓存), 即使玩家已经打开了 prefab 原版的预览,
+                // currentConstruction 还残留, 误判走我们的路径 → BuildCustomStructurePayload
+                // 被发到服务端 → 服务端 consumeBlueprint 把玩家背包里的**自定义蓝图**消耗掉了.
+                if (!isAddonPreview) {
+                    // === prefab 原版建筑预览 ===
+                    // 复用 prefab 自己 GameClientEvents.KeyInput 用的同一条路径:
+                    //   new StructureTagMessage(cfg.WriteToCompoundTag(),
+                    //                            EnumStructureConfiguration.getByConfigurationInstance(cfg))
+                    //   PrefabBase.networkWrapper.sendToServer(ClientToServerTypes.STRUCTURE_BUILD, msg);
+                    // 这样 ALT 触发的是 prefab 原版的建造流程, 不会走我们的 BuildCustomStructurePayload,
+                    // 也就不会消耗玩家背包里的自定义蓝图 (我们不插手 prefab 原版的消耗逻辑).
+                    triggerPrefabOriginalBuild(cfg);
+                } else {
+                    triggerBuildAtPreview(cfg, currentStructure);
+                }
             }
         }
         if (!altDown) {
@@ -159,12 +239,75 @@ public class StructurePreviewKeyHandler {
 
     /**
      * ALT 按下时直接建造。
+     * 挑战模式开启时, 必须先在 MaterialSubmissionGui 提交全部材料, 否则阻止建造.
+     *
+     * <p>关键: packName / constructionId 必须用当前打开的 GUI 提供的值
+     * ({@link com.prefab.addon.client.gui.CustomStructureGui#getPackNameForBuild()}),
+     * 不能用蓝图里存的 packName -- 旧版本蓝图绑定时用的是 getPackageName(),
+     * 跟服务端 findConstruction 用的 getName() 不一致, 会导致服务端消耗蓝图失败
+     * (刚开服 GUI 按钮能消耗是因为 GUI 用 currentConstruction.getPack().getName()).</p>
      */
     private static void triggerBuildAtPreview(StructureConfiguration cfg, Structure structure) {
         Player player = Minecraft.getInstance().player;
         if (player == null) return;
         lastAction = GLFW.GLFW_KEY_LEFT_ALT;
 
+        // === 关键: 用 GUI 暴露的 packName/constructionId, 而不是蓝图存的旧 packName ===
+        String packName = com.prefab.addon.client.gui.CustomStructureGui.getPackNameForBuild();
+        String constructionId = com.prefab.addon.client.gui.CustomStructureGui.getConstructionIdForBuild();
+        if (packName.isEmpty() || constructionId.isEmpty()) {
+            player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
+                    "⚠ 找不到当前预览的建筑信息! 请重新打开蓝图右键")
+                    .withStyle(net.minecraft.ChatFormatting.RED));
+            PrefabCustomAddon.LOGGER.warn("[PREVIEW-BUILD] packName/constructionId 为空, GUI 已关闭");
+            return;
+        }
+
+        // === 挑战模式检查 ===
+        com.prefab.addon.config.PlayerPreferences prefs = com.prefab.addon.config.PlayerPreferences.get();
+        PrefabCustomAddon.LOGGER.info("[PREVIEW-BUILD] ALT build attempt: pack={}/{} consumeMaterials={}",
+            packName, constructionId, prefs.consumeMaterials);
+        if (prefs.consumeMaterials) {
+            // 用 GUI 提供的 packName/constructionId 找 info
+            com.prefab.addon.extension.ConstructionInfo info =
+                com.prefab.addon.extension.ExtensionPackManager.getInstance().findConstruction(packName, constructionId);
+            if (info == null) {
+                player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
+                        "⚠ 找不到建筑: " + constructionId).withStyle(net.minecraft.ChatFormatting.RED));
+                return;
+            }
+            try {
+                com.prefab.addon.work.MaterialCalculator.MaterialList matList =
+                    com.prefab.addon.work.MaterialCalculator.calculate(info.getNbtData());
+                boolean ready = com.prefab.addon.work.ChallengeSessionManager.isReady(
+                    player.getUUID(), constructionId, matList.required);
+                PrefabCustomAddon.LOGGER.info(
+                    "[PREVIEW-BUILD] Material check: ready={} required={} submitted={}",
+                    ready, matList.required,
+                    com.prefab.addon.work.ChallengeSessionManager.getSubmitted(player.getUUID(), constructionId));
+                if (!ready) {
+                    int totalRequired = matList.required.values().stream().mapToInt(Integer::intValue).sum();
+                    int totalSubmitted = com.prefab.addon.work.ChallengeSessionManager.getSubmitted(
+                        player.getUUID(), constructionId).values().stream()
+                        .mapToInt(Integer::intValue).sum();
+                    player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
+                        "⚠ 挑战模式: 已交 " + totalSubmitted + " / " + totalRequired
+                            + " 个材料, 还差 " + (totalRequired - totalSubmitted)
+                            + " 个才能建造 (按 H 键打开提交材料界面)")
+                        .withStyle(net.minecraft.ChatFormatting.RED));
+                    return;
+                }
+            } catch (Throwable t) {
+                PrefabCustomAddon.LOGGER.error("[PREVIEW-BUILD] Material check failed for {}/{}",
+                    packName, constructionId, t);
+                player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
+                    "⚠ 挑战模式材料检查失败, 已阻止建造")
+                    .withStyle(net.minecraft.ChatFormatting.RED));
+                return;
+            }
+        }
+
+        // === 检查背包有蓝图 (没蓝图就直接走服务端消耗, 服务端会自己处理失败) ===
         net.minecraft.world.item.ItemStack blueprint = net.minecraft.world.item.ItemStack.EMPTY;
         for (int i = 0; i < player.getInventory().getContainerSize(); i++) {
             net.minecraft.world.item.ItemStack s = player.getInventory().getItem(i);
@@ -174,24 +317,98 @@ public class StructurePreviewKeyHandler {
             }
         }
         if (blueprint.isEmpty()) {
-            player.sendSystemMessage(net.minecraft.network.chat.Component.literal("No Custom Blueprint in inventory!")
-                    .withStyle(net.minecraft.ChatFormatting.RED));
+            player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
+                    "背包里没有 自定义蓝图 物品!").withStyle(net.minecraft.ChatFormatting.RED));
             return;
         }
-        String packName = com.prefab.addon.items.CustomBlueprintItem.getBoundPackName(blueprint);
-        String constructionId = com.prefab.addon.items.CustomBlueprintItem.getBoundConstructionId(blueprint);
-        if (packName.isEmpty() || constructionId.isEmpty()) {
-            player.sendSystemMessage(net.minecraft.network.chat.Component.literal("Blueprint is not bound!")
-                    .withStyle(net.minecraft.ChatFormatting.RED));
-            return;
-        }
+
+        // 建造完后清空该建筑的提交进度 (挑战模式)
+        com.prefab.addon.work.ChallengeSessionManager.reset(player.getUUID(), constructionId);
 
         PrefabCustomAddon.LOGGER.info("[PREVIEW-BUILD] ALT pressed, sending BuildCustomStructurePayload for {}/{} at {}",
             packName, constructionId, cfg.pos);
 
+        // **关键**: 先发 BindConstructionPayload 让服务端把当前 Construction 绑到玩家背包里
+        // 第一张未锁定的蓝图 (CustomStructureGui.performBuildClick 也加了同样逻辑).
+        // 之前没绑过 → consumeBlueprint 在服务端查不到匹配的 blueprint → 不消耗.
+        // packet 是有序的, 所以服务端会先处理 bind, 再处理 build, 蓝图会正确消耗.
+        com.prefab.addon.network.NetworkHandler.sendToServer(
+            new com.prefab.addon.network.BindConstructionPayload(
+                packName, constructionId, false));
+
         com.prefab.addon.network.NetworkHandler.sendToServer(
             new com.prefab.addon.network.BuildCustomStructurePayload(
-                cfg.pos, packName, constructionId));
+                cfg.pos, packName, constructionId, cfg.houseFacing));
         StructureRenderHandler.setStructure(null, null);
+    }
+
+    /**
+     * ALT 在 prefab 原版建筑预览中按下时, 复用 prefab 自己的 build 流程.
+     * <p>本方法做的事情和 prefab 自带的 {@code GameClientEvents.KeyInput} 一模一样:</p>
+     * <pre>
+     *   new StructureTagMessage(cfg.WriteToCompoundTag(),
+     *                            EnumStructureConfiguration.getByConfigurationInstance(cfg))
+     *   PrefabBase.networkWrapper.sendToServer(ClientToServerTypes.STRUCTURE_BUILD, msg);
+     * </pre>
+     * 服务端 {@code ServerPayloadHandler.structureBuilderHandler} 会读这个 packet 然后
+     * {@code configuration.BuildStructure(serverPlayer, level)} — 跟玩家点 prefab 自己的
+     * "Build" 按钮是完全一致的代码路径.
+     */
+    private static void triggerPrefabOriginalBuild(StructureConfiguration cfg) {
+        if (cfg == null) return;
+        Player player = Minecraft.getInstance().player;
+        if (player == null) return;
+        lastAction = GLFW.GLFW_KEY_LEFT_ALT;
+
+        com.prefab.structures.messages.StructureTagMessage.EnumStructureConfiguration enumConfig =
+            com.prefab.structures.messages.StructureTagMessage.EnumStructureConfiguration
+                .getByConfigurationInstance(cfg);
+        if (enumConfig == null) {
+            player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
+                "⚠ 找不到对应的 prefab EnumStructureConfiguration (类型="
+                    + cfg.getClass().getSimpleName() + ")")
+                .withStyle(net.minecraft.ChatFormatting.RED));
+            PrefabCustomAddon.LOGGER.warn(
+                "[PREVIEW-BUILD] getByConfigurationInstance returned null for class {}",
+                cfg.getClass().getName());
+            return;
+        }
+
+        com.prefab.structures.messages.StructureTagMessage msg =
+            new com.prefab.structures.messages.StructureTagMessage(
+                cfg.WriteToCompoundTag(), enumConfig);
+
+        PrefabCustomAddon.LOGGER.info(
+            "[PREVIEW-BUILD] ALT (prefab original) sending STRUCTURE_BUILD for {} at {} facing {}",
+            enumConfig, cfg.pos, cfg.houseFacing);
+
+        com.prefab.PrefabBase.networkWrapper.sendToServer(
+            com.prefab.network.ClientToServerTypes.STRUCTURE_BUILD, msg);
+
+        // 清预览
+        StructureRenderHandler.setStructure(null, null);
+    }
+
+    /**
+     * prefab 原版建筑预览时, 强制 prefab 重建 previewChunks 缓存.
+     * <p>不调这个, 玩家移动/旋转后 prefab 的 renderer 还在用旧位置的 cached mesh,
+     * 只看到黄色框在动, 实际结构不动.</p>
+     *
+     * <p>实现: {@code setStructure(currentStructure, currentConfiguration)}
+     * 会把 {@code needsRebuild=true} 并清掉 {@code blockModelQuads} 缓存,
+     * 下次 render 时 prefab 会重新跑 {@code rebuildPreviewMeshes}, 用新的 {@code cfg.pos}
+     * 重新计算每个 block 的世界位置.</p>
+     *
+     * <p>副作用: setStructure 也会把 {@code showedMessage} 改回 {@code false},
+     * 下次 render prefab 会再次发 "右击任何方块即可移除预览" / "黄色轮廓是您单击的块"
+     * 两条聊天消息. 我们调完后立即把 {@code showedMessage} 改回 {@code true},
+     * prefab 就不会重复发了 (PrefabChatFilter 也兜底拦截这两条).</p>
+     */
+    private static void triggerPrefabRebuild() {
+        StructureConfiguration cfg = StructureRenderHandler.currentConfiguration;
+        Structure structure = StructureRenderHandler.currentStructure;
+        if (cfg == null || structure == null) return;
+        StructureRenderHandler.setStructure(structure, cfg);
+        StructureRenderHandler.showedMessage = true;
     }
 }
