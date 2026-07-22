@@ -59,34 +59,33 @@ public class StructurePreviewKeyHandler {
             return;
         }
 
-        // 没有正在预览的结构
-        StructureConfiguration cfg = StructureRenderHandler.currentConfiguration;
-        Structure currentStructure = StructureRenderHandler.currentStructure;
+        // === 两种预览都处理: 我们 own 的自定义预览 + prefab 原版预览 ===
+        // 之前改成只读 ADDON 字段 → prefab 原版预览时 ADDON 是 null, KeyHandler return,
+        // 玩家按方向键 / ALT 毫无反应 — 用户反馈"原版蓝图预览方向键/ALT 用不了".
+        // 修复: 优先看 ADDON 字段 (我们的预览), 没有再回退到 prefab.currentStructure (原版预览).
+        Structure currentStructure = com.prefab.addon.client.gui.CustomStructureGui.getAddonPreviewStructure();
+        StructureConfiguration cfg = com.prefab.addon.client.gui.CustomStructureGui.getAddonPreviewConfig();
+        boolean isAddonPreview = (currentStructure != null && cfg != null);
+
+        if (!isAddonPreview) {
+            // 回退到 prefab 原版预览 (玩家用 prefab 的 GuiStructure 预览原版建筑)
+            currentStructure = StructureRenderHandler.currentStructure;
+            cfg = StructureRenderHandler.currentConfiguration;
+        }
+
         if (cfg == null || cfg.pos == null || currentStructure == null) {
-            // 预览已结束 (setStructure(null, null)), 清掉我们自己的来源追踪.
+            // 两种预览都结束 (玩家按了 ALT 建造 / 或 prefab 自己 setStructure(null, null))
             com.prefab.addon.client.gui.CustomStructureGui.clearAddonPreviewFlag();
             // 通知标记也清掉, 下次 prefab 原版预览时还能再发.
             addonPreviewNoticeStructureHash = 0;
             return;
         }
 
-        // packName/constructionId 不在这里取 — ALT 那个分支单独取 (line 267-268).
-        // 这里只判预览来源, 跟 packName 无关.
-        // isCurrentPreviewStartedByAddon() 用 atomicReference 记下我们 setStructure 时的
-        // structure 引用, 跟 prefab.currentStructure == 比对, prefab 自己 setStructure
-        // 之后引用必变, 自动识别为"原版预览".
-        boolean isAddonPreview = com.prefab.addon.client.gui.CustomStructureGui.isCurrentPreviewStartedByAddon();
-        // **关键**: isPrefabOriginalPreview 不要再加 (packName.isEmpty()||constructionId.isEmpty()) 条件.
-        // 之前 (line 90) 是: !isAddonPreview && (packName.isEmpty()||constructionId.isEmpty())
-        // 跟 ALT 那个分支 (line 205) 的判断不一致 → 玩家先打开我们的 GUI 改过一个自定义建筑
-        // (currentConstruction 被缓存, packName/constructionId 不空), 然后再去开 prefab 的
-        // GuiStructure 预览原版建筑, 此时:
-        //   - isAddonPreview = false (currentStructure 引用换了)
-        //   - packName.isEmpty() = false (currentConstruction 还残留)
-        //   - isPrefabOriginalPreview = false  ← 错!
-        // → 移动/旋转**不会**调 triggerPrefabRebuild, prefab 的 previewChunks 不重建,
-        // 玩家看着预览卡在初始位置, 按键毫无反应 — 这就是用户反馈的"原版建筑预览又无法移动".
-        // 修: 用 !isAddonPreview 单独判断, 不要碰 packName/constructionId. 跟 ALT 那个分支对齐.
+        // **关键**: isPrefabOriginalPreview 用 !isAddonPreview 单独判断.
+        // 不要加 (packName.isEmpty()||constructionId.isEmpty()) 条件 — 跟 ALT 分支不一致
+        // 会导致玩家先打开我们的 GUI 改过一个自定义建筑 (currentConstruction 缓存, packName 不空),
+        // 然后再去开 prefab 的 GuiStructure 预览原版建筑, isPrefabOriginalPreview 误判 false
+        // → 移动/旋转不调 triggerPrefabRebuild, prefab 的 previewChunks 不重建, 预览卡原位置.
         boolean isPrefabOriginalPreview = !isAddonPreview;
 
         // prefab 原版预览时, 第一次向聊天栏发提示 "由附属模组提供预览"
@@ -160,12 +159,11 @@ public class StructurePreviewKeyHandler {
             // (CustomStructurePreviewRenderer 读 buildBlock.blockPos, 不是 cfg.pos)
             // 必须传 cfg.houseFacing: 用户已经旋转过, 移动后还要保持旋转, 不传会导致预览方块错位.
             com.prefab.addon.structure.CustomStructureBuilder.offsetStructureBlocks(currentStructure, newPos, cfg.houseFacing);
-            // prefab 原版预览: prefab 自己的 StructureRenderHandler.renderStructurePreview
-            // 用的是 previewChunks 缓存 (按 chunk 位置 key), 不调 setStructure 它永远显示旧位置.
-            // 我们调一次 setStructure(currentStructure, cfg) 让 prefab 重建缓存.
-            // 但 setStructure 会把 showedMessage 设回 false → 下次 render prefab 会再次发
-            // "右击任何方块即可移除预览" / "黄色轮廓是您单击的块" 聊天消息.
-            // 调完后立即把 showedMessage 改回 true, 阻止聊天消息.
+            // 我们的自定义预览: prefab 不画 (currentStructure=null 永远 return), 不需要 triggerPrefabRebuild.
+            // 我们的 CustomStructurePreviewRenderer 会自己检测 cfg.pos 变化, 调 AsyncPreviewBatcher
+            // .requestRestart 重新烘焙所有方块, 1-2 tick 内完成, 视觉上无缝.
+            // prefab 原版预览: prefab 自己的 renderer 用 previewChunks cache (按 chunk 位置 key),
+            //   不调 setStructure 重建它永远显示旧位置, 必须 triggerPrefabRebuild.
             if (isPrefabOriginalPreview) {
                 triggerPrefabRebuild();
             }
@@ -184,7 +182,7 @@ public class StructurePreviewKeyHandler {
             // 之前只调 (structure, pos) 不传 houseFacing → blockPos 永远不旋转, 预览的"半旋转"
             // 来自 Prefab 自己的 model rotation, 但我们的 renderer 读 blockPos 还是老位置 → 错位
             com.prefab.addon.structure.CustomStructureBuilder.offsetStructureBlocks(currentStructure, cfg.pos, cfg.houseFacing);
-            // 同上: prefab 原版预览时强制 rebuild
+            // prefab 原版预览: 同移动, 必须 triggerPrefabRebuild 强制 prefab 重建 cache.
             if (isPrefabOriginalPreview) {
                 triggerPrefabRebuild();
             }
@@ -339,7 +337,9 @@ public class StructurePreviewKeyHandler {
         com.prefab.addon.network.NetworkHandler.sendToServer(
             new com.prefab.addon.network.BuildCustomStructurePayload(
                 cfg.pos, packName, constructionId, cfg.houseFacing));
+        // 清预览: prefab 的 currentStructure (no-op, 之前已 null) + 我们 own 的 ADDON_PREVIEW_*
         StructureRenderHandler.setStructure(null, null);
+        com.prefab.addon.client.gui.CustomStructureGui.clearAddonPreviewFlag();
     }
 
     /**
@@ -405,6 +405,9 @@ public class StructurePreviewKeyHandler {
      * prefab 就不会重复发了 (PrefabChatFilter 也兜底拦截这两条).</p>
      */
     private static void triggerPrefabRebuild() {
+        // 关键: prefab 原版预览时, 我们的 ADDON 字段是 null, prefab.currentStructure
+        // 才是真的 structure. triggerPrefabRebuild 强制 prefab 重建 cache 必须用 prefab
+        // 自己的字段. (我们自己的预览时, prefab.currentStructure = null 一直, 调它就是 no-op)
         StructureConfiguration cfg = StructureRenderHandler.currentConfiguration;
         Structure structure = StructureRenderHandler.currentStructure;
         if (cfg == null || structure == null) return;

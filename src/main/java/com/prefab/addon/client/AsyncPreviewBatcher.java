@@ -88,26 +88,37 @@ public final class AsyncPreviewBatcher {
     private AsyncPreviewBatcher() {}
 
     /**
-     * 主线程调用: 切换到新结构时取消旧会话, 启动新会话.
+     * 主线程调用: 切换到新结构时调用, 或确保当前结构的 session 已存在.
+     * <p>
+     * <b>关键: 只有"全新结构"才创建新 session. 同一个 structure 多次调用不会重建.</b><br>
+     * 原因: 玩家移动 / 旋转预览时, KeyHandler 已经调 {@code offsetStructureBlocks}
+     * 把每个 {@code BuildBlock.blockPos} 更新到新位置. 我们 renderer 读
+     * {@code buildBlock.blockPos} 当前值, 跟着走. 烘焙的 quads 是基于 BlockState 的
+     * 跟位置无关, 永久保留即可, 重新烘焙会导致大结构 (4w+ 块) 移动时**闪一下**
+     * (整个建筑瞬间消失再重画) — 这是用户反馈的问题.
+     * </p>
+     * <p>
+     * 旧实现: 每次移动/旋转都 requestRestart 重建 session, 重新读 structure.getBlocks()
+     * (blockPos 已更新) 重新烘焙所有 quads → 大模型猫 (84w 顶点) 一次移动闪 1-2 秒.
+     * </p>
      */
     public static void requestRestart(Structure newStructure) {
         if (newStructure == null) return;
         synchronized (SESSIONS) {
-            if (currentSession != null && currentSession.structure != newStructure) {
-                currentSession.cancelled = true;
-                PrefabCustomAddon.LOGGER.info("[PREVIEW-ASYNC] 取消旧会话 (切换 structure)");
-            }
+            // 1) 已存在这个 structure 的 session → 什么都不做.
+            //    移动/旋转时 KeyHandler 改了 bb.blockPos, 渲染时直接读最新值.
             Session existing = SESSIONS.get(newStructure);
-            if (existing == null) {
-                Session s = new Session(newStructure);
-                SESSIONS.put(newStructure, s);
-                currentSession = s;
-                s.nextBatchDeadlineMs = System.currentTimeMillis();
-                PrefabCustomAddon.LOGGER.info("[PREVIEW-ASYNC] 新会话启动: totalBlocks={}",
-                    s.pending.size());
-            } else {
+            if (existing != null) {
                 currentSession = existing;
+                return;
             }
+
+            // 2) 全新结构 → 创建新 session, 一次性烘焙所有方块 (worker 异步).
+            Session s = new Session(newStructure);
+            SESSIONS.put(newStructure, s);
+            currentSession = s;
+            s.nextBatchDeadlineMs = System.currentTimeMillis();
+            PrefabCustomAddon.LOGGER.info("[PREVIEW-ASYNC] 新会话启动 (新结构): totalBlocks={}", s.pending.size());
         }
     }
 

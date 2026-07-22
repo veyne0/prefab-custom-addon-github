@@ -97,6 +97,20 @@ public class CustomStructureGui {
     private static final java.util.concurrent.atomic.AtomicBoolean
         LAST_ADDON_PREVIEW = new java.util.concurrent.atomic.AtomicBoolean(false);
 
+    // === 当前正在预览的 structure + config (我们 own, 不依赖 prefab 的静态字段) ===
+    // 关键: 之前 CustomStructurePreviewRenderer 和 StructurePreviewKeyHandler 都从
+    //   StructureRenderHandler.currentStructure / currentConfiguration 读,
+    //   但 prefab 自己的 RenderIndicatorMixin 注入的 renderStructurePreview **无条件**
+    //   画 currentStructure (没有"是不是我们 addon 启动的"判断), setStructure 之后 prefab
+    //   也会画一份 → 出现"两个预览".
+    // 解决: 我们的 Renderer / KeyHandler 读 ADDON_PREVIEW_STRUCTURE / ADDON_PREVIEW_CONFIG,
+    //   handlePreviewButtonClick 在 setStructure(structure, cfg) 之后立即 setStructure(null, null)
+    //   把 prefab 的 currentStructure 清掉, prefab 的 renderer 看到 null 就 return, 永远不画 →
+    //   只有我们的 renderer 在画, 1 份预览, 永远不会有"两个".
+    //   ALT 建造时, 我们再 setStructure(null, null) 一次 (清掉我们的) + close GUI 完成.
+    private static volatile com.prefab.structures.base.Structure ADDON_PREVIEW_STRUCTURE = null;
+    private static volatile com.prefab.structures.config.StructureConfiguration ADDON_PREVIEW_CONFIG = null;
+
     // === 增量渲染状态 ===
     private static Scene renderScene;
     private static TrackedDummyWorld renderWorld;
@@ -583,15 +597,24 @@ public class CustomStructureGui {
             renderScene = null;
         }
 
-        // 6) 调用 Prefab 原生 StructureRenderHandler - 进入世界内预览
-        StructureRenderHandler.setStructure(structure, cfg);
-
-        // 标记: 当前预览是由**我们的 GUI** 启动的. StructurePreviewKeyHandler
-        // 拿这个标记判断是"我们的预览"还是"prefab 原版预览" — 仅看
-        // currentConstruction 不行, 因为它是上次编辑的自定义建筑, 即使后来玩家
-        // 打开了 prefab 的 GuiStructure, 这个字段还残留着, 误判为我们的预览.
+        // 6) 关键: 先把引用存到我们自己的静态字段, 然后 setStructure(structure, cfg) 之后
+        //    **立即** setStructure(null, null) 把 prefab 自己的 currentStructure 清掉.
+        //    prefab 的 renderStructurePreview (RenderIndicatorMixin 注入) 无条件画 currentStructure,
+        //    看到 null 就 return → prefab 不画, 只有我们的 CustomStructurePreviewRenderer 画 → 单预览.
+        //    之前: prefab 画一份 + 我们画一份 → "两个预览", 旋转/移动后尤其明显 (我们跟着 cfg.pos
+        //    走, prefab 走自己的 getRelativePosition, 两者对不齐 → 两个独立预览).
+        ADDON_PREVIEW_STRUCTURE = structure;
+        ADDON_PREVIEW_CONFIG = cfg;
         LAST_ADDON_STRUCTURE_REF.set(structure);
         LAST_ADDON_PREVIEW.set(true);
+
+        // 调用 Prefab 原生 StructureRenderHandler - 让 prefab 重建它的 chunk cache (玩家后续移动/旋转用)
+        StructureRenderHandler.setStructure(structure, cfg);
+        // 立刻清掉 prefab 的 currentStructure, 阻止 prefab 自己的 renderer 画这一份
+        StructureRenderHandler.setStructure(null, null);
+        // 注: 我们画用的是 ADDON_PREVIEW_STRUCTURE, 不依赖 prefab 的 currentStructure,
+        //     prefab 的 currentStructure = null 不影响我们. KeyHandler 移动/旋转时直接改
+        //     ADDON_PREVIEW_CONFIG, 不动 prefab 字段.
 
         PrefabCustomAddon.LOGGER.info("[CUSTOM-GUI-V2] Preview: pack={} id={} pos={} facing={} blocks={}",
             currentConstruction.getPack() != null ? currentConstruction.getPack().getName() : "?",
@@ -682,21 +705,41 @@ public class CustomStructureGui {
 
     /**
      * 当前世界中预览的 {@link com.prefab.structures.base.Structure} 是不是由**我们的 GUI** 启动的.
-     * <p>实现: 比较 prefab 公共静态字段
-     * {@link com.prefab.structures.render.StructureRenderHandler#currentStructure} 是不是
-     * 我们上次 {@code setStructure} 时记下的引用. 是 → 我们的预览, 否 → prefab 自己启动的.</p>
      *
-     * <p>为什么不用 {@link #getPackNameForBuild()}: 那个读 {@link #currentConstruction},
-     * 它是上次编辑的自定义建筑缓存, 即使后来玩家打开了 prefab 的 {@code GuiStructure} 预览原版建筑,
-     * 这个字段还残留, 会误判为我们的预览 → 挑战模式被错触发, 移动/旋转走的是错误的 rebuild 路径.</p>
+     * <p>实现: 检查我们 own 的 {@link #ADDON_PREVIEW_STRUCTURE} 是不是非空. 是 → 我们的预览,
+     * 否 → prefab 自己启动的 (玩家在 prefab 的 GuiStructure 里预览原版建筑).</p>
+     *
+     * <p>之前实现: 比较 prefab 的 currentStructure 跟我们记的 LAST_ADDON_STRUCTURE_REF.
+     * 这要求我们 setStructure 之后 prefab 的 currentStructure 跟我们 setStructure 进去的对象
+     * 引用相等. 现在 CustomStructureGui.handlePreviewButtonClick 改成:
+     *   setStructure(structure, cfg) 立即 setStructure(null, null) → prefab.currentStructure 永远 null
+     * 引用比对永远 false → 误判为"原版预览" → ALT 建造走 triggerPrefabOriginalBuild() 走 prefab
+     * 的 build packet, 我们的 custom blueprint 不消耗, 服务端也找不到对应的 construction.</p>
+     *
+     * <p>现在: 读我们 own 的 ADDON_PREVIEW_STRUCTURE, 我们启动预览时它是 structure,
+     * 我们 setStructure(null, null) 之后清空 (clearAddonPreviewFlag) 时它是 null.</p>
      */
     public static boolean isCurrentPreviewStartedByAddon() {
-        com.prefab.structures.base.Structure prefabCurrent =
-            com.prefab.structures.render.StructureRenderHandler.currentStructure;
-        if (prefabCurrent == null) return false;
-        if (!LAST_ADDON_PREVIEW.get()) return false;
-        com.prefab.structures.base.Structure ref = LAST_ADDON_STRUCTURE_REF.get();
-        return ref == prefabCurrent;
+        return ADDON_PREVIEW_STRUCTURE != null;
+    }
+
+    /**
+     * 当前正在预览的 structure (我们 own).
+     * <p>CustomStructurePreviewRenderer 和 StructurePreviewKeyHandler 用这个引用,
+     * 而不是 prefab 的 {@code StructureRenderHandler.currentStructure}.
+     * 因为 prefab 自己的 renderer 也会画 currentStructure, 不读这个字段的话
+     * prefab 也会画一份 → "两个预览".</p>
+     */
+    public static com.prefab.structures.base.Structure getAddonPreviewStructure() {
+        return ADDON_PREVIEW_STRUCTURE;
+    }
+
+    /**
+     * 当前正在预览的 config (我们 own). KeyHandler 移动/旋转时改的是这个引用,
+     * 不要去碰 prefab 的 currentConfiguration.
+     */
+    public static com.prefab.structures.config.StructureConfiguration getAddonPreviewConfig() {
+        return ADDON_PREVIEW_CONFIG;
     }
 
     /**
@@ -706,6 +749,8 @@ public class CustomStructureGui {
     public static void clearAddonPreviewFlag() {
         LAST_ADDON_PREVIEW.set(false);
         LAST_ADDON_STRUCTURE_REF.set(null);
+        ADDON_PREVIEW_STRUCTURE = null;
+        ADDON_PREVIEW_CONFIG = null;
     }
 
     private static boolean hasBlueprintInInventory() {

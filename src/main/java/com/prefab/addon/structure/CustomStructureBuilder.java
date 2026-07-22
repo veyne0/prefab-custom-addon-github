@@ -154,8 +154,6 @@ public class CustomStructureBuilder {
         }
         for (int i = 0; i < blockList.size(); i++) {
             CompoundTag blockTag = blockList.getCompound(i);
-            int stateIndex = blockTag.getInt("state");
-            if (stateIndex < 0 || stateIndex >= paletteStates.length) continue;
             int bx, by, bz;
             Tag posTag = blockTag.get("pos");
             if (posTag instanceof ListTag posList && posList.size() == 3) {
@@ -174,7 +172,8 @@ public class CustomStructureBuilder {
             } else {
                 continue;
             }
-            BlockState state = paletteStates[stateIndex];
+            // 兼容 1.21.1+ vanilla 格式: state 可能是 CompoundTag {Name, Properties?}, 也可能是 int palette index
+            BlockState state = readBlockStateFromBlockTag(blockTag, paletteStates);
             if (state == null || state.isAir()) continue;
             blocks.add(new BlockData(new BlockPos(bx, by, bz), state));
         }
@@ -269,7 +268,6 @@ public class CustomStructureBuilder {
         int skippedAir = 0, skippedPos = 0, skippedIndex = 0, skippedPosType = 0, added = 0;
         for (int i = 0; i < blockList.size(); i++) {
             CompoundTag blockTag = blockList.getCompound(i);
-            int stateIndex = blockTag.getInt("state");
 
             int bx, by, bz;
             if (blockTag.contains("pos", Tag.TAG_LIST)) {
@@ -307,10 +305,10 @@ public class CustomStructureBuilder {
                 skippedPos++; continue;
             }
 
-            if (stateIndex < 0 || stateIndex >= paletteStates.length) { skippedIndex++; continue; }
-
-            BlockState state = paletteStates[stateIndex];
-            if (state == null || state.isAir()) { skippedAir++; continue; } // 跳过空气
+            // 兼容 1.21.1+ vanilla 格式: state 可能是 CompoundTag {Name, Properties?}, 也可能是 int palette index
+            BlockState state = readBlockStateFromBlockTag(blockTag, paletteStates);
+            if (state == null) { skippedIndex++; continue; }
+            if (state.isAir()) { skippedAir++; continue; } // 跳过空气
 
             blocks.add(new BlockData(new BlockPos(bx, by, bz), state));
             added++;
@@ -381,6 +379,38 @@ public class CustomStructureBuilder {
             PrefabCustomAddon.LOGGER.error("readBlockState exception for tag={}", tag, e);
             return Blocks.AIR.defaultBlockState();
         }
+    }
+
+    /**
+     * 从一个 block tag 解析出 BlockState.
+     * 兼容两种 vanilla structure NBT 格式:
+     * <ul>
+     *   <li>1.21+ 标准: {@code state: CompoundTag {Name, Properties?}} — 直接调 readBlockState</li>
+     *   <li>Litematica 风格: {@code state: int} — 当成 palette 索引查 paletteStates 数组</li>
+     * </ul>
+     * 解析失败 (state 字段缺失 / 类型未知 / 索引越界) 返回 null.
+     */
+    private static BlockState readBlockStateFromBlockTag(CompoundTag blockTag, BlockState[] paletteStates) {
+        // 先看 state 字段是什么类型
+        if (blockTag.contains("state", Tag.TAG_COMPOUND)) {
+            // 1.21+ 标准格式: state 是 CompoundTag
+            return readBlockState(blockTag.getCompound("state"));
+        }
+        if (blockTag.contains("state", Tag.TAG_INT)) {
+            // Litematica 风格: state 是 int palette index
+            int stateIndex = blockTag.getInt("state");
+            if (stateIndex < 0 || stateIndex >= paletteStates.length) return null;
+            return paletteStates[stateIndex];
+        }
+        // 兜底: 有些工具写 state 为 0 (无 palette 索引含义), 我们把 palette[0] 当作 fallback
+        // 但仅当 state 字段确实存在 (只是类型不是 INT 也不是 COMPOUND, 比如是 BYTE)
+        if (blockTag.contains("state")) {
+            try {
+                int stateIndex = blockTag.getInt("state");
+                if (stateIndex >= 0 && stateIndex < paletteStates.length) return paletteStates[stateIndex];
+            } catch (Throwable ignored) {}
+        }
+        return null;
     }
 
     @SuppressWarnings("unchecked")
@@ -796,16 +826,17 @@ public class CustomStructureBuilder {
                 }
                 skippedPos++; continue;
             }
-            int stateIndex = blockTag.getInt("state");
-            if (stateIndex < 0 || stateIndex >= paletteStates.length) { skippedIndex++; continue; }
-            BlockState state = paletteStates[stateIndex];
-            if (state == null || state.isAir()) { skippedAir++; continue; }
+            // **关键**: 同时支持 1.21+ 标准 (state 是 CompoundTag{Name, Properties?})
+            //       和 Litematica 风格 (state 是 int palette index) — OBJ 转换产物是前一种
+            BlockState state = readBlockStateFromBlockTag(blockTag, paletteStates);
+            if (state == null) { skippedIndex++; continue; }
+            if (state.isAir()) { skippedAir++; continue; }
 
             // 调试: 前 3 个 block 完整日志
             if (debugLoggedBlocks < 3) {
                 debugLoggedBlocks++;
-                PrefabCustomAddon.LOGGER.info("[parseToPrefabStructure] block #{} OK: pos=({},{},{}), stateIndex={}, state={}",
-                        i, bx, by, bz, stateIndex, state);
+                PrefabCustomAddon.LOGGER.info("[parseToPrefabStructure] block #{} OK: pos=({},{},{}), state={}",
+                        i, bx, by, bz, state);
             }
 
             // 4.1 创建一个新的 BuildBlock 并设置资源位置

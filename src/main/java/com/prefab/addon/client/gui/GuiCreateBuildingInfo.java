@@ -17,6 +17,7 @@ import com.lowdragmc.lowdraglib2.gui.ui.event.UIEvents;
 import com.lowdragmc.lowdraglib2.gui.ui.style.StylesheetManager;
 import com.lowdragmc.lowdraglib2.gui.ui.styletemplate.Sprites;
 import com.prefab.addon.PrefabCustomAddon;
+import com.prefab.addon.extension.ObjToSchematicConverter;
 import com.prefab.addon.work.NbtFormatConverter;
 import com.prefab.addon.work.NbtStructureParser;
 import com.prefab.addon.work.PackCreator;
@@ -142,6 +143,18 @@ public final class GuiCreateBuildingInfo {
         Minecraft.getInstance().setScreen(new ModularUIScreen(ui, Component.literal(title)));
     }
 
+    /**
+     * 用当前 static 字段状态重建 UI 并显示.
+     * 用于"在不动用 resetState 的前提下刷新屏幕"的场景 (例如 OBJ 转换后从选项框返回主界面).
+     * 不重置任何字段, 直接基于当前 nbtData/nbtPath/fieldSizeValue/fieldFormatValue/... 重建.
+     */
+    private static void reopenCurrentUI() {
+        String title = (editing == null ? "创建建筑" : "编辑建筑 - " + (editing.id != null ? editing.id : ""))
+            + " (拓展包: " + (currentPackId != null ? currentPackId : "?") + ")";
+        ModularUI ui = createUI();
+        Minecraft.getInstance().setScreen(new ModularUIScreen(ui, Component.literal(title)));
+    }
+
     private static void resetState() {
         currentPackId = null;
         editing = null;
@@ -163,15 +176,20 @@ public final class GuiCreateBuildingInfo {
     private static String safeStr(String s) { return s == null ? "" : s; }
 
     /**
-     * 根据文件名后缀识别蓝图格式 (nbt / litematic / schem / 未知).
+     * 根据文件名后缀识别蓝图格式 (nbt / litematic / schem / obj->schem / 未知).
      * 用于自动填 "蓝图格式" 字段 - 让玩家选完文件就能看到当前建筑是什么格式.
      */
     private static String detectFormatFromFileName(String fileName) {
         if (fileName == null) return "未知";
         String lower = fileName.toLowerCase();
+        // 转换后的 .converted.schem 文件 → 标识为 obj->schem
+        if (lower.contains(".converted.schem") || lower.contains(".converted.schematic")) {
+            return "obj->schem";
+        }
         if (lower.endsWith(".litematic")) return "litematic";
         if (lower.endsWith(".schem") || lower.endsWith(".schematic")) return "schem";
         if (lower.endsWith(".nbt")) return "nbt";
+        if (lower.endsWith(".obj")) return "obj->schem";
         return "未知";
     }
 
@@ -397,12 +415,18 @@ public final class GuiCreateBuildingInfo {
     private static void openNbtChooser() {
         setStatus("正在打开文件选择器...", 0x55AAFF);
         com.prefab.addon.client.gui.SystemFilePicker.openAsync(
-            "选择建筑文件 (NBT / Litematica / Sponge)",
-            java.util.Arrays.asList("nbt", "litematic", "schem", "schematic"),
+            "选择建筑文件 (NBT / Litematica / Sponge / OBJ)",
+            java.util.Arrays.asList("nbt", "litematic", "schem", "schematic", "obj"),
             r -> {
                 Minecraft.getInstance().execute(() -> {
                     if (r.isOk()) {
-                        handleNbtSelected(r.file);
+                        File f = r.file;
+                        // OBJ 文件: 先转成 Schematic (gzip NBT) 再走原 NBT 处理流程
+                        if (f.getName().toLowerCase(java.util.Locale.ROOT).endsWith(".obj")) {
+                            handleObjSelected(f);
+                            return;
+                        }
+                        handleNbtSelected(f);
                     } else if (r.isCancelled()) {
                         setStatus("✗ 已取消", 0x888888);
                     } else {
@@ -410,6 +434,304 @@ public final class GuiCreateBuildingInfo {
                     }
                 });
             });
+    }
+
+    /**
+     * 处理 .obj 文件: 弹一个轻量级选项框让玩家选分辨率 + 实心/空心,
+     * 然后用 ObjToSchematicConverter 转成 vanilla structure NBT (gzip 压缩).
+     */
+    private static void handleObjSelected(File objFile) {
+        // 弹选项框 (4 档分辨率 + 实心/空心切换)
+        showObjOptionsDialog(objFile);
+    }
+
+    /**
+     * OBJ 转换选项弹窗 (LDLib2 ModularUI).
+     * 布局 (220x180):
+     *   - 标题 "OBJ 转换选项"
+     *   - 4 个分辨率按钮: [8] [16] [32] [64] voxels/m (默认 32 高亮)
+     *   - 实心/空心切换 (默认空心)
+     *   - 表面强化复选框 (默认开)
+     *   - 取消 / 转换 按钮
+     */
+    private static void showObjOptionsDialog(File objFile) {
+        // 选项状态
+        final int[] selectedVpm = {32};   // 默认 32 voxels/meter
+        final boolean[] fillSolid = {false}; // 默认空心
+        final boolean[] strengthen = {true}; // 默认开表面强化
+
+        UIElement root = new UIElement();
+        root.layout(l -> l
+            .width(220).height(200)
+            .flexDirection(FlexDirection.COLUMN)
+            .paddingAll(8).gapAll(6)
+        );
+        root.style(s -> s.background(Sprites.BORDER));
+        root.setOverflowVisible(false);
+
+        // 标题
+        Label title = new Label();
+        title.setText("OBJ 转换选项");
+        title.textStyle(t -> t.textAlignHorizontal(Horizontal.CENTER));
+        title.layout(l -> l.widthPercent(100).height(20));
+        root.addChild(title);
+
+        // 提示
+        TextElement hint = new TextElement();
+        hint.setText("文件名: " + objFile.getName());
+        hint.textStyle(t -> t.textColor(0xAAAAAA).textWrap(TextWrap.WRAP));
+        hint.layout(l -> l.widthPercent(100).height(11));
+        root.addChild(hint);
+
+        // 分辨率标签
+        TextElement vpmLabel = new TextElement();
+        vpmLabel.setText("分辨率 (体素/米):");
+        vpmLabel.textStyle(t -> t.textColor(0xFFFFFF));
+        vpmLabel.layout(l -> l.widthPercent(100).height(12));
+        root.addChild(vpmLabel);
+
+        // 4 个分辨率按钮
+        UIElement vpmRow = new UIElement();
+        vpmRow.layout(l -> l
+            .flexDirection(FlexDirection.ROW)
+            .widthPercent(100).height(20)
+            .gapAll(4)
+            .alignItems(AlignItems.CENTER)
+        );
+        root.addChild(vpmRow);
+
+        Button[] vpmBtns = new Button[4];
+        int[] vpmValues = {8, 16, 32, 64};
+        for (int i = 0; i < vpmValues.length; i++) {
+            final int vpm = vpmValues[i];
+            final int idx = i;
+            Button b = new Button();
+            b.setText(String.valueOf(vpm));
+            b.setOnClick(e -> {
+                selectedVpm[0] = vpm;
+                // 刷新按钮高亮 (用 idx 代替循环变量 j, 满足 effectively final)
+                int selectedIdx = idx;
+                for (int j = 0; j < vpmBtns.length; j++) {
+                    final int jj = j;
+                    vpmBtns[jj].textStyle(t -> t.textColor(jj == selectedIdx ? 0xFFFF00 : 0xFFFFFF));
+                }
+            });
+            b.layout(l -> l.flexGrow(1).heightPercent(100));
+            // 默认 32 高亮
+            if (vpm == 32) b.textStyle(t -> t.textColor(0xFFFF00));
+            vpmRow.addChild(b);
+            vpmBtns[i] = b;
+        }
+
+        // 实心/空心切换
+        UIElement solidRow = new UIElement();
+        solidRow.layout(l -> l
+            .flexDirection(FlexDirection.ROW)
+            .widthPercent(100).height(18)
+            .gapAll(4)
+        );
+        root.addChild(solidRow);
+        // 用 Button 数组避免 lambda 循环引用编译错 (Java 不允许前向引用 local 变量)
+        final Button[] solidHollowBtns = new Button[2];
+        solidHollowBtns[0] = new Button(); // 实心
+        solidHollowBtns[1] = new Button(); // 空心
+        solidHollowBtns[0].setText("实心");
+        solidHollowBtns[1].setText("空心 (推荐)");
+        solidHollowBtns[0].setOnClick(e -> {
+            fillSolid[0] = true;
+            solidHollowBtns[0].textStyle(t -> t.textColor(0xFFFF00));
+            solidHollowBtns[1].textStyle(t -> t.textColor(0xFFFFFF));
+        });
+        solidHollowBtns[1].setOnClick(e -> {
+            fillSolid[0] = false;
+            solidHollowBtns[1].textStyle(t -> t.textColor(0xFFFF00));
+            solidHollowBtns[0].textStyle(t -> t.textColor(0xFFFFFF));
+        });
+        solidHollowBtns[1].textStyle(t -> t.textColor(0xFFFF00)); // 默认空心高亮
+        solidHollowBtns[0].layout(l -> l.flexGrow(1).heightPercent(100));
+        solidHollowBtns[1].layout(l -> l.flexGrow(1).heightPercent(100));
+        solidRow.addChild(solidHollowBtns[0]);
+        solidRow.addChild(solidHollowBtns[1]);
+
+        // 表面强化切换
+        UIElement strengthRow = new UIElement();
+        strengthRow.layout(l -> l
+            .flexDirection(FlexDirection.ROW)
+            .widthPercent(100).height(18)
+            .gapAll(4)
+        );
+        root.addChild(strengthRow);
+        Button btnStrengthOn = new Button();
+        btnStrengthOn.setText("表面强化 ✓");
+        btnStrengthOn.setOnClick(e -> {
+            strengthen[0] = !strengthen[0];
+            btnStrengthOn.textStyle(t -> t.textColor(strengthen[0] ? 0xFFFF00 : 0xFFFFFF));
+            btnStrengthOn.setText(strengthen[0] ? "表面强化 ✓" : "表面强化 ✗");
+        });
+        btnStrengthOn.textStyle(t -> t.textColor(0xFFFF00));
+        btnStrengthOn.layout(l -> l.flexGrow(1).heightPercent(100));
+        strengthRow.addChild(btnStrengthOn);
+
+        // 按钮行
+        UIElement buttonRow = new UIElement();
+        buttonRow.layout(l -> l
+            .flexDirection(FlexDirection.ROW)
+            .widthPercent(100).height(22)
+            .gapAll(4)
+        );
+        root.addChild(buttonRow);
+
+        Button btnCancel = new Button();
+        btnCancel.setText("取消");
+        btnCancel.setOnClick(e -> {
+            Minecraft.getInstance().setScreen(null);
+            setStatus("✗ 已取消", 0x888888);
+        });
+        btnCancel.layout(l -> l.flexGrow(1).heightPercent(100));
+        buttonRow.addChild(btnCancel);
+
+        Button btnConvert = new Button();
+        btnConvert.setText("开始转换");
+        btnConvert.setOnClick(e -> {
+            // 关键: 不能 setScreen(null), 否则转换完就回游戏了
+            // 也不能调 GuiCreateBuildingInfo.open() 因为它会 resetState 把刚填的字段清空
+            // 改为: 关闭选项框 + 同步执行转换 + 用 reopenCurrentUI() 重建 UI (保留已填字段)
+            ObjToSchematicConverter.Options opt = new ObjToSchematicConverter.Options();
+            opt.voxelsPerMeter = selectedVpm[0];
+            opt.fillInterior = fillSolid[0];
+            opt.strengthenSurface = strengthen[0];
+
+            // 关闭选项框, 同步执行转换 (runObjConversion 会写入 nbtData/nbtPath/size/format/... 等 static 字段)
+            Minecraft.getInstance().setScreen(null);
+            runObjConversion(objFile, opt);
+
+            // 转换完成后, 用当前 static 状态重建 UI (不重置)
+            reopenCurrentUI();
+        });
+        btnConvert.layout(l -> l.flexGrow(1).heightPercent(100));
+        buttonRow.addChild(btnConvert);
+
+        // 启动 UI
+        Minecraft.getInstance().setScreen(
+            new ModularUIScreen(ModularUI.of(UI.of(root,
+                StylesheetManager.INSTANCE.getStylesheetSafe(StylesheetManager.MC))),
+                Component.literal("OBJ 转换选项"))
+        );
+    }
+
+    /** 工具: 在 vpmValues 里找 vpm 的索引 */
+    private static int findVpmIndex(int[] arr, int v) {
+        for (int i = 0; i < arr.length; i++) if (arr[i] == v) return i;
+        return 0;
+    }
+
+    /**
+     * 实际执行 OBJ → vanilla NBT 转换 + 字段自动填.
+     * 从 showObjOptionsDialog 拿玩家选好的 Options.
+     */
+    private static void runObjConversion(File objFile, ObjToSchematicConverter.Options opt) {
+        try {
+            setStatus(String.format(java.util.Locale.ROOT,
+                "正在转换 OBJ (%d 体素/米, %s)...",
+                opt.voxelsPerMeter, opt.fillInterior ? "实心" : "空心"),
+                0x55AAFF);
+            ObjToSchematicConverter.Result r =
+                ObjToSchematicConverter.convertToSchematic(objFile.toPath(), opt);
+
+            if (r.warnings != null && !r.warnings.isEmpty()) {
+                for (String w : r.warnings) {
+                    PrefabCustomAddon.LOGGER.warn("[OBJ-CONVERT] {}", w);
+                }
+            }
+
+            // 写入临时 .schem 文件
+            File schemTmp = new File(objFile.getParentFile(),
+                stripExt(objFile.getName()) + ".converted.schem");
+            try {
+                Files.write(schemTmp.toPath(), r.schematicBytes);
+            } catch (Exception writeEx) {
+                PrefabCustomAddon.LOGGER.warn("[OBJ-CONVERT] 写入临时文件失败, 使用内存数据", writeEx);
+                schemTmp = null;
+            }
+
+            PrefabCustomAddon.LOGGER.info("[OBJ-CONVERT] {} → {}x{}x{} ({} 方块, {}ms, vpm={}, solid={}, strengthen={})",
+                objFile.getName(), r.width, r.height, r.length, r.blockCount, r.elapsedMs,
+                opt.voxelsPerMeter, opt.fillInterior, opt.strengthenSurface);
+
+            File processTarget = schemTmp != null ? schemTmp
+                : new File(objFile.getParentFile(), stripExt(objFile.getName()) + ".schem");
+            handleConvertedSchematic(r, processTarget);
+        } catch (Throwable t) {
+            PrefabCustomAddon.LOGGER.error("[OBJ-CONVERT] 转换失败", t);
+            setStatus("✗ OBJ 转换失败: " + t.getMessage(), 0xFF5555);
+        }
+    }
+
+    /**
+     * 把 ObjToSchematicConverter 转出来的 vanilla NBT (gzip 压缩) 解压后走原 NBT 解析.
+     * 不走 NbtFormatConverter.toVanilla (因为已经是 vanilla 了), 走 NbtStructureParser.parse
+     * 提取尺寸/方块, 然后字段自动填.
+     */
+    private static void handleConvertedSchematic(ObjToSchematicConverter.Result r, File processTarget) {
+        try {
+            // NbtStructureParser.parse(byte[]) 内部会 detectFormat + 必要时 toVanilla
+            // 这里我们传的 NBT 已经是 vanilla (palette+blocks+size), detectFormat 返回 "vanilla", 不做转换
+            NbtStructureParser.NbtInfo info = NbtStructureParser.parse(r.schematicBytes);
+
+            nbtData = r.schematicBytes;
+            nbtPath = processTarget.getAbsolutePath();
+            nbtInfo = info;
+
+            // 字段自动填
+            String fileName = processTarget.getName();
+            String lower = fileName.toLowerCase(java.util.Locale.ROOT);
+            // OBJ 来源 → 蓝图格式固定为 "obj->schem" (用户要求)
+            String detectedFormat = "obj->schem";
+            fieldFormatValue = detectedFormat;
+            if (formatEl != null) formatEl.setText(detectedFormat);
+            if (lower.endsWith(".schem") || lower.endsWith(".schematic") || lower.endsWith(".nbt")) {
+                if (fieldIdValue.trim().isEmpty()) {
+                    int extLen = lower.endsWith(".schematic") ? ".schematic".length()
+                        : lower.endsWith(".schem") ? ".schem".length()
+                        : ".nbt".length();
+                    fieldIdValue = fileName.substring(0, fileName.length() - extLen);
+                }
+            }
+            if (info.sizeX > 0 || info.sizeY > 0 || info.sizeZ > 0) {
+                fieldSizeValue = info.sizeString();
+                if (sizeEl != null) sizeEl.setText(fieldSizeValue);
+            } else {
+                // 兜底: 用转换结果自带的尺寸 (防止 NbtStructureParser 漏识别)
+                fieldSizeValue = r.width + "x" + r.height + "x" + r.length;
+                if (sizeEl != null) sizeEl.setText(fieldSizeValue);
+            }
+            // meta: OBJ 转换产物没有 metaName/Author/Description, 全清空
+            fieldNameValue = "";
+            if (nameTf != null) nameTf.setText("");
+            fieldAuthorValue = "";
+            if (authorTf != null) authorTf.setText("");
+            fieldDescValue = "";
+            if (descTf != null) descTf.setText("");
+            // 依赖: 仅 prefab
+            fieldDepsValue = "prefab";
+            if (depEl != null) depEl.setText("prefab");
+            if (nbtPathEl != null) {
+                nbtPathEl.setText("NBT: " + truncate(nbtPath, 50));
+                nbtPathEl.textStyle(t -> t.textColor(0x55FF55).textWrap(TextWrap.WRAP));
+            }
+
+            setStatus(String.format(java.util.Locale.ROOT,
+                "✓ OBJ 转换完成 (%dx%dx%d, %d 方块, %dms)",
+                r.width, r.height, r.length, r.blockCount, r.elapsedMs), 0x55FF55);
+        } catch (Throwable t) {
+            PrefabCustomAddon.LOGGER.error("[OBJ-CONVERT] 解析转换结果失败", t);
+            setStatus("✗ 解析失败: " + t.getMessage(), 0xFF5555);
+        }
+    }
+
+    private static String stripExt(String filename) {
+        int dot = filename.lastIndexOf('.');
+        return dot > 0 ? filename.substring(0, dot) : filename;
     }
 
     private static void handleNbtSelected(File f) {

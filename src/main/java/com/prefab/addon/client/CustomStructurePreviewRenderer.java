@@ -70,23 +70,25 @@ public class CustomStructurePreviewRenderer {
     public static void onRenderLevel(RenderLevelStageEvent event) {
         // AFTER_BLOCK_ENTITIES 阶段: 方块实体已画完, 线框不会被方块实体遮挡
         if (event.getStage() != RenderLevelStageEvent.Stage.AFTER_BLOCK_ENTITIES) return;
-        Structure currentStructure = StructureRenderHandler.currentStructure;
-        StructureConfiguration currentConfiguration = StructureRenderHandler.currentConfiguration;
+
+        // 关键: 读我们 own 的 ADDON_PREVIEW_STRUCTURE / ADDON_PREVIEW_CONFIG,
+        // 不是 prefab 的 StructureRenderHandler.currentStructure / currentConfiguration.
+        //
+        // 原因: prefab 自己的 renderStructurePreview (RenderIndicatorMixin 注入) 会
+        //   **无条件**画 prefab 的 currentStructure, 没有"是不是 addon 启动的"判断.
+        //   如果我们读 prefab 的字段, 就需要额外判断 isCurrentPreviewStartedByAddon()
+        //   才能避免 prefab 自己画我们也在画 → "两个预览".
+        //   现在的方案 (CustomStructureGui.handlePreviewButtonClick):
+        //     setStructure(structure, cfg) 立即 setStructure(null, null) 把 prefab 的
+        //     currentStructure 清成 null, prefab 的 renderer 看到 null 就 return, 永远不画
+        //     我们的预览. 我们读 ADDON_PREVIEW_* 字段, 跟 prefab 隔离, 永远只画 1 份.
+        Structure currentStructure =
+            com.prefab.addon.client.gui.CustomStructureGui.getAddonPreviewStructure();
+        StructureConfiguration currentConfiguration =
+            com.prefab.addon.client.gui.CustomStructureGui.getAddonPreviewConfig();
 
         if (currentStructure == null || currentConfiguration == null) return;
         if (currentConfiguration.pos == null) return;
-
-        // **关键**: 只在我们 GUI 启动的预览里画. prefab 原版建筑预览完全交给 prefab 自己的
-        // StructureRenderHandler.renderStructurePreview 处理. 否则会出现"两个预览" ——
-        //   1) prefab 的 renderer 用 cfg.pos + getStartingPosition().getRelativePosition() 计算
-        //      位置, 跟着移动走 (cfg.pos 改了就重算)
-        //   2) 我们的 renderer 读 buildBlock.blockPos, 但 prefab 原版建筑没有 localMap,
-        //      offsetStructureBlocks 早早 return, blockPos 没被更新, 卡在最初始位置
-        // → 一个跟着移动走 (prefab 画的), 一个留在原地 (我们画的) → 移动时一个变两个.
-        // 只在 isCurrentPreviewStartedByAddon()=true 时画, prefab 原版预览直接跳过.
-        if (!com.prefab.addon.client.gui.CustomStructureGui.isCurrentPreviewStartedByAddon()) {
-            return;
-        }
 
         // === 检测结构切换 / 移动 / 旋转: 重置批处理状态 ===
         // 之前只检测 structure 引用变化, 没检测 cfg.pos 变化, 玩家在异步生成过程中移动

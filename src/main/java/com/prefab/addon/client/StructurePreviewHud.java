@@ -38,9 +38,18 @@ public class StructurePreviewHud {
 
     @SubscribeEvent
     public static void onRenderGuiLayer(RenderGuiLayerEvent.Post event) {
-        // 只在预览自定义建筑时显示
-        if (StructureRenderHandler.currentStructure == null
-                || StructureRenderHandler.currentConfiguration == null) {
+        // 只在预览自定义建筑时显示 — 检查我们 own 的 ADDON_PREVIEW_STRUCTURE 字段,
+        // 不要读 prefab 的 currentStructure (自定义预览时我们把它设为 null, 阻止 prefab
+        // 自己的 renderer 画 → prefab.currentStructure==null 时这个 HUD 也不显示, 就
+        // 没有提示信息了). 现在改为读 ADDON_PREVIEW_STRUCTURE, 自定义预览时一定非空.
+        // prefab 原版预览时 (玩家用 prefab 的 GuiStructure 预览原版建筑), 我们这字段是
+        // null, prefab.currentStructure 非空 — prefab 自己的 renderer 会画它自己的
+        // 提示信息 (跟 prefab 原版行为一致), 我们不画 → 不会有重复提示.
+        com.prefab.structures.base.Structure addonStructure =
+            com.prefab.addon.client.gui.CustomStructureGui.getAddonPreviewStructure();
+        com.prefab.structures.config.StructureConfiguration addonConfig =
+            com.prefab.addon.client.gui.CustomStructureGui.getAddonPreviewConfig();
+        if (addonStructure == null || addonConfig == null) {
             return;
         }
 
