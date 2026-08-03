@@ -95,7 +95,8 @@ public class GuiFilePicker {
         GuiFilePicker picker = new GuiFilePicker(initialDir, extensions, callback);
         ModularUI ui = picker.createUI();
         Minecraft.getInstance().setScreen(
-            new ModularUIScreen(ui, Component.literal("Select File")));
+            new ModularUIScreen(ui, Component.literal(PrefabCustomAddon.tr("gui.picker.title",
+                (extensions == null || extensions.length == 0) ? "*" : "*." + String.join(", *.", extensions)))));
     }
 
     private ModularUI createUI() {
@@ -164,7 +165,7 @@ public class GuiFilePicker {
         shortcutRow.addChild(btnHome);
 
         btnDesktop = new Button();
-        btnDesktop.setText(Component.literal("桌面"));
+        btnDesktop.setText(Component.literal(PrefabCustomAddon.tr("gui.picker.desktop")));
         btnDesktop.setOnClick(e -> goHome("Desktop"));
         btnDesktop.layout(l -> l.width(60).height(18));
         shortcutRow.addChild(btnDesktop);
@@ -187,7 +188,7 @@ public class GuiFilePicker {
         shortcutRow.addChild(spacer);
 
         btnUp = new Button();
-        btnUp.setText(Component.literal("↑ 上级"));
+        btnUp.setText(Component.literal(PrefabCustomAddon.tr("gui.picker.up")));
         btnUp.setOnClick(e -> goUp());
         btnUp.layout(l -> l.width(60).height(18));
         shortcutRow.addChild(btnUp);
@@ -242,7 +243,7 @@ public class GuiFilePicker {
         buttonBar.addChild(btnSelect);
 
         btnCancel = new Button();
-        btnCancel.setText(Component.literal("取消"));
+        btnCancel.setText(Component.literal(PrefabCustomAddon.tr("gui.picker.cancel")));
         btnCancel.setOnClick(e -> finish(null));
         btnCancel.layout(l -> l.width(80).height(22));
         buttonBar.addChild(btnCancel);
@@ -306,7 +307,7 @@ public class GuiFilePicker {
                 .justifyContent(AlignContent.CENTER)
             );
             Label emptyLabel = new Label();
-            emptyLabel.setText(Component.literal("(空目录)").withStyle(ChatFormatting.GRAY));
+            emptyLabel.setText(Component.literal(PrefabCustomAddon.tr("gui.picker.empty")).withStyle(ChatFormatting.GRAY));
             emptyLabel.textStyle(t -> t.textAlignHorizontal(Horizontal.CENTER));
             empty.addChild(emptyLabel);
             fileListView.addScrollViewChild(empty);

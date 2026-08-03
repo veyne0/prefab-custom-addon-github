@@ -73,10 +73,12 @@ public class PackCreator {
         public final String size;
         public final String dependencies;
         public final String description;
+        /** 图标 - 物品 id (如 minecraft:stone) 或 "none" / null. 决定蓝图中显示的物品. */
+        public final String icon;
 
         public BuildingWorkInfo(String id, Path nbt, Path png, Path txt,
                                 String name, String author, String size,
-                                String dependencies, String description) {
+                                String dependencies, String description, String icon) {
             this.id = id;
             this.nbt = nbt;
             this.png = png;
@@ -86,6 +88,7 @@ public class PackCreator {
             this.size = size;
             this.dependencies = dependencies;
             this.description = description;
+            this.icon = icon;
         }
     }
 
@@ -189,7 +192,8 @@ public class PackCreator {
             kv.getOrDefault("author", ""),
             kv.getOrDefault("size", ""),
             kv.getOrDefault("dependencies", ""),
-            kv.getOrDefault("description", "")
+            kv.getOrDefault("description", ""),
+            kv.getOrDefault("icon", "")
         );
     }
 
@@ -298,7 +302,7 @@ public class PackCreator {
     public BuildingWorkInfo saveBuilding(String packId, String buildingId,
                                          String name, String author, String size,
                                          String dependencies, String description,
-                                         String format,
+                                         String format, String icon,
                                          byte[] nbtData, byte[] pngData) throws IOException {
         if (buildingId == null || buildingId.isEmpty()) {
             throw new IllegalArgumentException("建筑 ID 不能为空");
@@ -318,7 +322,7 @@ public class PackCreator {
             Files.write(pngPath, pngData);
         }
         Path txtPath = dir.resolve(buildingId + ".txt");
-        String content = buildBuildingInfoText(buildingId, name, author, size, dependencies, description, format);
+        String content = buildBuildingInfoText(buildingId, name, author, size, dependencies, description, format, icon);
         Files.writeString(txtPath, content, StandardCharsets.UTF_8);
 
         // 自动更新父拓展包的依赖 (合并所有建筑的依赖)
@@ -414,7 +418,8 @@ public class PackCreator {
     }
 
     private String buildBuildingInfoText(String id, String name, String author, String size,
-                                         String dependencies, String description, String format) {
+                                         String dependencies, String description, String format,
+                                         String icon) {
         StringBuilder sb = new StringBuilder();
         sb.append("作者:").append(nullSafe(author)).append('\n');
         sb.append("建筑名:").append(nullSafe(name)).append('\n');
@@ -423,6 +428,7 @@ public class PackCreator {
         sb.append("建筑标识符:").append(id).append('\n');
         sb.append("依赖模组:").append(nullSafe(dependencies)).append('\n');
         sb.append("蓝图格式:").append(nullSafe(format)).append('\n');
+        sb.append("图标:").append(nullSafe(icon)).append('\n');
         return sb.toString();
     }
 
@@ -467,6 +473,7 @@ public class PackCreator {
             else if (k.equals("描述") || k.equals("description") || k.equals("desc") || k.equals("说明")) result.put("description", v);
             else if (k.equals("建筑标识符") || k.equals("id")) result.put("id", v);
             else if (k.equals("依赖模组") || k.equals("dependencies") || k.equals("deps")) result.put("dependencies", v);
+            else if (k.equals("图标") || k.equals("icon")) result.put("icon", v);
         }
         return result;
     }

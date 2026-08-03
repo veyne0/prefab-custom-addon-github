@@ -1,6 +1,7 @@
 package com.prefab.addon;
 
 import com.mojang.serialization.MapCodec;
+import com.prefab.addon.cloud.CloudBuildingManager;
 import com.prefab.addon.config.AddonConfig;
 import com.prefab.addon.config.CustomBlueprintRecipeCondition;
 import com.prefab.addon.extension.ExtensionPackManager;
@@ -35,6 +36,19 @@ import org.slf4j.LoggerFactory;
 public class PrefabCustomAddon {
     public static final String MOD_ID = "prefab_custom_addon";
     public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
+
+    /**
+     * i18n helper: 把 lang key + 可变参数 → 渲染好的 String (含 § 颜色码).
+     * lang 文件里直接放 §7xxx 这种带颜色码的字符串即可.
+     * key 缺失时降级为 key 本身 (不崩, 也好排查缺失).
+     */
+    public static String tr(String key, Object... args) {
+        try {
+            return net.minecraft.network.chat.Component.translatable(key, args).getString();
+        } catch (Throwable t) {
+            return key;
+        }
+    }
 
     public static final DeferredRegister.Items ITEMS = DeferredRegister.createItems(MOD_ID);
     // 自定义创造栏（让玩家和 JEI 都能找到我们的自定义蓝图）
@@ -82,6 +96,7 @@ public class PrefabCustomAddon {
         modEventBus.addListener(NetworkHandler::register);
 
         NeoForge.EVENT_BUS.addListener(this::onServerStarting);
+        NeoForge.EVENT_BUS.addListener(this::onServerStopping);
         NeoForge.EVENT_BUS.addListener(this::onPlayerLoggedIn);
         NeoForge.EVENT_BUS.addListener(this::onPlayerLoggedOut);
         NeoForge.EVENT_BUS.addListener(this::onRegisterCommands);
@@ -121,6 +136,17 @@ public class PrefabCustomAddon {
     public void onServerStarting(final ServerStartingEvent event) {
         LOGGER.info("Initializing extension pack manager");
         ExtensionPackManager.getInstance().initialize(event.getServer());
+        // 云端建筑: 注入 server 实例, 后续 saveToDisk 拿 worldDir 拼路径
+        CloudBuildingManager.getInstance().setServer(event.getServer());
+    }
+
+    /** 关服兜底: 全量落盘, 防止断电丢未保存的云端建筑. */
+    public void onServerStopping(final net.neoforged.neoforge.event.server.ServerStoppingEvent event) {
+        try {
+            CloudBuildingManager.getInstance().onServerStopping();
+        } catch (Throwable t) {
+            LOGGER.warn("[CLOUD] onServerStopping failed: {}", t.getMessage());
+        }
     }
 
     /**
@@ -143,9 +169,13 @@ public class PrefabCustomAddon {
             PrefabCustomAddon.LOGGER.info("[BUILD-SPEED] Sent initial build speed {}% to player {}",
                 serverBuildSpeed, sp.getName().getString());
 
+            // 云端建筑: 加载该玩家的存档 + 全量推一份到客户端
+            //   - 联机: 服务端 onPlayerJoin 走 setServer + 读盘 + 推 sync
+            //   - 单机: getInstance() 是同一份, 客户端 cache 在收到 sync 后填充
+            CloudBuildingManager.getInstance().onPlayerJoin(sp);
+
             // === 欢迎消息 (服务端路径, 整合服/专用服的玩家) ===
-            sp.sendSystemMessage(net.minecraft.network.chat.Component.literal(
-                "§a感谢使用 §e\"预制建筑附属\"§a, 按 §fO §a键可以打开本模组的设置界面"));
+            sp.sendSystemMessage(net.minecraft.network.chat.Component.literal(tr("welcome.thanks")));
         }
     }
 
@@ -169,7 +199,7 @@ public class PrefabCustomAddon {
                         int n = com.prefab.addon.extension.ExtensionPackManager.getInstance().reload();
                         ctx.getSource().sendSuccess(
                             () -> net.minecraft.network.chat.Component.literal(
-                                "§a[PrefabAddon] 重新扫描完成, 当前 " + n + " 个拓展包"), true);
+                                tr("sel.pack_rescanned")), true);
                         // 重扫后, 给所有在线玩家重发 manifest (他们会自动拿到新包)
                         for (net.minecraft.server.level.ServerPlayer sp :
                                 ctx.getSource().getServer().getPlayerList().getPlayers()) {

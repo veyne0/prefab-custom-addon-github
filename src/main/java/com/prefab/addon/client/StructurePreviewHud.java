@@ -13,8 +13,14 @@ import net.neoforged.neoforge.client.event.RenderGuiLayerEvent;
 /**
  * 自定义建筑预览期间的屏幕顶部 HUD 操作提示 + 异步生成进度.
  *
- * 只在 StructureRenderHandler.currentStructure 不为 null 时显示，避免干扰其他场景。
- * 文字带半透明背景条，方便在任何天空/地形背景下都看得清。
+ * <p>显示条件 (任一满足即画):</p>
+ * <ul>
+ *   <li>我们 addon 启动的自定义建筑预览 ({@code ADDON_PREVIEW_STRUCTURE != null}) — 我们的 renderer 在画</li>
+ *   <li>玩家在 prefab 的 GuiStructure 里预览原版建筑 ({@code prefab.currentStructure != null}) — prefab 自己在画,
+ *       但因为 KeyHandler 是我们的, 玩家也能用方向键 / CTRL / ALT, 所以 HUD 也要画出来给玩家看快捷键</li>
+ * </ul>
+ *
+ * <p>文字带半透明背景条, 方便在任何天空/地形背景下都看得清.</p>
  */
 @EventBusSubscriber(modid = "prefab_custom_addon", value = Dist.CLIENT)
 public class StructurePreviewHud {
@@ -38,19 +44,29 @@ public class StructurePreviewHud {
 
     @SubscribeEvent
     public static void onRenderGuiLayer(RenderGuiLayerEvent.Post event) {
-        // 只在预览自定义建筑时显示 — 检查我们 own 的 ADDON_PREVIEW_STRUCTURE 字段,
-        // 不要读 prefab 的 currentStructure (自定义预览时我们把它设为 null, 阻止 prefab
-        // 自己的 renderer 画 → prefab.currentStructure==null 时这个 HUD 也不显示, 就
-        // 没有提示信息了). 现在改为读 ADDON_PREVIEW_STRUCTURE, 自定义预览时一定非空.
-        // prefab 原版预览时 (玩家用 prefab 的 GuiStructure 预览原版建筑), 我们这字段是
-        // null, prefab.currentStructure 非空 — prefab 自己的 renderer 会画它自己的
-        // 提示信息 (跟 prefab 原版行为一致), 我们不画 → 不会有重复提示.
+        // 显示条件 (改):
+        //   1) 我们 addon 启动的自定义建筑预览 (ADDON_PREVIEW_STRUCTURE != null)  → 我们的 renderer 在画
+        //   2) 玩家在 prefab 的 GuiStructure 里预览原版建筑 (prefab.currentStructure != null)  → prefab 自己画
+        // 两种情况都显示顶部操作提示, 跟原版 prefab 保持一致 (原版就有一个简单的 "Preview mode: ..." 文字).
+        // 之前逻辑只检查 ADDON_PREVIEW_STRUCTURE, 导致原版预览时 HUD 不显示, 玩家不知道快捷键.
+
         com.prefab.structures.base.Structure addonStructure =
             com.prefab.addon.client.gui.CustomStructureGui.getAddonPreviewStructure();
         com.prefab.structures.config.StructureConfiguration addonConfig =
             com.prefab.addon.client.gui.CustomStructureGui.getAddonPreviewConfig();
-        if (addonStructure == null || addonConfig == null) {
-            return;
+        com.prefab.structures.base.Structure vanillaStructure =
+            com.prefab.structures.render.StructureRenderHandler.currentStructure;
+        com.prefab.structures.config.StructureConfiguration vanillaConfig =
+            com.prefab.structures.render.StructureRenderHandler.currentConfiguration;
+
+        boolean isAddonPreview = addonStructure != null && addonConfig != null;
+        boolean isVanillaPreview = !isAddonPreview
+            && vanillaStructure != null && vanillaConfig != null
+            && com.prefab.PrefabBase.serverConfiguration != null
+            && com.prefab.PrefabBase.serverConfiguration.enableStructurePreview;
+
+        if (!isAddonPreview && !isVanillaPreview) {
+            return;  // 都没有在预览 → 不画 HUD
         }
 
         Minecraft mc = Minecraft.getInstance();
@@ -80,13 +96,12 @@ public class StructurePreviewHud {
             bar.append("§7] §e").append(percent).append("% §7(")
                .append(processed).append("/").append(total).append(")");
             lines = new String[] {
-                "预览模式: 方向键 移动  |  +/- 上下  |  Shift 加速  |  CTRL 旋转  |  ALT 建造  |  右键方块 取消",
-                "§b⏳ 异步生成预览 " + bar
+                com.prefab.addon.PrefabCustomAddon.tr("hud.preview_progress", bar.toString())
             };
             visibleLines = 2;
         } else {
             lines = new String[] {
-                "预览模式: 方向键 移动  |  +/- 上下  |  Shift 加速  |  CTRL 旋转  |  ALT 建造  |  右键方块 取消"
+                com.prefab.addon.PrefabCustomAddon.tr("hud.preview_controls")
             };
             visibleLines = 1;
         }

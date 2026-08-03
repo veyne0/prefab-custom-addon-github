@@ -84,7 +84,7 @@ public final class GuiCreatePackInfo {
         // 拓展包名
         TextField fieldName = new TextField();
         fieldName.setAnyString();
-        fieldName.textFieldStyle(s -> s.placeholder(Component.literal("中文名称")));
+        fieldName.textFieldStyle(s -> s.placeholder(Component.literal(com.prefab.addon.PrefabCustomAddon.tr("gui.create_pack.name_placeholder"))));
 
         // 作者
         TextField fieldAuthor = new TextField();
@@ -169,11 +169,11 @@ public final class GuiCreatePackInfo {
         pngRow.addChild(btnChoosePng);
 
         Button btnClearPng = new Button();
-        btnClearPng.setText(Component.literal("清除"));
+        btnClearPng.setText(Component.literal(com.prefab.addon.PrefabCustomAddon.tr("gui.create_pack.clear")));
         btnClearPng.layout(l -> l.width(50).height(18));
         btnClearPng.setOnClick(e -> {
             state.coverPng = null;
-            state.coverPngPath = "(未选择)";
+            state.coverPngPath = com.prefab.addon.PrefabCustomAddon.tr("gui.create_pack.not_selected");
             pathLabel.setText(Component.literal(state.coverPngPath).withStyle(ChatFormatting.GRAY));
         });
         pngRow.addChild(btnClearPng);
@@ -322,7 +322,7 @@ public final class GuiCreatePackInfo {
 
     /** 用 PowerShell 调 Windows 原生 OpenFileDialog 选 PNG */
     private static void openPngChooser(FormState state, Label pathLabel, Label statusLabel) {
-        setStatus(statusLabel, "正在打开文件选择器...", ChatFormatting.AQUA);
+        setStatus(statusLabel, com.prefab.addon.PrefabCustomAddon.tr("gui.create_pack.opening_picker"), ChatFormatting.AQUA);
         SystemFilePicker.openAsync("选择封面 PNG", "png", r -> {
             if (r.isOk()) {
                 handlePngSelected(state, r.file, pathLabel, statusLabel);

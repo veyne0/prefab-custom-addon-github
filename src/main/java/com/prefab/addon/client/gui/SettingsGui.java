@@ -65,14 +65,14 @@ public final class SettingsGui {
 
         // 标题
         Label title = new Label();
-        title.setText(Component.literal("⚙ Prefab Custom Addon 设置"));
+        title.setText(Component.literal(PrefabCustomAddon.tr("gui.settings.title")));
         title.textStyle(t -> t.textAlignHorizontal(Horizontal.CENTER));
         root.addChild(title);
 
         // 副标题
         Label subtitle = new Label();
         subtitle.setText(
-            Component.literal("挑战模式开启后, 建造需提交材料").withStyle(ChatFormatting.GRAY));
+            Component.literal(PrefabCustomAddon.tr("gui.settings.challenge_hint")).withStyle(ChatFormatting.GRAY));
         subtitle.textStyle(t -> t.textAlignHorizontal(Horizontal.CENTER));
         root.addChild(subtitle);
 
@@ -84,7 +84,7 @@ public final class SettingsGui {
             if (!isOp) {
                 if (mc.player != null) {
                     mc.player.sendSystemMessage(Component.literal(
-                        "[挑战模式] 需要 OP 权限才能切换! (permission level >= 2)")
+                        PrefabCustomAddon.tr("gui.settings.challenge_op_required"))
                         .withStyle(ChatFormatting.RED));
                 }
                 PrefabCustomAddon.LOGGER.warn("[SETTINGS] Non-OP player tried to toggle challenge mode");
@@ -121,7 +121,7 @@ public final class SettingsGui {
             if (!isOp) {
                 if (mc.player != null) {
                     mc.player.sendSystemMessage(Component.literal(
-                        "[建造速度] 需要 OP 权限才能修改! (permission level >= 2)")
+                        PrefabCustomAddon.tr("err.build_speed_op"))
                         .withStyle(ChatFormatting.RED));
                 }
                 PrefabCustomAddon.LOGGER.warn("[SETTINGS] Non-OP player tried to set build speed to {}%, refused", pct);
@@ -151,7 +151,7 @@ public final class SettingsGui {
                 com.prefab.addon.network.ServerPackSyncClient.getInstance().requestResync();
                 if (mc.player != null) {
                     mc.player.sendSystemMessage(Component.literal(
-                        "已发送同步请求, 服务器将在数秒内推送最新拓展包...")
+                        PrefabCustomAddon.tr("gui.settings.sync_requested"))
                         .withStyle(ChatFormatting.AQUA));
                 }
             } catch (Throwable t) {
@@ -165,7 +165,7 @@ public final class SettingsGui {
         root.addChild(syncServerButton);
 
         // === 完成 ===
-        Button doneButton = new Button().setText(Component.literal("✓ 完成"));
+        Button doneButton = new Button().setText(Component.literal(PrefabCustomAddon.tr("gui.settings.done")));
         doneButton.setOnClick(e -> mc.setScreen(null));
         root.addChild(doneButton);
 
@@ -177,14 +177,14 @@ public final class SettingsGui {
     }
 
     private static Component challengeButtonText(boolean consume, boolean isOp) {
-        String status = consume ? "✓ 开启" : "✗ 关闭";
-        String opHint = isOp ? "" : "  §c(需OP)";
+        String status = consume ? "✓ ON" : "✗ OFF";
+        String opHint = isOp ? "" : "  §c(OP only)";
         // 全服生效 + OP 权限 这两条是关键提示, 直接钉在按钮文字后面, 玩家一眼能看到.
-        return Component.literal("挑战模式 (消耗材料, 全服生效, 须OP权限): " + status + opHint);
+        return Component.literal(PrefabCustomAddon.tr("gui.settings.challenge_label", status, opHint));
     }
 
     private static Component buildLabelText(int pct, boolean isOp) {
-        String opHint = isOp ? "" : "  §c(需OP)";
-        return Component.literal("建造放置速度 §7(全服共享, 需OP) §e" + pct + "% §8(1%≈50s, 10%≈5s)" + opHint);
+        String opHint = isOp ? "" : "  §c(OP only)";
+        return Component.literal(PrefabCustomAddon.tr("gui.settings.speed_label", pct, opHint));
     }
 }

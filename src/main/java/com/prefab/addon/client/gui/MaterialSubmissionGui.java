@@ -82,7 +82,7 @@ public final class MaterialSubmissionGui {
         state.rows = computeRows(state);
 
         ModularUI ui = buildUI(state);
-        String title = "提交材料 - " + construction.getName();
+        String title = com.prefab.addon.PrefabCustomAddon.tr("gui.material.title", construction.getName());
         Minecraft.getInstance().setScreen(new ModularUIScreen(ui, Component.literal(title)));
     }
 
@@ -211,7 +211,7 @@ public final class MaterialSubmissionGui {
         List<MaterialRow> pageRows = getPageRows(state);
         if (pageRows.isEmpty()) {
             TextElement empty = new TextElement();
-            empty.setText("此建筑不需要材料");
+            empty.setText(com.prefab.addon.PrefabCustomAddon.tr("gui.material.empty"));
             empty.textStyle(t -> t.textColor(0xFF888888).textAlignHorizontal(Horizontal.CENTER));
             empty.layout(l -> l.widthPercent(100).height(60).justifyContent(AlignContent.CENTER));
             state.cardContainer.addChild(empty);
@@ -230,10 +230,11 @@ public final class MaterialSubmissionGui {
         int to = Math.min((state.currentPage + 1) * CARDS_PER_PAGE, totalCards);
         String text;
         if (totalCards == 0) {
-            text = "第 0 / 0 页";
+            text = com.prefab.addon.PrefabCustomAddon.tr("gui.material.page_info_empty");
         } else {
-            text = "第 " + (state.currentPage + 1) + " / " + totalPages
-                + " 页  (" + from + "-" + to + " / " + totalCards + ")";
+            text = String.format(java.util.Locale.ROOT,
+                com.prefab.addon.PrefabCustomAddon.tr("gui.material.page_info"),
+                state.currentPage + 1, totalPages, from, to, totalCards);
         }
         state.pageInfoEl.setText(Component.literal(text));
     }
@@ -245,9 +246,14 @@ public final class MaterialSubmissionGui {
         int totalRemaining = state.rows.stream().mapToInt(r -> r.remaining).sum();
         int totalTypes = state.rows.size();
         int typesComplete = (int) state.rows.stream().filter(r -> r.remaining == 0).count();
-        String line = "总进度: " + totalSubmitted + " / " + totalRequired
-            + "   种类: " + typesComplete + " / " + totalTypes
-            + (totalRemaining == 0 ? "   ✓ 已交齐" : "   ✗ 还差 " + totalRemaining + " 个");
+        String suffix = totalRemaining == 0
+            ? com.prefab.addon.PrefabCustomAddon.tr("gui.material.progress_done")
+            : String.format(java.util.Locale.ROOT,
+                com.prefab.addon.PrefabCustomAddon.tr("gui.material.progress_remain"),
+                totalRemaining);
+        String line = String.format(java.util.Locale.ROOT,
+            com.prefab.addon.PrefabCustomAddon.tr("gui.material.progress_line"),
+            totalSubmitted, totalRequired, typesComplete, totalTypes, suffix);
         int color = totalRemaining == 0 ? 0xFF55FF55 : 0xFFFFAA55;
         state.progressEl.setText(Component.literal(line));
         state.progressEl.textStyle(t -> t.textColor(color));
@@ -310,15 +316,18 @@ public final class MaterialSubmissionGui {
         );
         // 提交按钮 (左) - 永远可点, 没材料时 onSubmitSingle 显示提示
         Button submitBtn = new Button();
-        submitBtn.setText("提交");
+        submitBtn.setText(com.prefab.addon.PrefabCustomAddon.tr("gui.material.submit_btn"));
         submitBtn.textStyle(t -> t.textColor(0xFF55FF55).textAlignHorizontal(Horizontal.CENTER));
         submitBtn.layout(l -> l.width(28).height(16));
         submitBtn.setOnClick(e -> onSubmitSingle(state, row));
         bottom.addChild(submitBtn);
 
         // 还差X (右, 弹性占满)
-        String remainText = row.remaining == 0 ? "✓ 已交齐"
-            : ("还差 " + row.remaining);
+        String remainText = row.remaining == 0
+            ? com.prefab.addon.PrefabCustomAddon.tr("gui.material.remain_done_short")
+            : String.format(java.util.Locale.ROOT,
+                com.prefab.addon.PrefabCustomAddon.tr("gui.material.remain_short"),
+                row.remaining);
         TextElement remainEl = new TextElement();
         remainEl.setText(Component.literal(remainText));
         remainEl.textStyle(t -> t
@@ -341,7 +350,9 @@ public final class MaterialSubmissionGui {
         Map<String, Integer> invCounts = countSingleInInventory(state.player, row.blockId);
         int toSubmit = Math.min(invCounts.getOrDefault(row.blockId, 0), row.remaining);
         if (toSubmit <= 0) {
-            setStatus(state, "✗ 背包里没有 " + resolveDisplayName(row) + " 可提交", 0xFF5555, 60);
+            setStatus(state, String.format(java.util.Locale.ROOT,
+                com.prefab.addon.PrefabCustomAddon.tr("gui.material.no_inventory_single"),
+                resolveDisplayName(row)), 0xFF5555, 60);
             return;
         }
         // 真正扣除: 直接调 ChallengeSessionManager 的内部逻辑 — 走 submit() 但 single-key
@@ -353,7 +364,9 @@ public final class MaterialSubmissionGui {
         deductFromInventory(state.player, row.blockId, toSubmit);
         // 持久化
         ChallengeSessionManager.saveToDisk(state.playerId);
-        setStatus(state, "✓ 已提交 " + toSubmit + " 个 " + resolveDisplayName(row), 0xFF55FF55, 60);
+        setStatus(state, String.format(java.util.Locale.ROOT,
+            com.prefab.addon.PrefabCustomAddon.tr("gui.material.submitted_single"),
+            toSubmit, resolveDisplayName(row)), 0xFF55FF55, 60);
         PrefabCustomAddon.LOGGER.info("[SUBMIT-GUI] 玩家 {} 提交建筑 {} 的材料 {} x{}",
             state.playerId, state.construction.getId(), row.blockId, toSubmit);
         refreshAll(state);
@@ -364,13 +377,15 @@ public final class MaterialSubmissionGui {
         var r = ChallengeSessionManager.submit(state.player.getInventory(),
             state.construction.getId(), state.materialList.required);
         if (r.thisRoundDeducted == 0) {
-            setStatus(state, "✗ 背包里没有可提交的材料", 0xFF5555, 80);
+            setStatus(state, com.prefab.addon.PrefabCustomAddon.tr("gui.material.nothing_to_submit"), 0xFF5555, 80);
             return;
         }
         if (r.allDone) {
-            setStatus(state, "✓ 全部材料已交齐! 现在可以建造", 0xFF55FF55, 100);
+            setStatus(state, com.prefab.addon.PrefabCustomAddon.tr("gui.material.all_done"), 0x55FF55, 100);
         } else {
-            setStatus(state, r.getSummary() + "  (可继续打开提交剩余)", 0xFFFFAA55, 100);
+            setStatus(state, String.format(java.util.Locale.ROOT,
+                com.prefab.addon.PrefabCustomAddon.tr("gui.material.partial_hint"),
+                r.getSummary()), 0xFFFFAA55, 100);
         }
         refreshAll(state);
     }
@@ -378,7 +393,7 @@ public final class MaterialSubmissionGui {
     // === 重置 ===
     private static void onReset(State state) {
         ChallengeSessionManager.reset(state.playerId, state.construction.getId());
-        setStatus(state, "↺ 已重置提交进度", 0xFFFFAA55, 60);
+        setStatus(state, com.prefab.addon.PrefabCustomAddon.tr("gui.material.reset_done"), 0xFFFFAA55, 60);
         PrefabCustomAddon.LOGGER.info("[SUBMIT-GUI] 玩家 {} 重置建筑 {} 的提交进度",
             state.playerId, state.construction.getId());
         refreshAll(state);
@@ -408,7 +423,7 @@ public final class MaterialSubmissionGui {
 
         // === 标题 ===
         TextElement titleEl = new TextElement();
-        titleEl.setText("§l提交材料 - " + state.construction.getName());
+        titleEl.setText(com.prefab.addon.PrefabCustomAddon.tr("gui.material.title", state.construction.getName()));
         titleEl.textStyle(t -> t.textColor(0xFF55FFFF).textAlignHorizontal(Horizontal.CENTER));
         titleEl.layout(l -> l.widthPercent(100).height(14));
         root.addChild(titleEl);
@@ -464,7 +479,7 @@ public final class MaterialSubmissionGui {
             .alignItems(AlignItems.CENTER)
         );
         Button btnPrev = new Button();
-        btnPrev.setText("◀ 上一页");
+        btnPrev.setText(com.prefab.addon.PrefabCustomAddon.tr("gui.material.prev_short"));
         btnPrev.textStyle(t -> t.textColor(0xFFFFFFFF));
         btnPrev.layout(l -> l.width(76).heightPercent(100));
         btnPrev.setOnClick(e -> {
@@ -493,7 +508,7 @@ public final class MaterialSubmissionGui {
         pageRow.addChild(pageSpacer2);
 
         Button btnNext = new Button();
-        btnNext.setText("下一页 ▶");
+        btnNext.setText(com.prefab.addon.PrefabCustomAddon.tr("gui.material.next"));
         btnNext.textStyle(t -> t.textColor(0xFFFFFFFF));
         btnNext.layout(l -> l.width(76).heightPercent(100));
         btnNext.setOnClick(e -> {
@@ -525,14 +540,14 @@ public final class MaterialSubmissionGui {
         );
 
         Button btnSubmitAll = new Button();
-        btnSubmitAll.setText("✓ 全部提交");
+        btnSubmitAll.setText(com.prefab.addon.PrefabCustomAddon.tr("gui.material.submit_all"));
         btnSubmitAll.textStyle(t -> t.textColor(0xFF55FF55));
         btnSubmitAll.layout(l -> l.width(110).heightPercent(100));
         btnSubmitAll.setOnClick(e -> onSubmitAll(state));
         btnRow.addChild(btnSubmitAll);
 
         Button btnReset = new Button();
-        btnReset.setText("↺ 重置");
+        btnReset.setText(com.prefab.addon.PrefabCustomAddon.tr("gui.material.reset_short"));
         btnReset.textStyle(t -> t.textColor(0xFFFFAA55));
         btnReset.layout(l -> l.width(80).heightPercent(100));
         btnReset.setOnClick(e -> onReset(state));
@@ -544,7 +559,7 @@ public final class MaterialSubmissionGui {
         btnRow.addChild(spacer);
 
         Button btnClose = new Button();
-        btnClose.setText("✗ 关闭");
+        btnClose.setText(com.prefab.addon.PrefabCustomAddon.tr("gui.material.close_short"));
         btnClose.layout(l -> l.width(80).heightPercent(100));
         btnClose.setOnClick(e -> {
             // 关键: 关闭时放回上一级界面 (一般是 CustomStructureGui),
@@ -610,21 +625,14 @@ public final class MaterialSubmissionGui {
         int colon = blockId.indexOf(':');
         if (colon < 0) return null;
         String ns = blockId.substring(0, colon);
-        return switch (ns) {
-            case "minecraft" -> "原版";
-            case "create" -> "机械动力";
-            case "simulated", "aeronautics" -> "航空学";
-            case "offroad" -> "越野";
-            case "createaddition" -> "CA";
-            case "create_centralized_kitchen" -> "CCK";
-            case "createplus" -> "CP";
-            case "ponder" -> "Ponder";
-            case "flywheel" -> "Flywheel";
-            case "jei" -> "JEI";
-            case "prefab" -> "预制建筑";
-            case "architectury" -> "Arch";
-            default -> ns;
-        };
+        // 用翻译键查 mod 显示名: 已知 mod 用本地化名, 未知 mod 直接返回 modId
+        String key = "gui.material.mod." + ns;
+        String translated = com.prefab.addon.PrefabCustomAddon.tr(key);
+        // tr() 在 key 缺失时返回 key 本身, 此时用 ns 作为 fallback
+        if (translated == null || translated.isEmpty() || translated.equals(key)) {
+            return ns;
+        }
+        return translated;
     }
 
     // === 工具: 背包里数某 blockId 的数量 ===

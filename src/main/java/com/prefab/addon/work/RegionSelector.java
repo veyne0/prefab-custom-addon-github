@@ -35,6 +35,8 @@ public class RegionSelector {
         public BlockPos pos2 = null;  // 右键
         public OnCompleted callback;
         public long startTick;
+        /** 按住 SHIFT 时为 true, 临时解锁挖方块/用物品. */
+        public boolean tempUnlocked = false;
 
         public SelectionState(UUID id, OnCompleted cb) {
             this.playerId = id;
@@ -73,7 +75,7 @@ public class RegionSelector {
         ACTIVE.put(player.getUUID(), new SelectionState(player.getUUID(), callback));
         if (player instanceof net.minecraft.client.player.LocalPlayer) {
             player.sendSystemMessage(Component.literal(
-                "§a[选择模式] §7左键选角点 1, 右键选角点 2 §a(选完后按 §eALT §a确认, §eCTRL §a取消)"));
+                "§a[选择模式] §7左键=角点1, 右键=角点2, ALT=确认, CTRL=取消 §a(按住 §eSHIFT§a 临时解锁挖方块)"));
         }
         PrefabCustomAddon.LOGGER.info("[REGION-SELECT] Started selection for {}", player.getName().getString());
     }
@@ -86,11 +88,20 @@ public class RegionSelector {
         return ACTIVE.get(player.getUUID());
     }
 
+    /**
+     * 玩家当前是否处于"临时解锁"状态 (按住 SHIFT).
+     * 未在选区模式时也返回 false.
+     */
+    public static boolean isTempUnlocked(Player player) {
+        SelectionState st = ACTIVE.get(player.getUUID());
+        return st != null && st.tempUnlocked;
+    }
+
     public static void cancel(Player player) {
         SelectionState st = ACTIVE.remove(player.getUUID());
         if (st != null && st.callback != null) {
             st.callback.onCancelled();
-            player.sendSystemMessage(Component.literal("§c[选择模式] §7已取消"));
+            player.sendSystemMessage(Component.literal(PrefabCustomAddon.tr("sel.cancelled")));
         }
     }
 
@@ -99,13 +110,14 @@ public class RegionSelector {
         if (st == null) return;
         st.pos1 = pos.immutable();
         if (st.bothSelected()) {
+            // 不使用预制字符串, 走 corner1 + 角点 2
             player.sendSystemMessage(Component.literal(
-                "§a[选择模式] §7角点 1: §f" + formatPos(pos)
+                PrefabCustomAddon.tr("sel.corner1", formatPos(pos))
                     + " §7| 角点 2: §f" + formatPos(st.pos2)
                     + " §a(按 ALT 确认导出)"));
         } else {
             player.sendSystemMessage(Component.literal(
-                "§a[选择模式] §7角点 1: §f" + formatPos(pos) + " §7(右键选角点 2)"));
+                PrefabCustomAddon.tr("sel.corner1_next", formatPos(pos))));
         }
     }
 
@@ -115,12 +127,12 @@ public class RegionSelector {
         st.pos2 = pos.immutable();
         if (st.bothSelected()) {
             player.sendSystemMessage(Component.literal(
-                "§a[选择模式] §7角点 2: §f" + formatPos(pos)
+                PrefabCustomAddon.tr("sel.corner2", formatPos(pos))
                     + " §7| 角点 1: §f" + formatPos(st.pos1)
                     + " §a(按 ALT 确认导出)"));
         } else {
             player.sendSystemMessage(Component.literal(
-                "§a[选择模式] §7角点 2: §f" + formatPos(pos) + " §7(左键选角点 1)"));
+                PrefabCustomAddon.tr("sel.corner2_next", formatPos(pos))));
         }
     }
 
@@ -131,12 +143,10 @@ public class RegionSelector {
         SelectionState st = ACTIVE.get(player.getUUID());
         if (st == null) return;
         if (!st.bothSelected()) {
-            player.sendSystemMessage(Component.literal(
-                "§e[选择模式] §7请先选好两个角点 (左键 + 右键) 再按 ALT 确认"));
+            player.sendSystemMessage(Component.literal(PrefabCustomAddon.tr("sel.need_both")));
             return;
         }
-        player.sendSystemMessage(Component.literal(
-            "§a[选择模式] §7两个角点都选好了, 开始导出 NBT..."));
+        player.sendSystemMessage(Component.literal(PrefabCustomAddon.tr("sel.ready_export")));
         doExport(player, st);
     }
 
@@ -179,11 +189,11 @@ public class RegionSelector {
         int screenW = mc.getWindow().getGuiScaledWidth();
         String tip;
         if (st.pos1 == null) {
-            tip = "§a[选择模式] §7左键选角点 1";
+            tip = PrefabCustomAddon.tr("sel.tip.corner1");
         } else if (st.pos2 == null) {
-            tip = "§a[选择模式] §7角点 1=" + formatPos(st.pos1) + " §7| 右键选角点 2";
+            tip = PrefabCustomAddon.tr("sel.tip.corner1_set", formatPos(st.pos1));
         } else {
-            tip = "§a[选择模式] §7角点 1=" + formatPos(st.pos1) + " §7| 角点 2=" + formatPos(st.pos2);
+            tip = PrefabCustomAddon.tr("sel.tip.both_set", formatPos(st.pos1), formatPos(st.pos2));
         }
         g.drawString(mc.font, tip, screenW - mc.font.width(tip) - 4, 4, 0xFFFFFF);
     }

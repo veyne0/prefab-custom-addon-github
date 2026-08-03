@@ -2,6 +2,7 @@ package com.prefab.addon.config;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.google.gson.reflect.TypeToken;
 import com.prefab.addon.PrefabCustomAddon;
 import net.minecraft.client.Minecraft;
 import net.neoforged.fml.loading.FMLPaths;
@@ -9,8 +10,11 @@ import net.neoforged.fml.loading.FMLPaths;
 import java.io.IOException;
 import java.io.Reader;
 import java.io.Writer;
+import java.lang.reflect.Type;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * 玩家/全局偏好设置 (挑战模式、消耗材料、建造速度等).
@@ -54,6 +58,12 @@ public class PlayerPreferences {
     //   - 全服共享, SettingsGui 改完发 UpdateBuildSpeedPayload 给服务端, OP 校验
     //   - 服务端写自己的 PlayerPreferences, 然后用 SyncBuildSpeedPayload 广播给所有客户端
     public int buildBatchPercent = 1;
+
+    // === 收藏的建筑 (GUI "收藏" 标签页显示) ===
+    // 存储键: "packageName/constructionId"
+    //   - 拓展包内建筑: "my_pack/castle"
+    //   - 独立 .litematic/.schem/.nbt: "__standalone__/<filename>"  (包名段固定为 __standalone__, 建筑名段 = 文件名去后缀)
+    public List<String> favoriteKeys = new ArrayList<>();
 
     public PlayerPreferences() {}
 
@@ -246,5 +256,77 @@ public class PlayerPreferences {
         if (v < 1) return 1;
         if (v > 100) return 100;
         return v;
+    }
+
+    // ============================================================
+    // 收藏 (Favorites) 管理
+    // ============================================================
+
+    /** 标准化收藏键. 非法分隔符会被替换为 '_' 避免和 "packageName/constructionId" 冲突. */
+    private static String normalizeKey(String packageName, String constructionId) {
+        String pkg = packageName == null || packageName.isEmpty() ? "__standalone__" : packageName;
+        String cid = constructionId == null ? "" : constructionId;
+        pkg = pkg.replace('/', '_').replace('\\', '_');
+        cid = cid.replace('/', '_').replace('\\', '_');
+        return pkg + "/" + cid;
+    }
+
+    /** 反向: 从键里拆出 (packageName, constructionId). */
+    public static String[] parseKey(String key) {
+        if (key == null) return new String[]{"", ""};
+        int idx = key.indexOf('/');
+        if (idx < 0) return new String[]{"", key};
+        return new String[]{key.substring(0, idx), key.substring(idx + 1)};
+    }
+
+    public boolean isFavorite(String packageName, String constructionId) {
+        if (favoriteKeys == null || favoriteKeys.isEmpty()) return false;
+        String k = normalizeKey(packageName, constructionId);
+        return favoriteKeys.contains(k);
+    }
+
+    /**
+     * 切换收藏状态. 返回切换后的新状态 (true=已收藏).
+     * 修改后会自动 save() 持久化.
+     */
+    public boolean toggleFavorite(String packageName, String constructionId) {
+        if (favoriteKeys == null) favoriteKeys = new ArrayList<>();
+        String k = normalizeKey(packageName, constructionId);
+        boolean now;
+        if (favoriteKeys.contains(k)) {
+            favoriteKeys.remove(k);
+            now = false;
+        } else {
+            favoriteKeys.add(k);
+            now = true;
+        }
+        save();
+        PrefabCustomAddon.LOGGER.info("[FAV] 切换收藏 {} -> {} ({})", k, now, now ? "已添加" : "已移除");
+        return now;
+    }
+
+    /** 显式添加 (供批量导入用). */
+    public void addFavorite(String packageName, String constructionId) {
+        if (favoriteKeys == null) favoriteKeys = new ArrayList<>();
+        String k = normalizeKey(packageName, constructionId);
+        if (!favoriteKeys.contains(k)) {
+            favoriteKeys.add(k);
+            save();
+        }
+    }
+
+    /** 显式移除. */
+    public void removeFavorite(String packageName, String constructionId) {
+        if (favoriteKeys == null) return;
+        String k = normalizeKey(packageName, constructionId);
+        if (favoriteKeys.remove(k)) {
+            save();
+        }
+    }
+
+    /** 返回当前所有收藏键 (拷贝). */
+    public List<String> getFavoriteKeys() {
+        if (favoriteKeys == null) return new ArrayList<>();
+        return new ArrayList<>(favoriteKeys);
     }
 }

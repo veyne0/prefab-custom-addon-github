@@ -42,6 +42,9 @@ public class StructurePreviewKeyHandler {
     private static final long MOVE_INTERVAL_MS = 150L;
     private static long lastMoveTimeMs = 0L;
 
+    // 防止按住右键时一帧内 cancel 多次
+    private static boolean lastRightDown = false;
+
     // prefab 原版建筑预览时, 我们已经向聊天栏发过 "该预览模式由附属模组提供" 提示,
     // 防止每个 tick / 每次移动都重复发. 用 prefab.currentStructure 的 identityHashCode
     // 作 key — 同一个预览结构对象, 移动/旋转都不变; 玩家切换到另一个建筑预览时
@@ -53,6 +56,40 @@ public class StructurePreviewKeyHandler {
     public static void onClientTick(ClientTickEvent.Post event) {
         Minecraft mc = Minecraft.getInstance();
         if (mc.level == null || mc.player == null) return;
+
+        // === 先于 "mc.screen != null return" 处理右键取消预览 ===
+        // 否则玩家在预览模式下右键手持自定义蓝图 → 蓝图 GUI 打开 (mc.screen != null) →
+        // 下一 tick 我们早退 → 右键取消逻辑永远跑不到 → 预览还卡在世界里.
+        // 这里在 screen 检查之前先 polling 一次右键, 即使 GUI 已经开了也立即关掉 + 取消预览.
+        long windowEarly = mc.getWindow().getWindow();
+        boolean rightDownEarly = GLFW.glfwGetMouseButton(windowEarly, GLFW.GLFW_MOUSE_BUTTON_RIGHT) == GLFW.GLFW_PRESS;
+        boolean anyPreviewActive =
+            com.prefab.addon.client.gui.CustomStructureGui.getAddonPreviewStructure() != null
+            || StructureRenderHandler.currentStructure != null;
+        if (anyPreviewActive && rightDownEarly && !lastRightDown) {
+            // 关闭可能因右键开启的 GUI (例如自定义蓝图右键 → CustomStructureGui)
+            if (mc.screen != null) {
+                mc.player.closeContainer();
+                mc.setScreen(null);
+            }
+            // 取消所有预览状态
+            if (com.prefab.addon.cloud.CloudPreview.isActive()) {
+                mc.player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
+                    "✗ 已取消云端建筑预览").withStyle(net.minecraft.ChatFormatting.YELLOW));
+            } else {
+                mc.player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
+                    "✗ 已取消预览").withStyle(net.minecraft.ChatFormatting.YELLOW));
+            }
+            com.prefab.addon.cloud.CloudPreview.cancel();
+            com.prefab.addon.client.gui.CustomStructureGui.clearAddonPreviewFlag();
+            StructureRenderHandler.setStructure(null, null);
+            addonPreviewNoticeStructureHash = 0;
+            lastRightDown = true;
+            PrefabCustomAddon.LOGGER.info("[PREVIEW-CANCEL] 右键取消预览 (早于 screen 检查, 当前 screen={})",
+                mc.screen == null ? "null" : mc.screen.getClass().getSimpleName());
+            return;
+        }
+        lastRightDown = rightDownEarly;
 
         // 当前没有打开任何 GUI（点完 Preview 后 GUI 已关闭）
         if (mc.screen != null) {
@@ -78,8 +115,19 @@ public class StructurePreviewKeyHandler {
             com.prefab.addon.client.gui.CustomStructureGui.clearAddonPreviewFlag();
             // 通知标记也清掉, 下次 prefab 原版预览时还能再发.
             addonPreviewNoticeStructureHash = 0;
+            // 云端预览标志也清 (虽然 cancel() 自己也会清, 这里再保险一次)
+            com.prefab.addon.cloud.CloudPreview.cancel();
+            lastRightDown = false;
             return;
         }
+
+        // 取 window handle — 必须在右键检测前, 因为右键检测要用 GLFW.glfwGetMouseButton
+        long window = mc.getWindow().getWindow();
+
+        // 右键取消预览已在方法最开头 (早于 screen 检查) 处理, 这里不再重复.
+        // 之所以挪上去: 玩家在预览模式下右键手持自定义蓝图 → 蓝图 GUI 打开 → screen != null →
+        // 这里就被 return 拦住, 取消逻辑跑不到. 改到上面后, 即使 GUI 开了也能 1 tick 内关掉.
+        // lastRightDown 也由上面维护, 这里只复用同一个变量.
 
         // **关键**: isPrefabOriginalPreview 用 !isAddonPreview 单独判断.
         // 不要加 (packName.isEmpty()||constructionId.isEmpty()) 条件 — 跟 ALT 分支不一致
@@ -102,7 +150,7 @@ public class StructurePreviewKeyHandler {
             addonPreviewNoticeStructureHash = 0;
         }
 
-        long window = mc.getWindow().getWindow();
+        // window handle 已在上面右键检测前取了, 复用同一个变量
         boolean shiftDown = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_LEFT_SHIFT) == GLFW.GLFW_PRESS
                 || GLFW.glfwGetKey(window, GLFW.GLFW_KEY_RIGHT_SHIFT) == GLFW.GLFW_PRESS;
         boolean ctrlDown = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_LEFT_CONTROL) == GLFW.GLFW_PRESS
@@ -202,7 +250,10 @@ public class StructurePreviewKeyHandler {
                 // (上次编辑的自定义建筑缓存), 即使玩家已经打开了 prefab 原版的预览,
                 // currentConstruction 还残留, 误判走我们的路径 → BuildCustomStructurePayload
                 // 被发到服务端 → 服务端 consumeBlueprint 把玩家背包里的**自定义蓝图**消耗掉了.
-                if (!isAddonPreview) {
+                if (com.prefab.addon.cloud.CloudPreview.isActive()) {
+                    // === 云端建筑预览: 走 cloud_summon, 不消耗蓝图, 不走原版 build ===
+                    triggerCloudSummon(cfg);
+                } else if (!isAddonPreview) {
                     // === prefab 原版建筑预览 ===
                     // 复用 prefab 自己 GameClientEvents.KeyInput 用的同一条路径:
                     //   new StructureTagMessage(cfg.WriteToCompoundTag(),
@@ -413,5 +464,58 @@ public class StructurePreviewKeyHandler {
         if (cfg == null || structure == null) return;
         StructureRenderHandler.setStructure(structure, cfg);
         StructureRenderHandler.showedMessage = true;
+    }
+
+    /**
+     * ALT 在云端建筑预览中按下时, 发送 {@link com.prefab.addon.cloud.CloudBuildingSummonPayload}
+     * 把当前预览位置 (cfg.pos) + 朝向 (cfg.houseFacing) 发到服务端, 让服务端在玩家选的位置
+     * 重建建筑 (不强制头顶 1 格).
+     */
+    private static void triggerCloudSummon(StructureConfiguration cfg) {
+        if (cfg == null || cfg.pos == null) return;
+        Player player = Minecraft.getInstance().player;
+        if (player == null) return;
+        lastAction = GLFW.GLFW_KEY_LEFT_ALT;
+
+        String buildingId = com.prefab.addon.cloud.CloudPreview.getCurrentCloudBuildingId();
+        if (buildingId == null || buildingId.isEmpty()) {
+            player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
+                "⚠ 云端预览状态丢失, 请重开放出按钮")
+                .withStyle(net.minecraft.ChatFormatting.RED));
+            PrefabCustomAddon.LOGGER.warn("[PREVIEW-BUILD] cloudSummon called but CURRENT_CLOUD_BUILDING_ID is null");
+            com.prefab.addon.cloud.CloudPreview.cancel();
+            return;
+        }
+
+        com.prefab.addon.cloud.CloudBuilding cb =
+            com.prefab.addon.cloud.CloudBuildingClientCache.getInstance().getById(buildingId);
+        if (cb == null) {
+            player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
+                "⚠ 云端建筑已不存在: " + buildingId)
+                .withStyle(net.minecraft.ChatFormatting.RED));
+            com.prefab.addon.cloud.CloudPreview.cancel();
+            return;
+        }
+        if (cb.placed) {
+            player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
+                "⚠ 该云端建筑已放出 @ " + (cb.placedAt == null ? "?" : cb.placedAt.toShortString())
+                    + ", 请先收回")
+                .withStyle(net.minecraft.ChatFormatting.RED));
+            com.prefab.addon.cloud.CloudPreview.cancel();
+            return;
+        }
+
+        PrefabCustomAddon.LOGGER.info(
+            "[PREVIEW-BUILD] ALT (cloud) sending cloud_summon id={} pos={} facing={}",
+            buildingId, cfg.pos, cfg.houseFacing);
+
+        com.prefab.addon.network.NetworkHandler.sendToServer(
+            new com.prefab.addon.cloud.CloudBuildingSummonPayload(
+                buildingId, cfg.pos, cfg.houseFacing));
+
+        // 清预览状态 (服务端处理完后会 sync 回来, 客户端 cache 也跟着更新)
+        com.prefab.addon.cloud.CloudPreview.cancel();
+        com.prefab.addon.client.gui.CustomStructureGui.clearAddonPreviewFlag();
+        StructureRenderHandler.setStructure(null, null);
     }
 }

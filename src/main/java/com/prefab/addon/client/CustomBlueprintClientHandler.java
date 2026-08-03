@@ -4,6 +4,7 @@ import com.prefab.addon.PrefabCustomAddon;
 import com.prefab.addon.client.gui.CustomStructureGui;
 import com.prefab.addon.client.gui.GuiConstructionDetail;
 import com.prefab.addon.client.gui.GuiCustomStructureSelection;
+import com.prefab.addon.client.gui.GuiExtensionPackBrowser;
 import com.prefab.addon.extension.ConstructionInfo;
 import com.prefab.addon.extension.ExtensionPackManager;
 import com.prefab.addon.items.CustomBlueprintItem;
@@ -95,7 +96,7 @@ public class CustomBlueprintClientHandler {
         // 单人模式才在这里发 (其他情况服务端已发过)
         if (!Minecraft.getInstance().hasSingleplayerServer()) return;
         event.getEntity().sendSystemMessage(net.minecraft.network.chat.Component.literal(
-            "§a感谢使用 §e\"预制建筑附属\"§a, 按 §fO §a键可以打开本模组的设置界面"));
+            com.prefab.addon.PrefabCustomAddon.tr("welcome.thanks")));
     }
 
     private static void openGuiForStack(ItemStack stack, Player player, BlockPos pos, InteractionHand hand) {
@@ -118,18 +119,62 @@ public class CustomBlueprintClientHandler {
                     packName, constructionId);
                 info = ExtensionPackManager.getInstance().findByConstructionIdOnly(constructionId);
             }
+            if (info == null && "local".equals(packName)) {
+                // 单文件建筑 (LocalBuilding 转的) 没有 pack, 但 "local" 应该是约定 packName.
+                // 既然 findByConstructionIdOnly 也找不到, 多半是构造文件夹被删/移走了, 用全局扫一次 LocalBuilding 兜底.
+                PrefabCustomAddon.LOGGER.warn(
+                    "[USE-DEBUG] ClientHandler: local building lookup miss for '{}', trying LocalBuildingScanner fallback",
+                    constructionId);
+                info = scanLocalBuildingFallback(constructionId);
+            }
             if (info != null) {
+                String packLabel = info.getPack() != null ? info.getPack().getName() : "local";
                 PrefabCustomAddon.LOGGER.info("[USE-DEBUG] ClientHandler opening CustomStructureGui for {}/{} at {}",
-                        info.getPack().getName(), constructionId, pos);
+                        packLabel, constructionId, pos);
                 CustomStructureGui.open(info, stack, pos);
             } else {
                 PrefabCustomAddon.LOGGER.error(
                     "[USE-DEBUG] ClientHandler: bound but info is null for {}/{} (rebind needed?)",
                     packName, constructionId);
+                // 给玩家一个明确的错误提示, 避免"右键无反应"看起来像 bug
+                net.minecraft.network.chat.Component msg = net.minecraft.network.chat.Component.literal(
+                    com.prefab.addon.PrefabCustomAddon.tr("err.not_found", "?", constructionId)
+                    + "\n§7可能文件被删除/移走, 请重新 [选择] 建筑");
+                player.sendSystemMessage(msg);
             }
         } else {
-            PrefabCustomAddon.LOGGER.info("[USE-DEBUG] ClientHandler: no bound, opening GuiConstructionDetail (first available)");
-            GuiConstructionDetail.openFirstAvailable();
+            // 未绑定 → 打开新版"拓展包/建筑管理"浏览器 (左侧 5 个 tab, 右侧卡片列表)
+            // 不再直接进 detail 界面, 让玩家先选要建造的建筑
+            PrefabCustomAddon.LOGGER.info("[USE-DEBUG] ClientHandler: no bound, opening GuiExtensionPackBrowser");
+            GuiExtensionPackBrowser.open();
         }
+    }
+
+    /**
+     * 单文件建筑最后兜底: 直接走 LocalBuildingScanner 扫所有可能的目录 (下载/拓展包),
+     * 找 id 匹配的. 找不到返回 null.
+     */
+    private static ConstructionInfo scanLocalBuildingFallback(String constructionId) {
+        try {
+            java.util.List<com.prefab.addon.extension.LocalBuilding> all =
+                com.prefab.addon.extension.LocalBuildingScanner.scanAll();
+            for (com.prefab.addon.extension.LocalBuilding lb : all) {
+                if (constructionId.equals(lb.id)) {
+                    ConstructionInfo c = new ConstructionInfo(lb.id);
+                    c.setName(lb.name);
+                    c.setAuthor(lb.author);
+                    c.setDescription(lb.description);
+                    if (lb.fileExt != null && !lb.fileExt.isEmpty()) {
+                        c.setFormat(lb.fileExt.startsWith(".") ? lb.fileExt.substring(1) : lb.fileExt);
+                    }
+                    c.setLocalImagePath(lb.imagePath);
+                    c.setLocalNbtPath(lb.filePath);
+                    return c;
+                }
+            }
+        } catch (Throwable t) {
+            PrefabCustomAddon.LOGGER.error("[USE-DEBUG] scanLocalBuildingFallback failed", t);
+        }
+        return null;
     }
 }

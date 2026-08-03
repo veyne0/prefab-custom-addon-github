@@ -33,6 +33,10 @@ public class RegionSelectorEventHandler {
         // 注意: 1.21.1 客户端 LeftClickBlock 不一定触发, 主要拦截在 mixin (MinecraftStartAttackMixin)
         Player player = event.getEntity();
         if (player.level().isClientSide && RegionSelector.isActive(player)) {
+            // 临时解锁 (按住 SHIFT) 时不拦截, 让玩家正常挖方块
+            if (RegionSelector.isTempUnlocked(player)) {
+                return;
+            }
             // 在客户端取消该事件, 防止破坏方块
             event.setCanceled(true);
             BlockPos pos = event.getPos();
@@ -49,6 +53,10 @@ public class RegionSelectorEventHandler {
         if (player.level().isClientSide) {
             // 客户端: 仅选点 (支持方块), 空气由 onClientTick 处理
             if (RegionSelector.isActive(player)) {
+                // 临时解锁 (按住 SHIFT) 时不拦截, 让玩家正常用物品/开方块
+                if (RegionSelector.isTempUnlocked(player)) {
+                    return;
+                }
                 event.setCanceled(true);
                 BlockPos pos = event.getPos();
                 if (pos != null) {
@@ -57,7 +65,8 @@ public class RegionSelectorEventHandler {
             }
         } else {
             // 服务端: 阻止放方块/用物品
-            if (player == Minecraft.getInstance().player && RegionSelector.isActive(player)) {
+            if (player == Minecraft.getInstance().player && RegionSelector.isActive(player)
+                && !RegionSelector.isTempUnlocked(player)) {
                 event.setCanceled(true);
             }
         }
@@ -91,6 +100,11 @@ public class RegionSelectorEventHandler {
         if (mc.player == null) return;
         if (mc.screen != null) return;  // 开了 GUI 时不处理
         if (!RegionSelector.isActive(mc.player)) return;
+
+        // 临时解锁 (按住 SHIFT) 时不重定向鼠标, 让玩家正常挖方块/用物品
+        if (RegionSelector.isTempUnlocked(mc.player)) {
+            return;
+        }
 
         int button = event.getButton();
         boolean pressed = event.getAction() == 1;  // GLFW_PRESS = 1, GLFW_RELEASE = 0
@@ -158,12 +172,36 @@ public class RegionSelectorEventHandler {
                 com.prefab.addon.extension.ExtensionPackManager.getInstance().reloadClient();
                 if (mc.player != null) {
                     mc.player.displayClientMessage(
-                        net.minecraft.network.chat.Component.literal("§a[拓展包] 已重新扫描"), true);
+                        net.minecraft.network.chat.Component.literal(
+                            com.prefab.addon.PrefabCustomAddon.tr("sel.pack_rescanned")), true);
                 }
             }
         }
 
         if (!RegionSelector.isActive(mc.player)) return;
+
+        // 临时解锁 (按住 SHIFT) 时, 不重定向鼠标, 让玩家正常挖方块/用物品
+        // 用于解决"想挖开区域来定对角点但挖不动"的问题 (1.2.0 反馈)
+        boolean shiftDown = com.mojang.blaze3d.platform.InputConstants.isKeyDown(window, GLFW.GLFW_KEY_LEFT_SHIFT)
+                         || com.mojang.blaze3d.platform.InputConstants.isKeyDown(window, GLFW.GLFW_KEY_RIGHT_SHIFT);
+        RegionSelector.SelectionState selSt = RegionSelector.getState(mc.player);
+        if (selSt != null && shiftDown != selSt.tempUnlocked) {
+            selSt.tempUnlocked = shiftDown;
+            if (shiftDown) {
+                mc.player.displayClientMessage(
+                    net.minecraft.network.chat.Component.literal(
+                        "§6[选择模式] §e临时解锁, 可正常挖方块/用物品 §7(松开 SHIFT 恢复选点)"),
+                    true);
+            } else {
+                mc.player.displayClientMessage(
+                    net.minecraft.network.chat.Component.literal("§a[选择模式] §7恢复选点模式"),
+                    true);
+            }
+        }
+        if (shiftDown) {
+            // 临时解锁中: 跳过阻止破坏的逻辑, 让 vanilla 正常处理
+            return;
+        }
 
         // 阻止创造模式左键破坏方块: PlayerInteractEvent.LeftClickBlock 在客户端不触发,
         // 需要手动调 gameMode.stopDestroyBlock() 取消进行中的破坏.
@@ -180,7 +218,8 @@ public class RegionSelectorEventHandler {
                 com.prefab.addon.extension.ExtensionPackManager.getInstance().reloadClient();
                 if (mc.player != null) {
                     mc.player.displayClientMessage(
-                        net.minecraft.network.chat.Component.literal("§a[拓展包] 已重新扫描"), true);
+                        net.minecraft.network.chat.Component.literal(
+                            com.prefab.addon.PrefabCustomAddon.tr("sel.pack_rescanned")), true);
                 }
             }
             return;
