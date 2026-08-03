@@ -56,6 +56,14 @@ public class ServerPackSyncClient {
     /** 本轮要收的包 (用于完成度统计) */
     private final Set<String> wanted = new HashSet<>();
 
+    /**
+     * 服务端 manifest 缓存. 每次收到 ServerPackManifestPayload 都会更新.
+     * 用于 GUI "服务器" 标签页显示所有可同步的建筑 (含未同步的).
+     * 不阻塞 sync 流程, 即使没用也无所谓.
+     */
+    private final List<ServerPackManifestPayload.Entry> serverManifestCache = new ArrayList<>();
+    private final Object manifestLock = new Object();
+
     private static class Inflight {
         long totalSize;
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
@@ -70,6 +78,16 @@ public class ServerPackSyncClient {
         return state == State.REQUESTING || state == State.DOWNLOADING || state == State.FINALIZING;
     }
 
+    /**
+     * 返回服务端 manifest 的快照 (含 name, sha1, size). 用于 GUI "服务器" tab 显示未同步建筑.
+     * 返回的是新 list, 修改不影响内部缓存.
+     */
+    public List<ServerPackManifestPayload.Entry> getServerManifestSnapshot() {
+        synchronized (manifestLock) {
+            return new ArrayList<>(serverManifestCache);
+        }
+    }
+
     /** 收到服务端 manifest */
     public void handleManifest(ServerPackManifestPayload payload) {
         Minecraft mc = Minecraft.getInstance();
@@ -78,6 +96,14 @@ public class ServerPackSyncClient {
         statusMessage = "正在比对服务器拓展包...";
         doneCount = 0;
         bytesReceived = 0;
+
+        // 缓存 manifest (给 GUI "服务器" tab 显示未同步建筑用)
+        synchronized (manifestLock) {
+            serverManifestCache.clear();
+            if (payload.packs() != null) {
+                serverManifestCache.addAll(payload.packs());
+            }
+        }
 
         // 确保 server-cache 目录存在
         Path cacheDir = ExtensionPackManager.getInstance().getServerCacheDir();
@@ -220,6 +246,57 @@ public class ServerPackSyncClient {
         statusMessage = "⟳ 正在请求服务器清单...";
         PrefabCustomAddon.LOGGER.info("[PACK-SYNC] User clicked resync button");
         NetworkHandler.sendToServer(new RequestServerPackManifestPayload());
+    }
+
+    /**
+     * 玩家在「服务器」tab 点击单个未同步卡片: 拉这一个建筑.
+     * <p>走 RequestServerPacksPayload, 但只放一个 name. 服务端会从 prefab-extension 找到对应
+     * zip 然后发过来; 客户端用同一个 handleChunk 通道写入 server-cache/.</p>
+     *
+     * <p>约束: 必须保证服务端的 ServerPackSyncServer 已经把对应 zip 的 metadata 记过 (即 manifest 已经收到过一次).
+     * 这里直接根据缓存的 manifest 找, 没找到就报错让玩家走"同步服务器"按钮重发 manifest.</p>
+     */
+    public void requestSyncSingle(String packName) {
+        if (packName == null || packName.isEmpty()) return;
+        if (isSyncing()) {
+            statusMessage = "已在同步中, 请稍候";
+            return;
+        }
+        // 在缓存的 manifest 里找
+        ServerPackManifestPayload.Entry entry = null;
+        synchronized (manifestLock) {
+            for (ServerPackManifestPayload.Entry e : serverManifestCache) {
+                if (packName.equals(e.name())) {
+                    entry = e;
+                    break;
+                }
+            }
+        }
+        if (entry == null) {
+            state = State.ERROR;
+            statusMessage = "✗ 没找到建筑 '" + packName + "' 的清单, 请先点「同步服务器」";
+            PrefabCustomAddon.LOGGER.warn("[PACK-SYNC] requestSyncSingle: '{}' not in cached manifest, abort", packName);
+            return;
+        }
+        // 准备下载
+        totalToSync = 1;
+        totalBytesToSync = entry.size();
+        bytesReceived = 0;
+        doneCount = 0;
+        wanted.clear();
+        wanted.add(packName);
+        inflight.remove(packName);
+
+        state = State.REQUESTING;
+        statusMessage = "请求同步建筑 '" + packName + "' (" + humanBytes(entry.size()) + ")...";
+        PrefabCustomAddon.LOGGER.info("[PACK-SYNC] User requested single sync: {} ({} bytes)", packName, entry.size());
+
+        // 确保 server-cache 目录存在
+        Path cacheDir = ExtensionPackManager.getInstance().getServerCacheDir();
+        if (cacheDir != null) {
+            try { Files.createDirectories(cacheDir); } catch (IOException ignored) {}
+        }
+        NetworkHandler.sendToServer(new RequestServerPacksPayload(java.util.Collections.singletonList(packName)));
     }
 
     /** 安全化包名用作文件名: 替换 / \ : * ? " < > | 和 .. */

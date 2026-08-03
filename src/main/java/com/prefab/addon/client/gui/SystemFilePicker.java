@@ -156,7 +156,12 @@ public final class SystemFilePicker {
         // 构造 PowerShell 脚本
         // 使用 [System.Windows.Forms.OpenFileDialog] (Windows 自带, 弹出标准资源管理器对话框)
         // Add-Type -AssemblyName System.Windows.Forms 加载 WinForms 程序集
+        // 关键: 设置 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 即可.
+        // 之前的 chcp 65001 在 PowerShell 里没有这个命令 (chcp 是 cmd.exe 内部命令),
+        // PCL 启动器是 Windows PowerShell 5.x, 会报 CommandNotFoundException.
+        // 用 Base64 编码路径再输出, Java 端解码 → 100% 精确.
         StringBuilder ps = new StringBuilder();
+        ps.append("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8;");
         ps.append("Add-Type -AssemblyName System.Windows.Forms | Out-Null;");
         ps.append("$d = New-Object System.Windows.Forms.OpenFileDialog;");
         ps.append("$d.Title = '").append(escapePsString(title == null ? "选择文件" : title)).append("';");
@@ -171,9 +176,10 @@ public final class SystemFilePicker {
         ps.append("$d.InitialDirectory = [Environment]::GetFolderPath('MyDocuments');");
         // 显示并等待用户选择
         ps.append("$r = $d.ShowDialog();");
-        // 取消时 Write-Output "CANCEL"; 选中时 Write-Output 文件路径
+        // 取消时 Write-Output "CANCEL"; 选中时 Write-Output Base64 编码的文件路径
         ps.append("if ($r -eq [System.Windows.Forms.DialogResult]::OK) {");
-        ps.append("Write-Output $d.FileName;");
+        ps.append("$bytes = [System.Text.Encoding]::UTF8.GetBytes($d.FileName);");
+        ps.append("Write-Output ([Convert]::ToBase64String($bytes));");
         ps.append("} else {");
         ps.append("Write-Output 'CANCEL';");
         ps.append("}");
@@ -240,7 +246,17 @@ public final class SystemFilePicker {
             if (pathFileClean(psFile)) {} // no-op (just for clarity)
 
             // 切回主线程回调
-            final String finalPath = path;
+            // PowerShell 输出是 Base64 编码的 UTF-8 路径 → 解码拿到原始路径
+            String decodedPath;
+            try {
+                byte[] decoded = java.util.Base64.getDecoder().decode(path);
+                decodedPath = new String(decoded, java.nio.charset.StandardCharsets.UTF_8);
+            } catch (Throwable decodeErr) {
+                // 兼容: 如果不是合法 Base64 (例如老版本直接输出路径), 退回到原始字符串
+                PrefabCustomAddon.LOGGER.warn("[SYSPICKER] Base64 decode failed, fallback to raw: {}", decodeErr.getMessage());
+                decodedPath = path;
+            }
+            final String finalPath = decodedPath;
             Minecraft.getInstance().execute(() -> {
                 try {
                     if (finalPath.isEmpty() || finalPath.equalsIgnoreCase("CANCEL")) {
@@ -463,7 +479,7 @@ public final class SystemFilePicker {
         );
         pathBar.style(s -> s.background(Sprites.RECT_DARK));
         Label pathLabel = new Label();
-        pathLabel.setText(Component.literal("路径: " + state.currentDir.getAbsolutePath())
+        pathLabel.setText(Component.literal(PrefabCustomAddon.tr("gui.system_picker.path", state.currentDir.getAbsolutePath()))
             .withStyle(ChatFormatting.GRAY));
         pathLabel.textStyle(t -> t.textAlignHorizontal(Horizontal.CENTER));
         pathBar.addChild(pathLabel);
@@ -520,7 +536,7 @@ public final class SystemFilePicker {
      */
     private static void populateFileList(UIElement content, FilePickerState state, Label pathLabel) {
         content.clearAllChildren();
-        pathLabel.setText(Component.literal("路径: " + state.currentDir.getAbsolutePath())
+        pathLabel.setText(Component.literal(PrefabCustomAddon.tr("gui.system_picker.path", state.currentDir.getAbsolutePath()))
             .withStyle(ChatFormatting.GRAY));
 
         // "返回上级" 入口 — 仅当存在父目录时显示 (如 C:\ 根目录无父)
@@ -538,7 +554,7 @@ public final class SystemFilePicker {
         File[] files = state.currentDir.listFiles();
         if (files == null) {
             Label err = new Label();
-            err.setText(Component.literal("(无法读取此目录)").withStyle(ChatFormatting.RED));
+            err.setText(Component.literal(PrefabCustomAddon.tr("gui.system_picker.unreadable")).withStyle(ChatFormatting.RED));
             content.addChild(err);
             return;
         }
@@ -577,7 +593,7 @@ public final class SystemFilePicker {
 
         if (!anyFile) {
             Label empty = new Label();
-            empty.setText(Component.literal("(此目录没有匹配的文件)")
+            empty.setText(Component.literal(PrefabCustomAddon.tr("gui.system_picker.no_match"))
                 .withStyle(ChatFormatting.GRAY));
             content.addChild(empty);
         }

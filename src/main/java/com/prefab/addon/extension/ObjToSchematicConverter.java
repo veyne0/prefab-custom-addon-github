@@ -36,6 +36,11 @@ import java.util.zip.GZIPOutputStream;
  */
 public class ObjToSchematicConverter {
 
+    /** 进度回调: fraction ∈ [0,1], message 是阶段描述 (用于 GUI 显示) */
+    public interface IProgress {
+        void update(float fraction, String message);
+    }
+
     /** 转换选项 */
     public static class Options {
         /** 每米的体素数量 (默认 32 = 1 voxel ≈ 3.1cm). 4 太粗, 32 能保留猫这类模型的细节. */
@@ -45,11 +50,15 @@ public class ObjToSchematicConverter {
         /** Y 是否向上 (OBJ 多数用 -Y 为上, 这里默认 +Y 向上, 即 Blender 风格). */
         public boolean yUp = true;
         /** 单个 OBJ 最大体素数量上限, 超过则停止并报错 (避免 OOM). */
-        public int maxVoxels = 256 * 256 * 256;
-        /** 三角形-体素扫描精度 (1 = 高精度, 4 = 4x4x4 子采样). 越大越快, 精度越差. */
-        public int sampleStep = 2;
+        public int maxVoxels = 384 * 384 * 384;
+        /** 三角形-体素扫描精度 (1 = 每个 voxel 都尝试填, 2 = 跳一个填一个, 速度 x8 但方块数 1/8).
+         *  默认 1 让 X64 实际生成 6-10 万方块, 够精细. 之前默认 2 → 8 万变 1 万, 太稀疏. */
+        public int sampleStep = 1;
         /** 表面强化: 对表面体素做 1 层膨胀, 防止非水密 OBJ (如猫) 出现孔洞. */
         public boolean strengthenSurface = true;
+        /** 进度回调 (可选). null = 同步无进度; 非 null = 异步, 会在 worker 线程被调用.
+         *  实现方需自行处理线程间通信 (如 volatile field + 主线程 tick 读). */
+        public IProgress progressCallback = null;
     }
 
     public static class Result {
@@ -68,11 +77,15 @@ public class ObjToSchematicConverter {
     /** 入口: OBJ 文件 → .schem 二进制 (gzip NBT). */
     public static Result convertToSchematic(Path objFile, Options opt) throws IOException {
         long t0 = System.currentTimeMillis();
+        IProgress cb = opt.progressCallback;
         // 每次转换开始时清空调色板, 避免上次转换残留
         resetPalette();
+        if (cb != null) cb.update(0.02f, "解析 OBJ 文件...");
         ObjParser.Result parsed = ObjParser.parse(objFile);
         ObjModel model = parsed.model;
         List<String> warnings = new ArrayList<>(parsed.warnings);
+        if (cb != null) cb.update(0.10f, "OBJ 解析完成 (" + model.vertices.size() + " 顶点, "
+                + countAllFaces(model) + " 面)");
 
         if (model.vertices.isEmpty()) {
             throw new IOException("OBJ 文件不包含任何顶点");
@@ -101,6 +114,7 @@ public class ObjToSchematicConverter {
         }
 
         PrefabCustomAddon.LOGGER.info("体素栅格: {}x{}x{} ({} 体素)", width, height, length, (long)width*height*length);
+        if (cb != null) cb.update(0.15f, String.format("体素栅格: %dx%dx%d", width, height, length));
 
         // 体素数据: -1 = 空, >=0 = 调色板索引
         int[] voxels = new int[width * height * length];
@@ -122,8 +136,15 @@ public class ObjToSchematicConverter {
         if (cellY <= 0) cellY = 0.001f;
         if (cellZ <= 0) cellZ = 0.001f;
 
-        for (ObjModel.Face face : allFaces) {
+        for (int faceIdx = 0; faceIdx < allFaces.size(); faceIdx++) {
+            ObjModel.Face face = allFaces.get(faceIdx);
             if (face.vertexIndices.length < 3) continue;
+            // 进度回调: 0.15 -> 0.55, 按 face 比例
+            if (cb != null && (faceIdx & 0x3FFF) == 0) {
+                float frac = 0.15f + 0.40f * (float) faceIdx / allFaces.size();
+                cb.update(frac, String.format("体素化中... %d / %d (%.0f%%)",
+                    faceIdx, allFaces.size(), 100f * faceIdx / allFaces.size()));
+            }
             float[] a = model.vertices.get(face.vertexIndices[0]);
             float[] b = model.vertices.get(face.vertexIndices[1]);
             float[] c = model.vertices.get(face.vertexIndices[2]);
@@ -160,7 +181,7 @@ public class ObjToSchematicConverter {
             }
         }
 
-        // 1.5) 表面强化: 对非水密网格 (猫/雕塑/手办) 容易有孔洞,
+        if (cb != null) cb.update(0.55f, "体素化完成");
         //       把表面体素向外膨胀 1 层, 把"几乎被包住"的体素也认作表面
         if (opt.strengthenSurface) {
             int dilated = 0;
@@ -200,45 +221,98 @@ public class ObjToSchematicConverter {
             }
         }
 
-        // 2) 实心填充: 对每个空体素用光线投射判定是否在模型内部
+        // 2) 实心填充: 用 flood fill from outside 标记所有"外部空 voxel",
+        //    剩余的"空 voxel"= 内部 voxel, 一律填实心.
+        //    之前用光线投射 O(N * F) 对 1.5M 面 128K voxel 是 1920 亿次, 必卡死.
+        //    改成 O(N) BFS: 从角落 (0,0,0) 开始 6 邻居搜索, 标外部.
         if (opt.fillInterior) {
+            if (cb != null) cb.update(0.62f, "内部填充中 (flood fill)...");
             int filled = 0;
-            for (int y = 0; y < height; y++) {
-                for (int z = 0; z < length; z++) {
-                    for (int x = 0; x < width; x++) {
-                        int idx = (y * length + z) * width + x;
-                        if (voxels[idx] >= 0) continue;
-                        // 从体素中心向上 (+Y) 投射射线, 统计交点
-                        float px = (x + 0.5f) * cellX + origin[0];
-                        float py = (y + 0.5f) * cellY + origin[1];
-                        float pz = (z + 0.5f) * cellZ + origin[2];
-                        float dx = 0, dy = 1, dz = 0;
-                        int hits = 0;
-                        for (ObjModel.Face face : allFaces) {
-                            if (face.vertexIndices.length < 3) continue;
-                            float[] a = model.vertices.get(face.vertexIndices[0]);
-                            float[] b = model.vertices.get(face.vertexIndices[1]);
-                            float[] c = model.vertices.get(face.vertexIndices[2]);
-                            if (rayTriangleHit(px, py, pz, dx, dy, dz, a, b, c)) {
-                                hits++;
-                            }
-                        }
-                        if ((hits & 1) == 1) {
-                            voxels[idx] = registerColor(new float[]{0.5f, 0.5f, 0.5f}); // 内部用默认灰色
-                            filled++;
-                        }
-                    }
+            // outside[idx] = true 表示该空 voxel 在模型外部 (从角落可达)
+            boolean[] outside = new boolean[voxels.length];
+            int[] queue = new int[voxels.length];
+            int head = 0, tail = 0;
+
+            // 起点: 4 个角落 + 边界外推 (确保是模型外的空 voxel)
+            int[] seeds = new int[]{
+                0,                                  // (0,0,0)
+                (0 * length + (length - 1)) * width + 0,        // (0,0,W-1)
+                ((height - 1) * length + 0) * width + 0,        // (0,H-1,0)
+                ((height - 1) * length + (length - 1)) * width + (width - 1)
+            };
+            for (int s : seeds) {
+                if (s < 0 || s >= voxels.length) continue;
+                if (voxels[s] >= 0) continue;     // 表面不作为起点
+                if (outside[s]) continue;
+                outside[s] = true;
+                queue[tail++] = s;
+            }
+            // 兜底: 如果 4 个角都是表面, 用 6 个面中心代替
+            if (tail == 0) {
+                int[] centers = new int[]{
+                    (0 * length + 0) * width + 0,                        // (0,0,0)
+                    ((height-1) * length + 0) * width + 0,                // 底面
+                    (0 * length + 0) * width + (width-1),                 // 底面 X+
+                    (0 * length + (length-1)) * width + 0,                // 底面 Z+
+                    ((height-1) * length + 0) * width + (width-1),
+                    ((height-1) * length + (length-1)) * width + 0
+                };
+                for (int s : centers) {
+                    if (s < 0 || s >= voxels.length) continue;
+                    if (voxels[s] >= 0) continue;
+                    if (outside[s]) continue;
+                    outside[s] = true;
+                    queue[tail++] = s;
                 }
             }
-            PrefabCustomAddon.LOGGER.info("内部填充: {} 个体素", filled);
+
+            // BFS 6 邻居: 标记所有从外部可达的空 voxel
+            int grayInternal = registerColor(new float[]{0.5f, 0.5f, 0.5f});
+            while (head < tail) {
+                int cur = queue[head++];
+                int cy = cur / (width * length);
+                int cz = (cur / width) % length;
+                int cx = cur % width;
+                int[] nbrs = new int[]{
+                    cx - 1, cy, cz,
+                    cx + 1, cy, cz,
+                    cx, cy - 1, cz,
+                    cx, cy + 1, cz,
+                    cx, cy, cz - 1,
+                    cx, cy, cz + 1
+                };
+                for (int k = 0; k < 6; k++) {
+                    int nx = nbrs[k * 3], ny = nbrs[k * 3 + 1], nz = nbrs[k * 3 + 2];
+                    if (nx < 0 || nx >= width || ny < 0 || ny >= height || nz < 0 || nz >= length) continue;
+                    int nidx = (ny * length + nz) * width + nx;
+                    if (voxels[nidx] >= 0) continue;   // 跳过表面
+                    if (outside[nidx]) continue;
+                    outside[nidx] = true;
+                    queue[tail++] = nidx;
+                }
+            }
+
+            // 剩余空 voxel = 内部, 填实心
+            for (int i = 0; i < voxels.length; i++) {
+                if (voxels[i] < 0 && !outside[i]) {
+                    voxels[i] = grayInternal;
+                    filled++;
+                }
+            }
+            PrefabCustomAddon.LOGGER.info("内部填充 (flood fill): {} 个体素, BFS 队列峰值={}",
+                filled, tail);
+            if (cb != null) cb.update(0.88f, "内部填充完成 (" + filled + " 体素)");
         }
 
         // 3) 构建 Sponge Schematic v2 NBT
+        if (cb != null) cb.update(0.90f, "构建 NBT...");
         byte[] data = buildSchematicNbt(voxels, width, height, length, warnings);
 
         // 统计非空块
         int count = 0;
         for (int v : voxels) if (v >= 0) count++;
+
+        if (cb != null) cb.update(1.0f, "完成 (" + count + " 块)");
 
         long elapsed = System.currentTimeMillis() - t0;
         return new Result(data, width, height, length, count, warnings, elapsed);
@@ -247,6 +321,12 @@ public class ObjToSchematicConverter {
     // ------------ 几何工具 ------------
 
     private static int clamp(int v, int lo, int hi) { return Math.max(lo, Math.min(hi, v)); }
+
+    private static int countAllFaces(ObjModel m) {
+        int c = 0;
+        for (ObjModel.Group g : m.groups) c += g.faces.size();
+        return c;
+    }
 
     /** Möller-Trumbore 射线-三角形相交测试. */
     private static boolean rayTriangleHit(float ox, float oy, float oz,

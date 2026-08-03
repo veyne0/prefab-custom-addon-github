@@ -1,12 +1,18 @@
 package com.prefab.addon.network;
 
 import com.prefab.addon.PrefabCustomAddon;
+import com.prefab.addon.cloud.CloudBuildingDeletePayload;
+import com.prefab.addon.cloud.CloudBuildingManager;
+import com.prefab.addon.cloud.CloudBuildingRecallPayload;
+import com.prefab.addon.cloud.CloudBuildingSummonPayload;
+import com.prefab.addon.cloud.CloudBuildingSyncPayload;
 import com.prefab.addon.extension.ExtensionPackManager;
 import com.prefab.addon.items.CustomBlueprintItem;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
+import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.neoforge.network.PacketDistributor;
 import net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent;
@@ -84,6 +90,47 @@ public class NetworkHandler {
                     ServerPackSyncServer.getInstance().onPlayerJoin(sp);
                 }
         );
+
+        // ===== 云端建筑: 客户端→服务端 (收回/放出请求) + 服务端→客户端 (全量同步) =====
+        registrar.playToServer(
+                CloudBuildingRecallPayload.TYPE,
+                CloudBuildingRecallPayload.STREAM_CODEC,
+                (payload, ctx) -> {
+                    ServerPlayer sp = (ServerPlayer) ctx.player();
+                    CloudBuildingManager.getInstance().recall(sp, payload.buildingId());
+                }
+        );
+        registrar.playToServer(
+                CloudBuildingSummonPayload.TYPE,
+                CloudBuildingSummonPayload.STREAM_CODEC,
+                (payload, ctx) -> {
+                    ServerPlayer sp = (ServerPlayer) ctx.player();
+                    CloudBuildingManager.getInstance().summon(sp, payload.buildingId(), payload.pos(), payload.facing());
+                }
+        );
+        registrar.playToServer(
+                CloudBuildingDeletePayload.TYPE,
+                CloudBuildingDeletePayload.STREAM_CODEC,
+                (payload, ctx) -> {
+                    ServerPlayer sp = (ServerPlayer) ctx.player();
+                    CloudBuildingManager.getInstance().delete(sp, payload.buildingId());
+                }
+        );
+        registrar.playToClient(
+                CloudBuildingSyncPayload.TYPE,
+                CloudBuildingSyncPayload.STREAM_CODEC,
+                (payload, ctx) -> {
+                    java.util.List<com.prefab.addon.cloud.CloudBuilding> list = new java.util.ArrayList<>();
+                    for (var tag : payload.buildings()) {
+                        try {
+                            list.add(com.prefab.addon.cloud.CloudBuilding.fromNbt(tag));
+                        } catch (Exception e) {
+                            PrefabCustomAddon.LOGGER.warn("[CLOUD-CACHE] 跳过损坏的云端建筑: {}", e.getMessage());
+                        }
+                    }
+                    com.prefab.addon.cloud.CloudBuildingClientCache.getInstance().replaceAll(list);
+                }
+        );
     }
 
     /**
@@ -117,6 +164,14 @@ public class NetworkHandler {
     }
 
     /**
+     * 通用 sendToServer: 给不想专门写一坨 overload 的自定义 payload 用 (例如云端建筑的收回/放出).
+     * 任何 {@link CustomPacketPayload} 都能直接传进来, 避免给每个新包都加一个 overload.
+     */
+    public static void sendToServer(CustomPacketPayload payload) {
+        PacketDistributor.sendToServer(payload);
+    }
+
+    /**
      * 服务端→所有在线玩家: 广播当前全服建造速度.
      * 给每个在线玩家单独发一份 (不依赖所有玩家在同一连接上, 兼容性更好).
      */
@@ -141,7 +196,7 @@ public class NetworkHandler {
                 PrefabCustomAddon.LOGGER.warn("[BUILD-SPEED] Non-OP player {} tried to set build speed to {}%, refused",
                     player.getName().getString(), requestedPercent);
                 player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
-                    "§c[建造速度] 需要 OP 权限才能修改! (permission level >= 2)")
+                    PrefabCustomAddon.tr("err.build_speed_op"))
                     .withStyle(net.minecraft.ChatFormatting.RED));
                 return;
             }
@@ -209,13 +264,13 @@ public class NetworkHandler {
                 if (player != null) {
                     // 多行提示, 同 CustomStructureBuilder.placeStructure 里的找不到建筑提示保持一致
                     player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
-                            "✗ 服务器没有这个建筑 (服务端 prefab-extension/ 缺少该拓展包)")
+                            PrefabCustomAddon.tr("err.not_on_server"))
                             .withStyle(net.minecraft.ChatFormatting.RED));
                     player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
-                            "§e提示: 建筑拓展包需放在 服务端 prefab-extension/ 文件夹里 (服务器端生效)。")
+                            PrefabCustomAddon.tr("err.hint.pack_on_server"))
                             .withStyle(net.minecraft.ChatFormatting.YELLOW));
                     player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
-                            "§e提示: 放好后按 §fO §e打开设置界面, 点击 [§f🔄 同步服务器拓展包§e] 即可拉取。")
+                            PrefabCustomAddon.tr("err.hint.sync_server"))
                             .withStyle(net.minecraft.ChatFormatting.YELLOW));
                 }
             }

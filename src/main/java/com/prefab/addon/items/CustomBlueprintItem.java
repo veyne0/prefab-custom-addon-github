@@ -76,7 +76,12 @@ public class CustomBlueprintItem extends Item {
 
     public static boolean isBoundTo(ItemStack stack, com.prefab.addon.extension.ConstructionInfo info) {
         if (stack.getItem() != com.prefab.addon.PrefabCustomAddon.CUSTOM_BLUEPRINT.get()) return false;
-        return getBoundPackName(stack).equals(info.getPack().getName())
+        // 单文件建筑 (LocalBuilding 兜底) 没有 ExtensionPack, getPack() 可能是 null.
+        // 旧蓝图可能存的是 "local" packName, 用 STANDALONE_PACKAGE 比较, 跟 isBuildable 路径保持一致.
+        String infoPack = (info.getPack() != null)
+            ? info.getPack().getName()
+            : com.prefab.addon.extension.ExtensionPackManager.STANDALONE_PACKAGE;
+        return getBoundPackName(stack).equals(infoPack)
             && getBoundConstructionId(stack).equals(info.getId());
     }
 
@@ -215,7 +220,7 @@ public class CustomBlueprintItem extends Item {
             tooltip.add(Component.literal("Bound: " + displayName)
                 .withStyle(ChatFormatting.GOLD));
             if (isLocked(stack)) {
-                tooltip.add(Component.literal("🔒 锁定绑定 (无法更换)")
+                tooltip.add(Component.literal(com.prefab.addon.PrefabCustomAddon.tr("item.custom_blueprint.locked"))
                     .withStyle(ChatFormatting.RED));
             }
         } else {

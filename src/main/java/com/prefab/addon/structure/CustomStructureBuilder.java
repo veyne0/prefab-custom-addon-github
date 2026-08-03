@@ -464,12 +464,13 @@ public class CustomStructureBuilder {
                 // 多行提示: 告诉玩家 (1) 真正的"权威"是服务端 prefab-extension/ 而不是本地
                 // (2) 怎么把包放到服务端 (3) 放完后怎么同步到客户端: 按 O → 同步拓展包
                 player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
-                    "§c✗ 找不到建筑: " + packName + "/" + constructionId).withStyle(net.minecraft.ChatFormatting.RED));
+                    com.prefab.addon.PrefabCustomAddon.tr("err.not_found", packName, constructionId)
+                    + " §7(包名 " + packName + ")").withStyle(net.minecraft.ChatFormatting.RED));
                 player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
-                    "§e提示: 建筑拓展包需放在 服务端 prefab-extension/ 文件夹里 (服务器端生效)。")
+                    com.prefab.addon.PrefabCustomAddon.tr("err.hint.pack_on_server"))
                     .withStyle(net.minecraft.ChatFormatting.YELLOW));
                 player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
-                    "§e提示: 放好后按 §fO §e打开设置界面, 点击 [§f🔄 同步服务器拓展包§e] 即可拉取。")
+                    com.prefab.addon.PrefabCustomAddon.tr("err.hint.sync_server"))
                     .withStyle(net.minecraft.ChatFormatting.YELLOW));
             }
             return false;
@@ -499,7 +500,7 @@ public class CustomStructureBuilder {
             PrefabCustomAddon.LOGGER.error("[PLACE-ASYNC] 解析后无有效方块");
             if (player != null) {
                 player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
-                    "§c✗ 建造失败: 解析后无有效方块 (NBT 格式可能不兼容)").withStyle(net.minecraft.ChatFormatting.RED));
+                    com.prefab.addon.PrefabCustomAddon.tr("err.parse_no_blocks")).withStyle(net.minecraft.ChatFormatting.RED));
             }
             return false;
         }
@@ -648,6 +649,17 @@ public class CustomStructureBuilder {
             new java.util.WeakHashMap<>();
 
     /**
+     * 外部 (如 {@code CloudPreview.buildStructureFromCloud}) 把 structure 对应的
+     * localPos map 注入. 不调这个, {@link #offsetStructureBlocks} 会 warn 后 return,
+     * KeyHandler 移动/旋转预览时 blockPos 不更新 → 预览卡原位置.
+     */
+    public static void putLocalPosMap(com.prefab.structures.base.Structure structure,
+                                       java.util.Map<com.prefab.structures.base.BuildBlock, BlockPos> localMap) {
+        if (structure == null || localMap == null) return;
+        STRUCTURE_LOCAL_POS.put(structure, localMap);
+    }
+
+    /**
      * 遍历 structure.getBlocks() 里的每个 BuildBlock, 把它的 blockPos
      * 重新设置为 basePos + localPos (worldPos).
      * 必须在 StructureRenderHandler.setStructure() **之前**调用.
@@ -720,6 +732,12 @@ public class CustomStructureBuilder {
                 rz = newRz;
             }
             // 3) 平移回 (center 都是 0, 这步相当于直接用 rotated), 再加 basePos
+            //    关键: state 也要跟着转, 否则预览跟实际放置不匹配 (预览里楼梯朝向 A,
+            //    实际放下去后楼梯朝向 B). 跟 AsyncBuildManager.setBlock 用同一个 BlockStateRotator
+            //    保证两边公式一致.
+            if (steps != 0 && bb.getBlockState() != null) {
+                bb.setBlockState(BlockStateRotator.rotateY(bb.getBlockState(), steps));
+            }
             bb.blockPos = new BlockPos(
                 basePos.getX() + centerX + rx,
                 basePos.getY() + centerY + ry,

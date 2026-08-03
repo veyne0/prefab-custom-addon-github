@@ -55,11 +55,11 @@ public final class PackStatusService {
 
         public String displayText() {
             switch (state) {
-                case NOT_ADDED: return "§e可添加 §7(未安装)";
-                case ADDED_SAME: return "§a已添加 §7(建筑一致)";
+                case NOT_ADDED: return com.prefab.addon.PrefabCustomAddon.tr("status.not_added");
+                case ADDED_SAME: return com.prefab.addon.PrefabCustomAddon.tr("status.added_same");
                 case ADDED_DIFFERENT:
-                    return "§c已添加, 本地有改动 §7(" + onlyInLocal().size() + " 个新, "
-                        + onlyInInstalled().size() + " 个删除)";
+                    return com.prefab.addon.PrefabCustomAddon.tr("status.added_diff",
+                        onlyInLocal().size(), onlyInInstalled().size());
             }
             return "?";
         }

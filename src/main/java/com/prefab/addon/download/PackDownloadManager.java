@@ -300,4 +300,281 @@ public class PackDownloadManager {
         if (n == null) return "_";
         return n.replaceAll("[\\\\/:*?\"<>|]", "_");
     }
+
+    // ========================================================================
+    // 独立建筑下载 (新版: /api/buildings, 保存到 prefab-download/)
+    // ========================================================================
+
+    /**
+     * 独立建筑元信息 (从服务器 /api/buildings 拉取).
+     * 文件存到 .minecraft/prefab-download/&lt;id&gt;&lt;fileExt&gt;
+     */
+    public static class BuildingInfo2 {
+        public final String id;
+        public final String name;
+        public final String author;
+        public final String description;
+        public final String fileExt;
+        public final long fileSize;
+        public final String imageExt;
+        public final int downloads;
+        public final String uploaded;
+
+        public BuildingInfo2(String id, String name, String author, String description,
+                             String fileExt, long fileSize, String imageExt,
+                             int downloads, String uploaded) {
+            this.id = id; this.name = name; this.author = author;
+            this.description = description;
+            this.fileExt = fileExt == null ? "" : fileExt;
+            this.fileSize = fileSize;
+            this.imageExt = imageExt == null ? "" : imageExt;
+            this.downloads = downloads;
+            this.uploaded = uploaded == null ? "" : uploaded;
+        }
+    }
+
+    /**
+     * 独立建筑下载根目录: .minecraft/prefab-download/
+     */
+    public static Path getDownloadRoot() {
+        return getExtensionRoot().getParent().resolve("prefab-download");
+    }
+
+    /**
+     * 拉取服务器独立建筑列表.
+     */
+    public CompletableFuture<List<BuildingInfo2>> fetchBuildingListAsync() {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                String url = normalizeUrl() + "/api/buildings";
+                PrefabCustomAddon.LOGGER.info("[DOWNLOAD-B] Fetching buildings from: {}", url);
+
+                HttpRequest req = HttpRequest.newBuilder()
+                    .uri(URI.create(url))
+                    .timeout(Duration.ofSeconds(15))
+                    .header("User-Agent", "PrefabCustomAddon/1.0")
+                    .GET()
+                    .build();
+
+                HttpResponse<String> resp = httpClient.send(req, HttpResponse.BodyHandlers.ofString());
+                if (resp.statusCode() / 100 != 2) {
+                    throw new IOException("HTTP " + resp.statusCode() + ": " + resp.body());
+                }
+
+                List<BuildingInfo2> list = new ArrayList<>();
+                JsonArray arr = JsonParser.parseString(resp.body()).getAsJsonArray();
+                for (JsonElement el : arr) {
+                    JsonObject o = el.getAsJsonObject();
+                    list.add(new BuildingInfo2(
+                        str(o, "id"),
+                        str(o, "name"),
+                        str(o, "author"),
+                        str(o, "description"),
+                        str(o, "fileExt"),
+                        o.has("fileSize") ? o.get("fileSize").getAsLong() : 0L,
+                        str(o, "imageExt"),
+                        o.has("downloads") ? o.get("downloads").getAsInt() : 0,
+                        str(o, "uploaded")
+                    ));
+                }
+                PrefabCustomAddon.LOGGER.info("[DOWNLOAD-B] Fetched {} buildings", list.size());
+                return list;
+            } catch (Exception e) {
+                PrefabCustomAddon.LOGGER.error("[DOWNLOAD-B] Fetch building list failed: {}", e.getMessage(), e);
+                throw new RuntimeException(e);
+            }
+        });
+    }
+
+    /**
+     * 下载独立建筑文件 (流式) -> 保存到 .minecraft/prefab-download/&lt;name&gt;&lt;fileExt&gt;
+     * <p>同时下载同名 .png (预览图) 和 .txt (元信息) 放到同目录, 让本地扫描器能识别.</p>
+     */
+    public void downloadBuildingStreaming(BuildingInfo2 info, ProgressCallback callback) {
+        new Thread(() -> {
+            try {
+                if (callback != null) callback.onStart(info.id);
+                String urlBase = normalizeUrl();
+                String baseName = safeName(info.name == null || info.name.isEmpty() ? info.id : info.name);
+                String ext = info.fileExt == null || info.fileExt.isEmpty() ? ".nbt" : info.fileExt;
+                if (!ext.startsWith(".")) ext = "." + ext;
+
+                Path targetDir = getDownloadRoot();
+                Files.createDirectories(targetDir);
+
+                // 同名文件: 加 _2 _3 后缀
+                String suffix = "";
+                if (Files.exists(targetDir.resolve(baseName + ext))) {
+                    int i = 2;
+                    while (Files.exists(targetDir.resolve(baseName + "_" + i + ext))) i++;
+                    suffix = "_" + i;
+                }
+                Path filePath = targetDir.resolve(baseName + suffix + ext);
+                PrefabCustomAddon.LOGGER.info("[DOWNLOAD-B] Streaming from: {}/api/buildings/{}/download -> {}",
+                    urlBase, info.id, filePath);
+
+                // ---- 1) 主建筑文件 ----
+                HttpRequest req = HttpRequest.newBuilder()
+                    .uri(URI.create(urlBase + "/api/buildings/" + enc(info.id) + "/download"))
+                    .timeout(Duration.ofSeconds(120))
+                    .header("User-Agent", "PrefabCustomAddon/1.0")
+                    .GET()
+                    .build();
+                HttpResponse<InputStream> resp = httpClient.send(req, HttpResponse.BodyHandlers.ofInputStream());
+                if (resp.statusCode() / 100 != 2) {
+                    String err = "HTTP " + resp.statusCode();
+                    if (callback != null) callback.onError(err);
+                    return;
+                }
+                long total = resp.headers().firstValueAsLong("Content-Length").orElse(-1);
+                try (InputStream in = resp.body();
+                     var out = Files.newOutputStream(filePath, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING)) {
+                    byte[] buf = new byte[8192];
+                    long downloaded = 0;
+                    int n;
+                    while ((n = in.read(buf)) > 0) {
+                        out.write(buf, 0, n);
+                        downloaded += n;
+                        if (callback != null) {
+                            double pct = total > 0 ? (downloaded * 100.0 / total) : 0;
+                            callback.onProgress(downloaded, total, pct);
+                        }
+                    }
+                }
+                PrefabCustomAddon.LOGGER.info("[DOWNLOAD-B] Downloaded {} -> {} ({} bytes)",
+                    info.id, filePath, Files.size(filePath));
+
+                // ---- 2) 预览图 (可选, 404 时静默忽略) ----
+                try {
+                    HttpRequest imgReq = HttpRequest.newBuilder()
+                        .uri(URI.create(urlBase + "/api/buildings/" + enc(info.id) + "/image"))
+                        .timeout(Duration.ofSeconds(15))
+                        .header("User-Agent", "PrefabCustomAddon/1.0")
+                        .GET()
+                        .build();
+                    HttpResponse<byte[]> imgResp = httpClient.send(imgReq, HttpResponse.BodyHandlers.ofByteArray());
+                    if (imgResp.statusCode() / 100 == 2 && imgResp.body().length > 0) {
+                        String imgExt = (info.imageExt != null && !info.imageExt.isEmpty()) ? info.imageExt : ".png";
+                        if (!imgExt.startsWith(".")) imgExt = "." + imgExt;
+                        Path imgPath = targetDir.resolve(baseName + suffix + imgExt);
+                        Files.write(imgPath, imgResp.body(),
+                            StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+                        PrefabCustomAddon.LOGGER.info("[DOWNLOAD-B] Saved image -> {} ({} bytes)",
+                            imgPath, imgResp.body().length);
+                    } else {
+                        PrefabCustomAddon.LOGGER.info("[DOWNLOAD-B] No image for {} (HTTP {})", info.id, imgResp.statusCode());
+                    }
+                } catch (Exception imgEx) {
+                    PrefabCustomAddon.LOGGER.warn("[DOWNLOAD-B] Image download failed for {}: {}", info.id, imgEx.getMessage());
+                }
+
+                // ---- 3) 元信息 (可选, 404 时静默忽略) ----
+                try {
+                    HttpRequest infoReq = HttpRequest.newBuilder()
+                        .uri(URI.create(urlBase + "/api/buildings/" + enc(info.id) + "/info"))
+                        .timeout(Duration.ofSeconds(15))
+                        .header("User-Agent", "PrefabCustomAddon/1.0")
+                        .GET()
+                        .build();
+                    HttpResponse<byte[]> infoResp = httpClient.send(infoReq, HttpResponse.BodyHandlers.ofByteArray());
+                    if (infoResp.statusCode() / 100 == 2 && infoResp.body().length > 0) {
+                        Path infoPath = targetDir.resolve(baseName + suffix + ".txt");
+                        Files.write(infoPath, infoResp.body(),
+                            StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+                        PrefabCustomAddon.LOGGER.info("[DOWNLOAD-B] Saved info -> {} ({} bytes)",
+                            infoPath, infoResp.body().length);
+                    } else {
+                        PrefabCustomAddon.LOGGER.info("[DOWNLOAD-B] No info for {} (HTTP {})", info.id, infoResp.statusCode());
+                    }
+                } catch (Exception infoEx) {
+                    PrefabCustomAddon.LOGGER.warn("[DOWNLOAD-B] Info download failed for {}: {}", info.id, infoEx.getMessage());
+                }
+
+                if (callback != null) callback.onComplete(filePath);
+            } catch (Exception e) {
+                PrefabCustomAddon.LOGGER.error("[DOWNLOAD-B] Failed", e);
+                if (callback != null) callback.onError(e.getMessage());
+            }
+        }, "BuildingDownload-" + info.id).start();
+    }
+
+    /**
+     * 检查建筑文件是否已经下载过 (按 id + fileExt 匹配).
+     */
+    public boolean isBuildingDownloaded(BuildingInfo2 info) {
+        if (info == null) return false;
+        try {
+            Path dir = getDownloadRoot();
+            if (!Files.exists(dir)) return false;
+            String baseName = safeName(info.name == null || info.name.isEmpty() ? info.id : info.name);
+            String ext = info.fileExt == null || info.fileExt.isEmpty() ? ".nbt" : info.fileExt;
+            // 1) 主名
+            if (Files.exists(dir.resolve(baseName + ext))) return true;
+            // 2) _2 _3 ... 后缀
+            int i = 2;
+            while (i < 100) {
+                if (Files.exists(dir.resolve(baseName + "_" + i + ext))) return true;
+                i++;
+            }
+            return false;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /**
+     * 下载并缓存建筑预览图到本地 temp, 返回字节数组 (失败返回 null).
+     * 缓存到 .minecraft/prefab-download/.cache/&lt;id&gt;&lt;imageExt&gt;
+     * 如果服务器给的 imageExt 为空, 会按 .png / .jpg / .jpeg / .webp 顺序逐个试.
+     */
+    public CompletableFuture<byte[]> fetchBuildingImageAsync(BuildingInfo2 info) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                if (info == null || info.id == null || info.id.isEmpty()) return null;
+                Path cacheDir = getDownloadRoot().resolve(".cache");
+                Files.createDirectories(cacheDir);
+
+                String[] extsToTry;
+                if (info.imageExt != null && !info.imageExt.isEmpty()) {
+                    extsToTry = new String[]{info.imageExt};
+                } else {
+                    extsToTry = new String[]{".png", ".jpg", ".jpeg", ".webp", ".gif"};
+                }
+
+                for (String ext : extsToTry) {
+                    if (ext == null || ext.isEmpty()) continue;
+                    if (!ext.startsWith(".")) ext = "." + ext;
+                    Path imgPath = cacheDir.resolve(info.id + ext);
+                    if (Files.exists(imgPath)) {
+                        return Files.readAllBytes(imgPath);
+                    }
+                    String url = normalizeUrl() + "/api/buildings/" + enc(info.id) + "/image";
+                    HttpRequest req = HttpRequest.newBuilder()
+                        .uri(URI.create(url))
+                        .timeout(Duration.ofSeconds(15))
+                        .header("User-Agent", "PrefabCustomAddon/1.0")
+                        .GET()
+                        .build();
+                    HttpResponse<InputStream> resp = httpClient.send(req, HttpResponse.BodyHandlers.ofInputStream());
+                    if (resp.statusCode() / 100 != 2) {
+                        // 404 时继续尝试下一个扩展名
+                        continue;
+                    }
+                    byte[] data;
+                    try (InputStream in = resp.body()) {
+                        data = in.readAllBytes();
+                    }
+                    if (data.length > 0) {
+                        Files.write(imgPath, data);
+                        return data;
+                    }
+                }
+                PrefabCustomAddon.LOGGER.warn("[DOWNLOAD-B] no image found for {} (tried {} exts)", info.id, extsToTry.length);
+                return null;
+            } catch (Exception e) {
+                PrefabCustomAddon.LOGGER.warn("[DOWNLOAD-B] fetch image failed for {}: {}", info.id, e.getMessage());
+                return null;
+            }
+        });
+    }
 }

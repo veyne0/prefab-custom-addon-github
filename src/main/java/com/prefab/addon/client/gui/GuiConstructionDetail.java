@@ -135,21 +135,21 @@ public final class GuiConstructionDetail {
     private static int statusColor = 0x55FF55;
 
     // === 导航 (上一/下一 建筑) ===
-    /** 当前 pack 的所有建筑 (用于 < > 切换). null = 不支持切换. */
+    /** 当前 pack 的所有建筑 (用于 < > 切换). null = 不支持切换. (新版 UI 已弃用, 保留仅为向后兼容) */
     private static List<ConstructionInfo> navList = null;
-    /** 当前建筑在 navList 中的索引. -1 = 无效. */
+    /** 当前建筑在 navList 中的索引. -1 = 无效. (新版 UI 已弃用) */
     private static int navIndex = -1;
-    /** Prev/Next 按钮引用 (在 createUI 时初始化) */
+    /** Prev/Next 按钮引用 (新版 UI 已移除, 保留字段仅为避免编译错误) */
     private static Button btnPrev;
     private static Button btnNext;
     private static Label titleLabel;
 
-    // === Pack 切换 (Selector) ===
-    /** 所有可见的 pack 列表 (供 Selector 选择) */
+    // === Pack 切换 (Selector) - 新版 UI 已移除 ===
+    /** 所有可见的 pack 列表 (供 Selector 选择) - 新版 UI 不再用 */
     private static List<ExtensionPack> packList = java.util.Collections.emptyList();
-    /** 当前选中的 pack */
+    /** 当前选中的 pack - 新版 UI 不再用 */
     private static ExtensionPack currentPack = null;
-    /** Pack Selector 控件引用 */
+    /** Pack Selector 控件引用 - 新版 UI 不再创建 */
     private static Selector<ExtensionPack> packSelector;
 
     // === 依赖检测结果缓存 ===
@@ -165,6 +165,8 @@ public final class GuiConstructionDetail {
     private static Button btnSelectRef;
     /** "选择并锁定" 按钮引用 - 用于在 syncLockState 里刷新文字/颜色 */
     private static Button lockToggleBtnRef;
+    /** "收藏" 按钮引用 - 右上角 ☆ / ★ 切换 */
+    private static Button btnFavoriteRef;
 
     /**
      * 找玩家主手或背包里的 Custom Blueprint.
@@ -209,94 +211,75 @@ public final class GuiConstructionDetail {
         // 更新底部 [选择并锁定] / [解锁] 按钮的文字/颜色
         if (lockToggleBtnRef != null) {
             String currentText = lockToggleBtnRef.text.getText().getString();
-            if (locked && !currentText.contains("已锁定")) {
-                lockToggleBtnRef.setText("🔒 已锁定");
+            String lockedText = com.prefab.addon.PrefabCustomAddon.tr("gui.detail.locked");
+            String unlockText = com.prefab.addon.PrefabCustomAddon.tr("gui.detail.unlock");
+            if (locked && !currentText.contains("已锁定") && !currentText.contains("Locked")) {
+                lockToggleBtnRef.setText(lockedText);
                 lockToggleBtnRef.text.textStyle(t -> t.textColor(0xFFFFAA55));
-            } else if (!locked && !currentText.contains("选择并锁定")) {
-                lockToggleBtnRef.setText("🔐 选择并锁定");
+            } else if (!locked && !currentText.contains("选择并锁定") && !currentText.contains("Pick and lock")) {
+                lockToggleBtnRef.setText(unlockText);
                 lockToggleBtnRef.text.textStyle(t -> t.textColor(0xFFFFFFFF));
             }
         }
-        // 锁定 → 禁用 prev/next/select; 解锁 → 按 navList 决定
-        if (btnPrev != null) {
-            btnPrev.setActive(!locked && navList != null && navIndex > 0);
-        }
-        if (btnNext != null) {
-            btnNext.setActive(!locked && navList != null
-                && navIndex >= 0 && navIndex < navList.size() - 1);
-        }
+        // 新版 UI 已移除 prev/next 按钮, 只剩 select 需要根据 lock 状态启用
         if (btnSelectRef != null) {
             btnSelectRef.setActive(!locked);
         }
     }
 
     public static void open(ConstructionInfo construction) {
-        openWithNav(construction, null, -1);
-    }
-
-    /**
-     * 打开建筑详情, 支持 < > 切换 (同一 pack 的其他建筑).
-     *
-     * @param construction 当前建筑
-     * @param allInPack 当前建筑所在 pack 的所有建筑列表 (用于切换), null = 不支持切换
-     * @param index current 在 allInPack 中的索引
-     */
-    public static void openWithNav(ConstructionInfo construction, List<ConstructionInfo> allInPack, int index) {
-        // 关键: 必须保留 packList (完整 pack 列表), 否则切换建筑后下拉框只剩当前 pack
-        // 之前的 bug: 传 singlePack 只有 1 个, 用户切建筑后下拉框就只显示 1 个 pack
-        // 如果之前 packList 是空的 (比如用户用 open() 直接进来), 用 getDiscoverablePacks
-        List<ExtensionPack> allPacks;
-        if (!packList.isEmpty()) {
-            allPacks = packList;
-        } else {
-            allPacks = ExtensionPackManager.getInstance().getDiscoverablePacks();
-        }
-        int packIndex = -1;
-        if (construction.getPack() != null) {
-            for (int i = 0; i < allPacks.size(); i++) {
-                if (allPacks.get(i) == construction.getPack()
-                    || (allPacks.get(i).getPackageName() != null
-                        && allPacks.get(i).getPackageName().equals(construction.getPack().getPackageName()))) {
-                    packIndex = i;
-                    break;
-                }
-            }
-        }
-        if (packIndex < 0) {
-            // 当前 pack 不在 discoverable 列表里 (比如没 information/ 目录),
-            // 至少把它自己加进去, 避免下拉框为空
-            allPacks = new ArrayList<>(allPacks);
-            allPacks.add(0, construction.getPack());
-            packIndex = 0;
-        }
-        openWithPackSelector(construction, allInPack, index, allPacks, packIndex);
-    }
-
-    /**
-     * 打开建筑详情 + Pack 选择器, 支持切换 pack 和同一 pack 内的建筑.
-     *
-     * @param construction 当前建筑
-     * @param allInPack 当前建筑所在 pack 的所有建筑列表
-     * @param index construction 在 allInPack 中的索引
-     * @param allPacks 所有可见的 pack 列表 (供 Selector 切换)
-     * @param packIndex current 所在 pack 在 allPacks 中的索引
-     */
-    public static void openWithPackSelector(ConstructionInfo construction, List<ConstructionInfo> allInPack,
-                                             int index, List<ExtensionPack> allPacks, int packIndex) {
         resetState();
         currentConstruction = construction;
-        navList = allInPack;
-        navIndex = index;
-        packList = allPacks != null ? allPacks : java.util.Collections.emptyList();
-        currentPack = (packIndex >= 0 && packIndex < packList.size()) ? packList.get(packIndex) : construction.getPack();
+        // 新版 UI 不再用 navList (无翻页按钮), 但保留字段防止 null 引用
+        navList = null;
+        navIndex = -1;
+        packList = ExtensionPackManager.getInstance().getDiscoverablePacks();
+        currentPack = construction.getPack();
         startAsyncParse(construction);
         ModularUI ui = createUI(construction);
         Minecraft.getInstance().setScreen(
             new ModularUIScreen(ui, Component.literal(construction.getName())));
     }
 
+    /** 安全取 packName, pack 为 null 时用 "local" 兜底 (单文件建筑). */
+    private static String safePkg(ConstructionInfo c) {
+        return (c == null || c.getPack() == null) ? "local" : c.getPack().getPackageName();
+    }
+
     /**
-     * 右键蓝图时调用: 打开第一个 pack 的第一个建筑, 带 Pack 选择器.
+     * 打开建筑详情, 支持 < > 切换 (同一 pack 的其他建筑).
+     *
+     * <p><b>新版 UI 已弃用:</b> 移除下拉框 + 翻页按钮后, openWithNav/openWithPackSelector
+     * 等价于 {@link #open(ConstructionInfo)}.</p>
+     *
+     * @param construction 当前建筑
+     * @param allInPack 当前建筑所在 pack 的所有建筑列表 (已忽略)
+     * @param index current 在 allInPack 中的索引 (已忽略)
+     */
+    public static void openWithNav(ConstructionInfo construction, List<ConstructionInfo> allInPack, int index) {
+        open(construction);
+    }
+
+    /**
+     * 打开建筑详情 + Pack 选择器, 支持切换 pack 和同一 pack 内的建筑.
+     *
+     * <p><b>新版 UI 已弃用:</b> 不再有 pack 下拉框, 所以 packList/packIndex 都被忽略,
+     * 内部直接走 {@link #open(ConstructionInfo)}.</p>
+     *
+     * @param construction 当前建筑
+     * @param allInPack 当前建筑所在 pack 的所有建筑列表 (已忽略)
+     * @param index construction 在 allInPack 中的索引 (已忽略)
+     * @param allPacks 所有可见的 pack 列表 (已忽略)
+     * @param packIndex current 所在 pack 在 allPacks 中的索引 (已忽略)
+     */
+    public static void openWithPackSelector(ConstructionInfo construction, List<ConstructionInfo> allInPack,
+                                             int index, List<ExtensionPack> allPacks, int packIndex) {
+        open(construction);
+    }
+
+    /**
+     * 右键蓝图时调用: 打开第一个 pack 的第一个建筑.
+     * <p>新版 UI 不再使用, 但保留供 CustomStructureGui 兼容.</p>
      */
     public static void openFirstAvailable() {
         ExtensionPackManager mgr = ExtensionPackManager.getInstance();
@@ -311,7 +294,7 @@ public final class GuiConstructionDetail {
             PrefabCustomAddon.LOGGER.warn("[DETAIL] openFirstAvailable: pack '{}' has no constructions", firstPack.getName());
             return;
         }
-        openWithPackSelector(constructions.get(0), constructions, 0, packs, 0);
+        open(constructions.get(0));
     }
 
     private static void resetState() {
@@ -339,6 +322,7 @@ public final class GuiConstructionDetail {
             packSelector = null;
             lockToggleBtnRef = null;
             btnSelectRef = null;
+            btnFavoriteRef = null;
             // 清空依赖检测缓存 (新建筑需要重新检测)
             lastMissingMods = null;
             lastCheckPackConstructionKey = null;
@@ -353,7 +337,10 @@ public final class GuiConstructionDetail {
      */
     private static void startAsyncParse(ConstructionInfo construction) {
         final String name = construction.getName();
-        final String packId = construction.getPack().getPackageName();
+        // 防御: 单文件建筑 (LocalBuilding 转的 ConstructionInfo) 没有 pack, 用 id 兜底
+        String packId = (construction.getPack() != null)
+            ? construction.getPack().getPackageName()
+            : ("local:" + construction.getId());
         synchronized (parseLock) {
             parseFuture = CompletableFuture.supplyAsync(() -> {
                 long t0 = System.currentTimeMillis();
@@ -579,21 +566,26 @@ public final class GuiConstructionDetail {
     /**
      * 导航到 navList 中的另一个建筑.
      * 关闭当前屏幕, 重新打开目标建筑 (不重新加载 NBT 解析, 全新 state).
+     *
+     * <p><b>新版 UI 已弃用:</b> 无 prev/next 按钮, 这个方法不会被调用. 保留仅为向后兼容.</p>
      */
     private static void navigateTo(int newIndex) {
         if (navList == null) return;
         if (newIndex < 0 || newIndex >= navList.size()) return;
         ConstructionInfo next = navList.get(newIndex);
         if (next == null) return;
-        PrefabCustomAddon.LOGGER.info("[DETAIL] navigate: {} → {} (index {} → {})",
+        PrefabCustomAddon.LOGGER.info("[DETAIL] navigate: {} → {} (index {} → {}) [DEPRECATED, no prev/next button in new UI]",
             currentConstruction != null ? currentConstruction.getName() : "?",
             next.getName(), navIndex, newIndex);
-        // 重新打开, 触发 resetState + startAsyncParse
-        openWithNav(next, navList, newIndex);
+        open(next);
     }
 
     private static ModularUI createUI(ConstructionInfo construction) {
-        PrefabCustomAddon.LOGGER.info("[DETAIL] createUI: 构造='{}' pack='{}'", construction.getName(), construction.getPack().getName());
+        // 单文件建筑没有 pack, 用 id 兜底, 避免 LOGGER NPE
+        String packLabel = (construction.getPack() != null)
+            ? construction.getPack().getName()
+            : "本地单文件";
+        PrefabCustomAddon.LOGGER.info("[DETAIL] createUI: 构造='{}' pack='{}'", construction.getName(), packLabel);
 
         // 1) 根容器 - 填满屏幕 (widthPercent/heightPercent 100%)
         //   关键: 不能用固定 width/height 超过 guiScaledWidth (GUI scale 2 时 = 427),
@@ -608,31 +600,9 @@ public final class GuiConstructionDetail {
         root.style(s -> s.background(Sprites.BORDER));
         root.setOverflowVisible(false);
 
-        // 2) Pack 选择栏: [Pack Selector] - 普通 column child, 固定高度 22
-        //   让玩家用下拉框切换不同的拓展包, 切换后回到该 pack 的第一个建筑
-        packSelector = new Selector<ExtensionPack>();
-        packSelector.setCandidates(packList);
-        PrefabCustomAddon.LOGGER.info("[DETAIL] createUI: packSelector created with {} candidates: {}",
-            packList.size(), packList.stream().map(ExtensionPack::getName).toList());
-        packSelector.setValue(currentPack);
-        packSelector.setOnValueChanged(newPack -> {
-            PrefabCustomAddon.LOGGER.info("[DETAIL] packSelector onValueChanged: '{}' → '{}', packList size={}",
-                currentPack != null ? currentPack.getName() : "null",
-                newPack != null ? newPack.getName() : "null",
-                packList.size());
-            if (newPack == null || newPack == currentPack) return;
-            List<ConstructionInfo> allInNewPack = new ArrayList<>(newPack.getConstructions());
-            if (allInNewPack.isEmpty()) return;
-            openWithPackSelector(allInNewPack.get(0), allInNewPack, 0, packList, packList.indexOf(newPack));
-        });
-        packSelector.layout(l -> l.widthPercent(100).height(22));
-        packSelector.selectorStyle(s -> s
-            .scrollerViewHeight(120)
-            .maxItemCount(8)
-        );
-        root.addChild(packSelector);
-
-        // 3) 标题栏: [Prev] 标题 [Next] - 普通 column child, 固定高度 22
+        // 新版 UI: 移除 packSelector 下拉框 + prev/next 翻页按钮
+        //   (新版从 GuiExtensionPackBrowser 直接进 construction 详情, 切换建筑在 browser 层做)
+        //   标题栏现在只放: [← 返回] 标题 [☆ 收藏]
         UIElement titleRow = new UIElement();
         titleRow.layout(l -> l
             .flexDirection(FlexDirection.ROW)
@@ -644,41 +614,73 @@ public final class GuiConstructionDetail {
         titleRow.style(s -> s.background(Sprites.RECT_DARK));
         titleRow.setOverflowVisible(false);
 
-        // Prev 按钮: 切到上一个建筑
-        btnPrev = new Button().setText("◀");
-        btnPrev.textStyle(t -> t.textAlignHorizontal(Horizontal.CENTER));
-        btnPrev.layout(l -> l.width(32).height(20));
-        if (navList != null && navIndex > 0) {
-            btnPrev.setOnClick(e -> navigateTo(navIndex - 1));
-            btnPrev.setActive(true);
-        } else {
-            btnPrev.setActive(false);
-        }
-        titleRow.addChild(btnPrev);
+        // 返回浏览器按钮 (左侧)
+        Button btnBackToBrowser = new Button().setText(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.back"));
+        btnBackToBrowser.textStyle(t -> t.textAlignHorizontal(Horizontal.CENTER));
+        btnBackToBrowser.layout(l -> l.width(56).height(20));
+        btnBackToBrowser.setOnClick(e -> {
+            // 关闭当前详情, 重新打开新版的 tabbed browser
+            GuiExtensionPackBrowser.open();
+        });
+        titleRow.addChild(btnBackToBrowser);
 
         // 标题 (居中, flexGrow 占据中间)
         titleLabel = new Label();
-        titleLabel.setText(buildTitleText(construction));
+        titleLabel.setText(construction.getName());
         titleLabel.textStyle(t -> t.textAlignHorizontal(Horizontal.CENTER));
         titleLabel.layout(l -> l.flexGrow(1).height(20));
         titleRow.addChild(titleLabel);
 
-        // Next 按钮: 切到下一个建筑
-        btnNext = new Button().setText("▶");
-        btnNext.textStyle(t -> t.textAlignHorizontal(Horizontal.CENTER));
-        btnNext.layout(l -> l.width(32).height(20));
-        if (navList != null && navIndex >= 0 && navIndex < navList.size() - 1) {
-            btnNext.setOnClick(e -> navigateTo(navIndex + 1));
-            btnNext.setActive(true);
+        // 收藏按钮 (右侧, 右上角)
+        //   - 已收藏: 显示 "★ 已收藏" (黄色)
+        //   - 未收藏: 显示 "☆ 收藏" (白色)
+        //   - 点击: 切换 + 持久化到 PlayerPreferences
+        String pkg = construction.getPack() != null ? construction.getPack().getPackageName() : null;
+        boolean fav = com.prefab.addon.config.PlayerPreferences.get().isFavorite(pkg, construction.getId());
+        final Button btnFavorite = new Button();
+        String favText = com.prefab.addon.PrefabCustomAddon.tr(fav ? "gui.detail.favorited" : "gui.detail.favorite");
+        btnFavorite.setText(favText);
+        btnFavorite.text.textStyle(t -> t.textColor(fav ? 0xFFFFDD66 : 0xFFFFFFFF));
+        btnFavorite.textStyle(t -> t.textAlignHorizontal(Horizontal.CENTER));
+        btnFavorite.layout(l -> l.width(72).height(20));
+        btnFavorite.setOnClick(e -> {
+            boolean nowFav = com.prefab.addon.config.PlayerPreferences.get()
+                .toggleFavorite(pkg, construction.getId());
+            String newText = com.prefab.addon.PrefabCustomAddon.tr(nowFav ? "gui.detail.favorited" : "gui.detail.favorite");
+            btnFavorite.setText(newText);
+            btnFavorite.text.textStyle(t -> t.textColor(nowFav ? 0xFFFFDD66 : 0xFFFFFFFF));
+            showStatus(com.prefab.addon.PrefabCustomAddon.tr(nowFav ? "gui.detail.add_favorite" : "gui.detail.remove_favorite"),
+                nowFav ? 0x55FF55 : 0xFFAA55, 60);
+        });
+        btnFavoriteRef = btnFavorite;
+        titleRow.addChild(btnFavorite);
+
+        // "生成缩略图" 按钮 (3D 预览渲染完成后, 可以截屏存到 ThumbnailCache)
+        //  - 已有原图 (hasPreviewImage): 显示为禁用 + "已有原图"
+        //  - 已有缓存: 显示 "更新缩略图"
+        //  - 无缓存: 显示 "生成缩略图"
+        final Button btnCaptureThumb = new Button();
+        boolean hasOrigImg = construction.hasPreviewImage();
+        boolean hasCachedThumb = !hasOrigImg && com.prefab.addon.client.ThumbnailCache.hasCached(construction);
+        if (hasOrigImg) {
+            btnCaptureThumb.setText(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.has_thumb"));
+            btnCaptureThumb.setActive(false);
+        } else if (hasCachedThumb) {
+            btnCaptureThumb.setText(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.update_thumb"));
         } else {
-            btnNext.setActive(false);
+            btnCaptureThumb.setText(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.generate_thumb"));
         }
-        titleRow.addChild(btnNext);
+        btnCaptureThumb.text.textStyle(t -> t.textColor(0xFFAAFFAA));
+        btnCaptureThumb.textStyle(t -> t.textAlignHorizontal(Horizontal.CENTER));
+        btnCaptureThumb.layout(l -> l.width(80).height(20));
+        btnCaptureThumb.setOnClick(e -> {
+            // 把 3D 预览截屏到 ThumbnailCache
+            captureCurrentSceneToThumbnail();
+        });
+        titleRow.addChild(btnCaptureThumb);
 
         root.addChild(titleRow);
-        PrefabCustomAddon.LOGGER.info("[DETAIL] titleRow added: navList={}, navIndex={}, prev={}, next={}",
-            navList != null ? navList.size() : "null", navIndex,
-            navList != null && navIndex > 0, navList != null && navIndex >= 0 && navIndex < navList.size() - 1);
+        PrefabCustomAddon.LOGGER.info("[DETAIL] titleRow added (new version: Back + title + Favorite, no selector/prev/next)");
         // 在 tick handler 里 log 实际尺寸
         final int[] counter = {0};
         titleRow.addEventListener(UIEvents.TICK, e -> {
@@ -715,7 +717,7 @@ public final class GuiConstructionDetail {
 
         // 初始 placeholder (renderScene 还没创建时显示)
         final TextElement scenePlaceholder = new TextElement();
-        scenePlaceholder.setText("3D 加载中...\n(等待 NBT 解析)");
+        scenePlaceholder.setText(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.load_3d"));
         scenePlaceholder.textStyle(t -> t
             .textAlignHorizontal(Horizontal.CENTER)
             .textColor(0xAAAAAA)
@@ -726,7 +728,7 @@ public final class GuiConstructionDetail {
 
         // 3b) 进度文字 (保留 - 3D 渲染时显示进度)
         progressEl = new TextElement();
-        progressEl.setText("解析 NBT 中...");
+        progressEl.setText(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.parsing"));
         progressEl.textStyle(t -> t.textColor(0xFFFF55).textAlignHorizontal(Horizontal.CENTER));
         progressEl.layout(l -> l.widthPercent(100).height(12));
 
@@ -753,13 +755,13 @@ public final class GuiConstructionDetail {
         btnBack.layout(l -> l.flexGrow(1).heightPercent(100));
         buttonRow.addChild(btnBack);
 
-        Button btnCheckDeps = new Button().setText("检测依赖");
+        Button btnCheckDeps = new Button().setText(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.check_deps_btn"));
         btnCheckDeps.setOnClick(e -> runDepCheck(construction));
         btnCheckDeps.layout(l -> l.flexGrow(1).heightPercent(100));
         buttonRow.addChild(btnCheckDeps);
 
         // "选择" 按钮 = 绑定当前 construction 到玩家主手 (或背包里) 的 自定义蓝图
-        Button btnSelect = new Button().setText("选择");
+        Button btnSelect = new Button().setText(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.select"));
         btnSelect.setOnClick(e -> bindCurrentConstruction(construction, false));
         btnSelect.layout(l -> l.flexGrow(1).heightPercent(100));
         btnSelectRef = btnSelect;
@@ -770,7 +772,9 @@ public final class GuiConstructionDetail {
         //   - 点击行为: 未锁定 → 绑定 + 锁定; 已锁定 → 解锁 (允许重新 [选择] 换建筑)
         final Button lockToggleBtn = new Button();
         final boolean initiallyLocked = isCurrentBlueprintLockedTo(construction);
-        lockToggleBtn.setText(initiallyLocked ? "🔒 已锁定" : "🔐 选择并锁定");
+        lockToggleBtn.setText(initiallyLocked
+            ? com.prefab.addon.PrefabCustomAddon.tr("gui.detail.locked")
+            : com.prefab.addon.PrefabCustomAddon.tr("gui.detail.unlock"));
         lockToggleBtn.text.textStyle(t -> t.textColor(initiallyLocked ? 0xFFFFAA55 : 0xFFFFFFFF));
         lockToggleBtn.layout(l -> l.flexGrow(1).heightPercent(100));
         lockToggleBtn.setOnClick(e -> {
@@ -780,16 +784,16 @@ public final class GuiConstructionDetail {
                 ItemStack stack = findBlueprintInHandOrInv();
                 if (stack.isEmpty()
                     || !(stack.getItem() instanceof com.prefab.addon.items.CustomBlueprintItem)) {
-                    showStatus("✗ 找不到 自定义蓝图 (主手/背包)", 0xFF5555, 100);
+                    showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.no_blueprint_in_hand"), 0xFF5555, 100);
                     return;
                 }
                 if (!com.prefab.addon.items.CustomBlueprintItem.isBoundTo(stack, construction)) {
-                    showStatus("✗ 当前蓝图绑的是别的建筑, 不能解锁", 0xFF5555, 100);
+                    showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.locked_other_unlock"), 0xFF5555, 100);
                     return;
                 }
                 com.prefab.addon.items.CustomBlueprintItem.setLocked(stack,
                     construction.getPack().getName(), construction.getId(), false);
-                showStatus("🔓 已解锁, 可以重新 [选择] 换建筑", 0x55FF55, 100);
+                showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.unlocked"), 0x55FF55, 100);
             } else {
                 // 未锁定 → 绑定当前建筑 + 锁定
                 //   - 如果蓝图已绑别的建筑, bindCurrentConstruction 内会检查并提示
@@ -797,11 +801,11 @@ public final class GuiConstructionDetail {
                 ItemStack stack = findBlueprintInHandOrInv();
                 if (stack.isEmpty()
                     || !(stack.getItem() instanceof com.prefab.addon.items.CustomBlueprintItem)) {
-                    showStatus("✗ 找不到 自定义蓝图 (主手/背包)", 0xFF5555, 100);
+                    showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.no_blueprint_in_hand"), 0xFF5555, 100);
                     return;
                 }
                 if (com.prefab.addon.items.CustomBlueprintItem.isLocked(stack)) {
-                    showStatus("✗ 当前蓝图已锁定到别的建筑, 请先解锁", 0xFF5555, 100);
+                    showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.locked_other_bind"), 0xFF5555, 100);
                     return;
                 }
                 // 调 bindCurrentConstruction, 内部会 bind + 延迟关闭 GUI
@@ -859,14 +863,14 @@ public final class GuiConstructionDetail {
                     sceneContainer.clearAllChildren();
                     renderScene.layout(l -> l.widthPercent(100).heightPercent(100));
                     sceneContainer.addChild(renderScene);
-                    progressEl.setText("渲染 0%");
+                    progressEl.setText(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.render_0"));
                     PrefabCustomAddon.LOGGER.info("[DETAIL] tick#{} Scene 已添加到 sceneContainer, scene.size={}x{} sceneContainer.size={}x{}",
                         tickNum,
                         (int) renderScene.getSizeWidth(), (int) renderScene.getSizeHeight(),
                         (int) sceneContainer.getSizeWidth(), (int) sceneContainer.getSizeHeight());
                 } else if (renderDone) {
-                    scenePlaceholder.setText("3D 预览不可用\n(场景创建失败)");
-                    progressEl.setText("✗ 无 3D");
+                    scenePlaceholder.setText(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.3d_unavailable"));
+                    progressEl.setText(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.render_fail"));
                     progressEl.textStyle(t -> t.textColor(0xFF5555));
                     PrefabCustomAddon.LOGGER.warn("[DETAIL] tick#{} Scene 创建失败 (renderDone=true)", tickNum);
                 }
@@ -878,7 +882,7 @@ public final class GuiConstructionDetail {
                 progressTickCounter++;
                 if (progressTickCounter >= PROGRESS_UPDATE_TICKS) {
                     progressTickCounter = 0;
-                    progressEl.setText("渲染 " + getRenderProgress() + "%");
+                    progressEl.setText(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.render_pct", getRenderProgress()));
                 }
                 if (tickNum % 20 == 0) {
                     PrefabCustomAddon.LOGGER.info("[DETAIL] tick#{} 渲染中 {}/{} ({}%) scene.size={}x{}",
@@ -891,7 +895,7 @@ public final class GuiConstructionDetail {
             // 5d) render 完成 / parse 失败 / 空结果 - 统一处理终态
             if (renderDone) {
                 if (renderScene != null) {
-                    progressEl.setText("✓ 完成 (" + renderTotalBlocks + " 块)");
+                    progressEl.setText(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.done_label", renderTotalBlocks));
                     progressEl.textStyle(t -> t.textColor(0x55FF55));
                     if (tickNum == debugTickCounter[0] || tickNum % 60 == 0) {
                         PrefabCustomAddon.LOGGER.info("[DETAIL] tick#{} 渲染完成 scene.size={}x{} eyePos={} lookAt={} zoom={} useOrtho={}",
@@ -904,26 +908,26 @@ public final class GuiConstructionDetail {
                     }
                 } else {
                     if (parseFailed) {
-                        progressEl.setText("✗ 解析失败");
+                        progressEl.setText(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.parse_fail_label"));
                         progressEl.textStyle(t -> t.textColor(0xFF5555));
                     } else if (parseResult != null && parseResult.isEmpty()) {
-                        progressEl.setText("⚠ 无可显示方块");
+                        progressEl.setText(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.no_blocks_label"));
                         progressEl.textStyle(t -> t.textColor(0xFFAA55));
-                        scenePlaceholder.setText("无 3D 内容\n(所有方块均为 air\n可能缺依赖 mod)");
+                        scenePlaceholder.setText(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.no_3d_content"));
                         scenePlaceholder.textStyle(t -> t.textColor(0xFFAA55)
                             .textAlignHorizontal(Horizontal.CENTER)
                             .textWrap(TextWrap.WRAP));
                     } else {
-                        progressEl.setText("✗ 渲染失败");
+                        progressEl.setText(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.render_fail_label"));
                         progressEl.textStyle(t -> t.textColor(0xFF5555));
                     }
                 }
             } else if (parseFailed) {
-                progressEl.setText("✗ 解析失败");
+                progressEl.setText(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.parse_fail_label"));
                 progressEl.textStyle(t -> t.textColor(0xFF5555));
                 renderDone = true;
             } else if (parseComplete && parseResult != null && parseResult.isEmpty()) {
-                progressEl.setText("⚠ 无可显示方块");
+                progressEl.setText(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.no_blocks_label"));
                 progressEl.textStyle(t -> t.textColor(0xFFAA55));
                 renderDone = true;
             }
@@ -936,7 +940,7 @@ public final class GuiConstructionDetail {
                 if (statusTick <= 0) {
                     statusMsg = null;
                     if (renderDone && renderScene != null) {
-                        progressEl.setText("✓ 完成 (" + renderTotalBlocks + " 块)");
+                        progressEl.setText(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.done_label", renderTotalBlocks));
                         progressEl.textStyle(t -> t.textColor(0x55FF55));
                     }
                 }
@@ -967,10 +971,11 @@ public final class GuiConstructionDetail {
         content.addChild(progressEl);
 
         // 建筑名
-        addField(content, "建筑名", construction.getName());
+        addField(content, com.prefab.addon.PrefabCustomAddon.tr("gui.detail.name"), construction.getName());
         // 作者
         String author = construction.getAuthor();
-        addField(content, "作者", (author != null && !author.isEmpty()) ? author : "未知");
+        addField(content, com.prefab.addon.PrefabCustomAddon.tr("gui.detail.author"),
+            (author != null && !author.isEmpty()) ? author : com.prefab.addon.PrefabCustomAddon.tr("gui.detail.unknown"));
         // 尺寸 (用 getSize 字段, 解析前的 bounding box 计算)
         int[] computedSize = computeSize(parseResult); // 可能为 null (parse 还没完成)
         String sizeStr;
@@ -979,20 +984,20 @@ public final class GuiConstructionDetail {
         } else if (construction.getSize() != null) {
             sizeStr = construction.getSize();
         } else {
-            sizeStr = "未知";
+            sizeStr = com.prefab.addon.PrefabCustomAddon.tr("gui.detail.unknown");
         }
-        addField(content, "尺寸", sizeStr);
+        addField(content, com.prefab.addon.PrefabCustomAddon.tr("gui.detail.size"), sizeStr);
 
         // 蓝图格式: 用 construction.format (创建建筑时填的, 保存到 construction/<id>.txt).
         //   - 创建过的建筑 (有 "蓝图格式:" 行): 显示用户填的 (nbt / litematic / schem)
         //   - 旧建筑 (没填过格式): 显示"未知"
         String format = construction.getFormatDisplay();
-        addField(content, "蓝图格式", format);
+        addField(content, com.prefab.addon.PrefabCustomAddon.tr("gui.detail.format"), format);
 
         // 依赖 mod - 使用独立容器, 检测后可动态 rebuild
         currentDisplayedConstruction = construction;
         List<String> deps = construction.getDependencies();
-        addFieldLabel(content, "依赖 mod (" + (deps == null ? 0 : deps.size()) + ")");
+        addFieldLabel(content, com.prefab.addon.PrefabCustomAddon.tr("gui.detail.dep_label", deps == null ? 0 : deps.size()));
         depListContainer = new UIElement();
         depListContainer.layout(l -> l
             .flexDirection(FlexDirection.COLUMN)
@@ -1004,9 +1009,10 @@ public final class GuiConstructionDetail {
 
         // 描述
         String desc = construction.getDescription();
-        addFieldLabel(content, "描述");
+        addFieldLabel(content, com.prefab.addon.PrefabCustomAddon.tr("gui.detail.desc"));
         TextElement descEl = new TextElement();
-        descEl.setText((desc == null || desc.isEmpty()) ? "无" : desc);
+        descEl.setText((desc == null || desc.isEmpty())
+            ? com.prefab.addon.PrefabCustomAddon.tr("gui.detail.desc_empty") : desc);
         descEl.textStyle(t -> t.textColor(0xCCCCCC).textWrap(TextWrap.WRAP));
         descEl.layout(l -> l.widthPercent(100).height(50));
         content.addChild(descEl);
@@ -1024,10 +1030,12 @@ public final class GuiConstructionDetail {
         depListContainer.clearAllChildren();
         List<String> deps = construction.getDependencies();
         if (deps == null || deps.isEmpty()) {
-            addValueLine(depListContainer, "无", 0xAAAAAA);
+            addValueLine(depListContainer, com.prefab.addon.PrefabCustomAddon.tr("gui.detail.deps_none"), 0xAAAAAA);
             return;
         }
-        String currentKey = construction.getPack().getPackageName() + "/" + construction.getId();
+        String currentKey = (construction.getPack() != null
+            ? construction.getPack().getPackageName()
+            : "local") + "/" + construction.getId();
         boolean hasCheckResult = lastCheckPackConstructionKey != null
             && lastCheckPackConstructionKey.equals(currentKey)
             && lastMissingMods != null;
@@ -1037,13 +1045,13 @@ public final class GuiConstructionDetail {
             if (colon > 0) cleanId = cleanId.substring(0, colon);
             if (hasCheckResult && lastMissingMods.contains(cleanId)) {
                 // 缺失 - 红色 + 红叉
-                addValueLine(depListContainer, "✗ " + d, 0xFF5555);
+                addValueLine(depListContainer, com.prefab.addon.PrefabCustomAddon.tr("gui.detail.dep_missing", d), 0xFF5555);
             } else if (hasCheckResult) {
                 // 已安装 - 绿色 + 绿勾
-                addValueLine(depListContainer, "✓ " + d, 0x55FF55);
+                addValueLine(depListContainer, com.prefab.addon.PrefabCustomAddon.tr("gui.detail.dep_present", d), 0x55FF55);
             } else {
                 // 未检测 - 白色
-                addValueLine(depListContainer, "• " + d, 0xFFFFFF);
+                addValueLine(depListContainer, com.prefab.addon.PrefabCustomAddon.tr("gui.detail.dep_unknown", d), 0xFFFFFF);
             }
         }
     }
@@ -1099,13 +1107,15 @@ public final class GuiConstructionDetail {
             missing.add(colon > 0 ? m.substring(0, colon) : m);
         }
         lastMissingMods = missing;
-        lastCheckPackConstructionKey = construction.getPack().getPackageName() + "/" + construction.getId();
+        lastCheckPackConstructionKey = (construction.getPack() != null
+            ? construction.getPack().getPackageName()
+            : "local") + "/" + construction.getId();
         PrefabCustomAddon.LOGGER.info("[DETAIL] Dep check done: missing={}, present={}",
             result.missing, result.present);
 
         // 关键: 实时重建依赖列表 UI, 让 ✗/✓ 立即显示
         if (currentDisplayedConstruction != null
-            && currentDisplayedConstruction.getPack().getPackageName().equals(construction.getPack().getPackageName())
+            && safePkg(currentDisplayedConstruction).equals(safePkg(construction))
             && currentDisplayedConstruction.getId().equals(construction.getId())) {
             rebuildDepList(construction);
         }
@@ -1113,9 +1123,10 @@ public final class GuiConstructionDetail {
         // 简化状态消息: 顶部状态栏只显示简短结果 (依赖详情在左侧 mod 列表里用 ✗/✓ 显示)
         String shortMsg;
         if (result.missing.isEmpty()) {
-            shortMsg = "✓ 依赖检测通过 (" + result.present.size() + "/" + (deps == null ? 0 : deps.size()) + ")";
+            shortMsg = com.prefab.addon.PrefabCustomAddon.tr("gui.detail.dep_check_pass",
+                result.present.size(), (deps == null ? 0 : deps.size()));
         } else {
-            shortMsg = "✗ 检测完成 - 见左侧 ✗ 标记";
+            shortMsg = com.prefab.addon.PrefabCustomAddon.tr("gui.detail.dep_check_done");
         }
         statusMsg = shortMsg;
         statusColor = result.missing.isEmpty() ? 0x55FF55 : 0xFFAA55;
@@ -1137,13 +1148,18 @@ public final class GuiConstructionDetail {
      *                  false = 只绑定, 不锁 (用于 [选择] 按钮)
      */
     private static void bindCurrentConstruction(ConstructionInfo construction, boolean lockAfter) {
-        if (construction == null || construction.getPack() == null) {
-            showStatus("✗ 当前建筑无效", 0xFF5555, 100);
+        // 单文件建筑 (下载/独立 .nbt) 没有 pack, 用 localNbtPath 作为有效校验
+        boolean isValid = construction != null
+            && (construction.getPack() != null
+                || (construction.getLocalNbtPath() != null
+                    && java.nio.file.Files.exists(construction.getLocalNbtPath())));
+        if (!isValid) {
+            showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.invalid_construction"), 0xFF5555, 100);
             return;
         }
         net.minecraft.client.player.LocalPlayer player = Minecraft.getInstance().player;
         if (player == null) {
-            showStatus("✗ 玩家不存在", 0xFF5555, 100);
+            showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.no_player"), 0xFF5555, 100);
             return;
         }
 
@@ -1163,11 +1179,11 @@ public final class GuiConstructionDetail {
         }
 
         if (stack.isEmpty() || !(stack.getItem() instanceof com.prefab.addon.items.CustomBlueprintItem)) {
-            showStatus("✗ 背包里没有 自定义蓝图 物品!", 0xFF5555, 100);
+            showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.no_blueprint_inv"), 0xFF5555, 100);
             return;
         }
         if (com.prefab.addon.items.CustomBlueprintItem.isLocked(stack)) {
-            showStatus("✗ 蓝图已锁定, 无法重新绑定", 0xFF5555, 100);
+            showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.blueprint_locked_rebind"), 0xFF5555, 100);
             return;
         }
 
@@ -1176,7 +1192,9 @@ public final class GuiConstructionDetail {
         // 了 packageName, 玩家右键蓝图时 ClientHandler.openGuiForStack → findConstruction
         // 就会返回 null, "bound but info is null", 蓝图右键无反应.
         // CustomBlueprintItem.isBoundTo 也是用 getName() 做比较, 保持一致.
-        String packName = construction.getPack().getName();
+        String packName = (construction.getPack() != null)
+            ? construction.getPack().getName()
+            : "local";
         String constructionId = construction.getId();
         PrefabCustomAddon.LOGGER.info("[DETAIL] bind: pack='{}' id='{}' → 蓝图 '{}' (lockAfter={})",
             packName, constructionId,
@@ -1190,9 +1208,9 @@ public final class GuiConstructionDetail {
         if (lockAfter) {
             // 立即锁定, 让这个蓝图绑死在这个建筑上, 玩家之后 [选择] 别的建筑会被拒绝
             com.prefab.addon.items.CustomBlueprintItem.setLocked(stack, packName, constructionId, true);
-            showStatus("🔒 已绑定并锁定: " + construction.getName(), 0xFFAA55, 60);
+            showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.bound_and_locked", construction.getName()), 0xFFAA55, 60);
         } else {
-            showStatus("✓ 已绑定: " + construction.getName(), 0x55FF55, 60);
+            showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.bound", construction.getName()), 0x55FF55, 60);
         }
 
         // 延迟 1.5 秒关闭, 让玩家看到成功提示
@@ -1203,5 +1221,129 @@ public final class GuiConstructionDetail {
                 Minecraft.getInstance().setScreen(null);
             });
         }, "DETAIL-Bind-Close").start();
+    }
+
+    /**
+     * 截屏当前 3D 预览到 ThumbnailCache.
+     *
+     * <p>流程:
+     * <ol>
+     *   <li>拿到 renderScene 在屏幕上的位置和大小</li>
+     *   <li>建一个 96x96 FBO</li>
+     *   <li>把 Scene 渲染到 FBO</li>
+     *   <li>readPixels 出来, 调 ThumbnailCache.captureCurrentFrame 保存</li>
+     * </ol>
+     */
+    private static void captureCurrentSceneToThumbnail() {
+        if (renderScene == null || currentConstruction == null) {
+            showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.thumb_not_ready"), 0xFF5555, 60);
+            return;
+        }
+        if (currentConstruction.hasPreviewImage()) {
+            showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.thumb_has_orig"), 0xFFAA55, 60);
+            return;
+        }
+        if (com.prefab.addon.client.ThumbnailCache.hasCached(currentConstruction)) {
+            // 已有缓存, 删除旧的再生成
+            try {
+                java.nio.file.Files.deleteIfExists(
+                    com.prefab.addon.client.ThumbnailCache.getCacheFile(currentConstruction));
+            } catch (Exception ignored) {}
+        }
+        try {
+            // 1. 拿到 Scene 在屏幕上的位置
+            int sceneScreenX = (int) renderScene.getPositionX();
+            int sceneScreenY = (int) renderScene.getPositionY();
+            int sceneScreenW = (int) renderScene.getSizeWidth();
+            int sceneScreenH = (int) renderScene.getSizeHeight();
+            if (sceneScreenW <= 0 || sceneScreenH <= 0) {
+                showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.thumb_not_drawn"), 0xFF5555, 60);
+                return;
+            }
+            PrefabCustomAddon.LOGGER.info("[DETAIL] 截屏: scenePos=({},{}) size={}x{}",
+                sceneScreenX, sceneScreenY, sceneScreenW, sceneScreenH);
+
+            // 2. 在屏幕上画一个 96x96 的隐藏区域, 让 Scene 渲染到那
+            //    简单做法: 改 Scene 大小到 96x96, 触发一次重绘, 然后从 framebuffer 读
+            //    但 LDLib2 的 Scene 是通过 layout 定位, 改 size 不一定立即生效
+            //
+            //    更稳妥: 直接从 framebuffer 读 Scene 当前位置的内容
+            //    Minecraft 默认 framebuffer 是屏幕的 (guiScale 缩放后), 我们的屏幕坐标跟
+            //    framebuffer 坐标在 guiScale 下不同. 但 Scene 渲染时, PoseStack 的 translate
+            //    已经把屏幕坐标转换成 MC GUI 坐标了. 我们读 framebuffer 时用 (sceneScreenX,
+            //    sceneScreenY) 即可, 因为 glReadPixels 接受窗口坐标.
+            //
+            // 3. 实际上 glReadPixels 是从 framebuffer 当前 framebuffer 读, 坐标是相对于
+            //    framebuffer 的左下角. Minecraft 的 main framebuffer 大小 = 实际像素 (不是 GUI 单位).
+            //    我们需要 guiScale 缩放系数.
+            //
+            //    简单方案: 用 1.21.1 的 Minecraft.getInstance().getMainRenderTarget() 拿到 framebuffer,
+            //    然后用它的尺寸 + 我们的 GUI 坐标算出像素位置.
+
+            int mcWinW = Minecraft.getInstance().getWindow().getWidth();
+            int mcWinH = Minecraft.getInstance().getWindow().getHeight();
+            int guiScale = Minecraft.getInstance().options.guiScale().get();
+            if (guiScale == 0) guiScale = 1;
+            int fbW = mcWinW;
+            int fbH = mcWinH;
+            // framebuffer 坐标 = 屏幕坐标 * (实际像素 / 屏幕 GUI 像素)
+            // GUI 单位下 width=Minecraft.getInstance().getWindow().getGuiScaledWidth()
+            int guiW = Minecraft.getInstance().getWindow().getGuiScaledWidth();
+            int guiH = Minecraft.getInstance().getWindow().getGuiScaledHeight();
+            double scaleX = (double) fbW / guiW;
+            double scaleY = (double) fbH / guiH;
+            int px = (int) (sceneScreenX * scaleX);
+            int py_fb = (int) ((guiH - sceneScreenY - sceneScreenH) * scaleY);  // GL 是从下往上
+            int pw = (int) (sceneScreenW * scaleX);
+            int ph = (int) (sceneScreenH * scaleY);
+
+            // 截屏 scene 区域
+            java.nio.ByteBuffer buf = org.lwjgl.BufferUtils.createByteBuffer(pw * ph * 4);
+            org.lwjgl.opengl.GL11.glReadPixels(px, py_fb, pw, ph,
+                org.lwjgl.opengl.GL11.GL_RGBA, org.lwjgl.opengl.GL11.GL_UNSIGNED_BYTE, buf);
+
+            // 缩放到 96x96 (直接用 Java 缩放, 简单)
+            com.mojang.blaze3d.platform.NativeImage fullImg =
+                new com.mojang.blaze3d.platform.NativeImage(pw, ph, false);
+            byte[] row = new byte[pw * 4];
+            for (int y = 0; y < ph; y++) {
+                buf.position((ph - 1 - y) * pw * 4);
+                buf.get(row);
+                for (int x = 0; x < pw; x++) {
+                    int r = row[x * 4] & 0xFF;
+                    int g = row[x * 4 + 1] & 0xFF;
+                    int b = row[x * 4 + 2] & 0xFF;
+                    int a = row[x * 4 + 3] & 0xFF;
+                    int abgr = (a << 24) | (b << 16) | (g << 8) | r;
+                    fullImg.setPixelRGBA(x, y, abgr);
+                }
+            }
+            // Resize 到 96x96
+            int targetSize = 96;
+            com.mojang.blaze3d.platform.NativeImage thumb =
+                new com.mojang.blaze3d.platform.NativeImage(targetSize, targetSize, false);
+            for (int ty = 0; ty < targetSize; ty++) {
+                int sy = (int) ((double) ty / targetSize * ph);
+                for (int tx = 0; tx < targetSize; tx++) {
+                    int sx = (int) ((double) tx / targetSize * pw);
+                    thumb.setPixelRGBA(tx, ty, fullImg.getPixelRGBA(sx, sy));
+                }
+            }
+            fullImg.close();
+
+            // 写盘
+            java.nio.file.Path dir = com.prefab.addon.client.ThumbnailCache.getCacheDir();
+            java.nio.file.Files.createDirectories(dir);
+            java.nio.file.Path file = dir.resolve(
+                com.prefab.addon.client.ThumbnailCache.fingerprint(currentConstruction) + ".png");
+            thumb.writeToFile(file);
+            thumb.close();
+            com.prefab.addon.client.ThumbnailCache.notifyCompleted(
+                com.prefab.addon.client.ThumbnailCache.fingerprint(currentConstruction));
+            showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.thumb_saved", file.getFileName().toString()), 0x55FF55, 60);
+        } catch (Throwable t) {
+            PrefabCustomAddon.LOGGER.warn("[DETAIL] captureThumbnail failed: {}", t.getMessage(), t);
+            showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.screenshot_fail", t.getMessage()), 0xFF5555, 60);
+        }
     }
 }

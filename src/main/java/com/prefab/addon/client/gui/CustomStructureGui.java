@@ -15,8 +15,10 @@ import com.lowdragmc.lowdraglib2.gui.ui.styletemplate.Sprites;
 import com.lowdragmc.lowdraglib2.utils.data.BlockInfo;
 import com.lowdragmc.lowdraglib2.utils.virtuallevel.TrackedDummyWorld;
 import com.prefab.addon.PrefabCustomAddon;
+import com.prefab.addon.client.gui.GuiExtensionPackBrowser;
 import com.prefab.addon.config.PlayerPreferences;
 import com.prefab.addon.extension.ConstructionInfo;
+import com.prefab.addon.extension.ExtensionPackManager;
 import com.prefab.addon.structure.CustomStructureBuilder;
 import com.prefab.addon.structure.CustomStructureBuilder.BlockData;
 import com.prefab.addon.work.MaterialCalculator;
@@ -189,7 +191,10 @@ public class CustomStructureGui {
 
     private static void startAsyncParse(ConstructionInfo construction) {
         final String name = construction.getName();
-        final String packId = construction.getPack().getPackageName();
+        // 本地单文件建筑 (LocalBuilding) 的 getPack() 为 null, 用 STANDALONE_PACKAGE 兜底
+        final String packId = construction.getPack() == null
+            ? ExtensionPackManager.STANDALONE_PACKAGE
+            : construction.getPack().getPackageName();
         synchronized (parseLock) {
             parseFuture = CompletableFuture.supplyAsync(() -> {
                 long t0 = System.currentTimeMillis();
@@ -374,7 +379,7 @@ public class CustomStructureGui {
 
         // 初始 placeholder
         final TextElement scenePlaceholder = new TextElement();
-        scenePlaceholder.setText("3D 加载中...\n(等待 NBT 解析)");
+        scenePlaceholder.setText(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.load_3d"));
         scenePlaceholder.textStyle(t -> t
             .textAlignHorizontal(Horizontal.CENTER)
             .textColor(0xAAAAAA)
@@ -407,47 +412,53 @@ public class CustomStructureGui {
         );
         buttonRow.setOverflowVisible(false);
 
-        // 取消按钮
-        Button btnCancel = new Button().setText("取消");
+        // 取消按钮 — 先关屏再释放资源, 避免 releaseRendererResource 抛异常卡住 setScreen
+        Button btnCancel = new Button().setText(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.close"));
         btnCancel.setOnClick(e -> {
-            if (renderScene != null) renderScene.releaseRendererResource();
-            Minecraft.getInstance().setScreen(null);
+            try {
+                if (renderScene != null) {
+                    var scene = renderScene;
+                    renderScene = null;  // 先置 null 防止 closeGui 二次释放
+                    try { scene.releaseRendererResource(); } catch (Throwable ignored) {}
+                }
+            } finally {
+                Minecraft.getInstance().setScreen(null);
+            }
         });
         btnCancel.layout(l -> l.flexGrow(1).heightPercent(100));
         buttonRow.addChild(btnCancel);
 
         if (challengeMode) {
             // 挑战模式: 单个 "提交材料" 按钮
-            btnMain = new Button().setText("提交材料");
+            btnMain = new Button().setText(com.prefab.addon.PrefabCustomAddon.tr("gui.custom.submit_materials"));
             btnMain.setOnClick(e -> handleMainButtonClick());
             btnMain.layout(l -> l.flexGrow(2).heightPercent(100));
             buttonRow.addChild(btnMain);
         } else {
             // 普通模式: 只剩 "预览" 按钮 (建造用预览界面里的 ALT 完成)
-            Button btnPreview = new Button().setText("预览");
+            Button btnPreview = new Button().setText(com.prefab.addon.PrefabCustomAddon.tr("gui.custom.preview"));
             btnPreview.setOnClick(e -> handlePreviewButtonClick());
             btnPreview.layout(l -> l.flexGrow(2).heightPercent(100));
             buttonRow.addChild(btnPreview);
         }
 
         // 更换建筑按钮
-        // 需求: 跳到 GuiConstructionDetail (第5张图, 带 [选择] + [选择并锁定] 按钮的详情界面),
-        //       而不是 GuiCustomStructureSelection (第3张图, 中间的建筑列表层).
-        // 流程: 关闭当前 CustomStructureGui, 释放 3D 渲染资源, 打开建筑详情 (会显示当前 pack 的第一个建筑 + 切换按钮).
-        Button btnChange = new Button().setText("更换建筑");
+        // 需求: 跳到建筑浏览器 (第1张图, 左侧 tab 栏 + 建筑卡片网格),
+        //       而不是直接进入某个建筑的详情 (之前: GuiConstructionDetail.openFirstAvailable()).
+        // 流程: 关闭当前 CustomStructureGui, 释放 3D 渲染资源, 打开建筑浏览器.
+        Button btnChange = new Button().setText(com.prefab.addon.PrefabCustomAddon.tr("gui.custom.change"));
         btnChange.setOnClick(e -> {
             if (renderScene != null) renderScene.releaseRendererResource();
-            // 关闭当前界面 (释放 ModularUI 资源), 打开建筑详情.
-            // 之前: GuiCustomStructureSelection.open();  // 第3张图: 列表层 (有 PACKS/BUILDINGS 切换)
-            // 现在: GuiConstructionDetail.openFirstAvailable();  // 第5张图: 详情层 (有 [选择] / [选择并锁定])
-            GuiConstructionDetail.openFirstAvailable();
+            // 之前: GuiConstructionDetail.openFirstAvailable();  // 详情层 (地狱门那个 3D 预览)
+            // 现在: GuiExtensionPackBrowser.open();               // 建筑浏览器 (第1张图, 卡片网格 + tab)
+            GuiExtensionPackBrowser.open();
         });
         btnChange.layout(l -> l.flexGrow(1).heightPercent(100));
         // 蓝图锁定时变灰
         if (currentBlueprint != null && !currentBlueprint.isEmpty()
             && com.prefab.addon.items.CustomBlueprintItem.isLocked(currentBlueprint)) {
             btnChange.setActive(false);
-            btnChange.setText("🔒 已锁定");
+            btnChange.setText(com.prefab.addon.PrefabCustomAddon.tr("gui.custom.locked"));
         }
         buttonRow.addChild(btnChange);
 
@@ -472,7 +483,7 @@ public class CustomStructureGui {
                     renderScene.layout(l -> l.widthPercent(100).heightPercent(100));
                     sceneContainer.addChild(renderScene);
                 } else if (renderDone) {
-                    scenePlaceholder.setText("3D 预览不可用\n(场景创建失败)");
+                    scenePlaceholder.setText(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.3d_unavailable"));
                 }
             }
 
@@ -480,7 +491,7 @@ public class CustomStructureGui {
             if (renderActive) {
                 tickRender();
                 if (tickNum % 5 == 0 && statusMsg == null) {
-                    statusEl.setText("渲染 " + getRenderProgress() + "%");
+                    statusEl.setText(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.render_pct", getRenderProgress()));
                     statusEl.textStyle(t -> t.textColor(0xFFFF55));
                 }
             }
@@ -489,21 +500,21 @@ public class CustomStructureGui {
             if (renderDone) {
                 if (renderScene != null) {
                     if (statusMsg == null) {
-                        statusEl.setText("✓ " + construction.getName() + " (" + renderTotalBlocks + " 块)");
+                        statusEl.setText(com.prefab.addon.PrefabCustomAddon.tr("gui.custom.build_done", construction.getName(), renderTotalBlocks));
                         statusEl.textStyle(t -> t.textColor(0x55FF55));
                     }
                 } else if (parseFailed) {
                     if (statusMsg == null) {
-                        statusEl.setText("✗ NBT 解析失败");
+                        statusEl.setText(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.parse_fail"));
                         statusEl.textStyle(t -> t.textColor(0xFF5555));
                     }
                 } else if (parseResult != null && parseResult.isEmpty()) {
-                    scenePlaceholder.setText("无 3D 内容\n(所有方块均为 air\n可能缺依赖 mod)");
+                    scenePlaceholder.setText(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.no_3d_content"));
                     scenePlaceholder.textStyle(t -> t.textColor(0xFFAA55)
                         .textAlignHorizontal(Horizontal.CENTER)
                         .textWrap(TextWrap.WRAP));
                     if (statusMsg == null) {
-                        statusEl.setText("⚠ 无可显示方块");
+                        statusEl.setText(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.no_blocks"));
                         statusEl.textStyle(t -> t.textColor(0xFFAA55));
                     }
                 }
@@ -539,7 +550,7 @@ public class CustomStructureGui {
             }
             // 材料未交齐 → 按钮现在是 "提交材料", 打开提交界面
             if (materialList == null) {
-                showStatus("⚠ NBT 还未解析, 稍等", 0xFFAA00, 80);
+                showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.custom.parse_loading"), 0xFFAA00, 80);
                 return;
             }
             net.minecraft.client.player.LocalPlayer player = Minecraft.getInstance().player;
@@ -559,7 +570,7 @@ public class CustomStructureGui {
      */
     private static void handlePreviewButtonClick() {
         if (currentConstruction == null) {
-            showStatus("⚠ 建筑信息还未加载, 稍等", 0xFFAA00, 80);
+            showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.custom.preview_loading"), 0xFFAA00, 80);
             return;
         }
         // 1) NBT → Prefab Structure (跟服务端 build 用的是同一个解析)
@@ -568,11 +579,11 @@ public class CustomStructureGui {
             structure = CustomStructureBuilder.parseToPrefabStructure(currentConstruction);
         } catch (Throwable t) {
             PrefabCustomAddon.LOGGER.error("[CUSTOM-GUI-V2] parseToPrefabStructure failed for preview", t);
-            showStatus("✗ NBT 解析失败, 无法预览", 0xFF5555, 100);
+            showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.custom.parse_fail_preview"), 0xFF5555, 100);
             return;
         }
         if (structure == null || structure.getBlocks() == null || structure.getBlocks().isEmpty()) {
-            showStatus("⚠ 结构为空, 无法预览", 0xFFAA55, 100);
+            showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.custom.empty_structure"), 0xFFAA55, 100);
             return;
         }
 
@@ -637,13 +648,13 @@ public class CustomStructureGui {
             // 之前逻辑是 checkMaterialsReady() 才 enable, 永远点不了.
             // 现在: 永远可点, 文本根据材料是否交齐动态切换.
             if (checkMaterialsReady()) {
-                btnMain.setText("预览");
+                btnMain.setText(com.prefab.addon.PrefabCustomAddon.tr("gui.custom.preview"));
             } else {
-                btnMain.setText("提交材料");
+                btnMain.setText(com.prefab.addon.PrefabCustomAddon.tr("gui.custom.submit_materials"));
             }
             btnMain.setActive(true);
         } else {
-            btnMain.setText("预览");
+            btnMain.setText(com.prefab.addon.PrefabCustomAddon.tr("gui.custom.preview"));
             btnMain.setActive(true);
         }
     }
@@ -654,17 +665,17 @@ public class CustomStructureGui {
 
         // 多人模式下, 服务器没有这个拓展包 → 阻止
         if (!com.prefab.addon.extension.ExtensionPackManager.isBuildable(currentConstruction)) {
-            showStatus("✗ 服务器没有这个拓展包, 无法建造!", 0xFF5555, 200);
+            showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.custom.no_server_pack"), 0xFF5555, 200);
             return;
         }
         // 挑战模式 + 未提交材料 → 阻止
         if (challengeMode && !checkMaterialsReady()) {
-            showStatus("⚠ 挑战模式: 请先提交全部材料", 0xFFAA00, 100);
+            showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.custom.challenge_not_ready"), 0xFFAA00, 100);
             return;
         }
         // 背包里没蓝图 → 阻止
         if (!hasBlueprintInInventory()) {
-            showStatus("⚠ 背包里没有 自定义蓝图 物品!", 0xFF5555, 100);
+            showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.custom.no_blueprint"), 0xFF5555, 100);
             return;
         }
 
@@ -695,8 +706,13 @@ public class CustomStructureGui {
      * 不要用蓝图里存的 packName (旧版本是用 getPackageName() 绑定的, 会跟服务端不一致).
      */
     public static String getPackNameForBuild() {
-        return currentConstruction != null && currentConstruction.getPack() != null
-            ? currentConstruction.getPack().getName() : "";
+        if (currentConstruction == null) return "";
+        if (currentConstruction.getPack() != null) {
+            return currentConstruction.getPack().getName();
+        }
+        // 单文件建筑 (LocalBuilding 兜底) 没有 ExtensionPack, 用 STANDALONE_PACKAGE 占位.
+        // 服务端 build 路径会按 constructionId 找到对应的 LocalBuilding NBT, 跟 packName 无关.
+        return com.prefab.addon.extension.ExtensionPackManager.STANDALONE_PACKAGE;
     }
 
     public static String getConstructionIdForBuild() {
@@ -751,6 +767,26 @@ public class CustomStructureGui {
         LAST_ADDON_STRUCTURE_REF.set(null);
         ADDON_PREVIEW_STRUCTURE = null;
         ADDON_PREVIEW_CONFIG = null;
+    }
+
+    /**
+     * 供 {@link com.prefab.addon.cloud.CloudPreview} 之类外部代码直接启动世界预览.
+     * 等价于 handlePreviewButtonClick() 走到 setStructure 之前那一步的赋值, 但不关 GUI
+     * (调用方自己关).
+     */
+    public static void setAddonPreviewStructure(com.prefab.structures.base.Structure structure) {
+        ADDON_PREVIEW_STRUCTURE = structure;
+    }
+
+    public static void setAddonPreviewConfig(com.prefab.structures.config.StructureConfiguration cfg) {
+        ADDON_PREVIEW_CONFIG = cfg;
+    }
+
+    public static void markAddonPreviewActive() {
+        if (ADDON_PREVIEW_STRUCTURE != null) {
+            LAST_ADDON_STRUCTURE_REF.set(ADDON_PREVIEW_STRUCTURE);
+            LAST_ADDON_PREVIEW.set(true);
+        }
     }
 
     private static boolean hasBlueprintInInventory() {

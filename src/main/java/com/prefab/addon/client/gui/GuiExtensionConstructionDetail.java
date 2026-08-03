@@ -127,7 +127,7 @@ public final class GuiExtensionConstructionDetail {
             .flexDirection(FlexDirection.ROW)
             .justifyContent(AlignContent.CENTER)
         );
-        Button btnClose = new Button().setText(Component.literal("关闭"));
+        Button btnClose = new Button().setText(Component.literal(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.close")));
         btnClose.setOnClick(e -> GuiExtensionPackBrowser.open());
         btnClose.layout(l -> l.width(90).height(24));
         buttonBar.addChild(btnClose);
