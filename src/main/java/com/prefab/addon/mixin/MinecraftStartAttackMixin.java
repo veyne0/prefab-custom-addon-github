@@ -18,12 +18,16 @@ public class MinecraftStartAttackMixin {
     /**
      * 取消 startAttack() - 防止点击破坏方块/攻击实体.
      * startAttack() 返回 boolean, 用 CallbackInfoReturnable<Boolean>.
+     *
+     * 修复: SHIFT 临时解锁 (按住 SHIFT) 时不取消, 让玩家正常挖方块.
+     *   之前没有 isTempUnlocked 检查, 导致选区模式按住 SHIFT 也挖不动.
      */
     @Inject(method = "startAttack", at = @At("HEAD"), cancellable = true)
     private void prefabAddon$onStartAttack(CallbackInfoReturnable<Boolean> cir) {
         Minecraft mc = (Minecraft) (Object) this;
         if (mc.player == null) return;
-        if (RegionSelector.isActive(mc.player)) {
+        if (RegionSelector.isActive(mc.player)
+            && !RegionSelector.isTempUnlocked(mc.player)) {
             cir.setReturnValue(false);
             cir.cancel();
         }
@@ -33,13 +37,16 @@ public class MinecraftStartAttackMixin {
      * 取消 continueAttack() - 防止按住左键持续破坏方块.
      * 即便 startAttack 被取消, continueAttack 每 tick 仍可能调 gameMode.continueDestroyBlock
      * 最终走回 startDestroyBlock (create destroy 状态), 实际破坏方块.
+     *
+     * 修复: SHIFT 临时解锁时不取消.
      */
     @Inject(method = "continueAttack", at = @At("HEAD"), cancellable = true)
     private void prefabAddon$onContinueAttack(boolean leftClick, CallbackInfo ci) {
         if (!leftClick) return;  // 只阻止左键, 不阻止右键 (右键走 startUseItem)
         Minecraft mc = (Minecraft) (Object) this;
         if (mc.player == null) return;
-        if (RegionSelector.isActive(mc.player)) {
+        if (RegionSelector.isActive(mc.player)
+            && !RegionSelector.isTempUnlocked(mc.player)) {
             ci.cancel();
         }
     }

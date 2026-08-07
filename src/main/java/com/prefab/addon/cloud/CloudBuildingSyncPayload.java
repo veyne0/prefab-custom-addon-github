@@ -2,6 +2,7 @@ package com.prefab.addon.cloud;
 
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
+import net.minecraft.nbt.NbtAccounter;
 import net.minecraft.nbt.Tag;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.network.codec.ByteBufCodecs;
@@ -40,8 +41,10 @@ public record CloudBuildingSyncPayload(List<CompoundTag> buildings)
                     int n = buf.readInt();
                     List<CompoundTag> list = new ArrayList<>(n);
                     for (int i = 0; i < n; i++) {
-                        CompoundTag t = buf.readNbt();
-                        if (t != null) list.add(t);
+                        // readNbt(NbtAccounter) 返回 Tag, 需要 cast 成 CompoundTag
+                        // 用 unlimitedHeap 解码, 避免默认 2MB 限制导致大建筑 (NBT > 2MB) 整客户端掉线
+                        Tag raw = buf.readNbt(NbtAccounter.unlimitedHeap());
+                        if (raw instanceof CompoundTag t) list.add(t);
                     }
                     return new CloudBuildingSyncPayload(list);
                 }

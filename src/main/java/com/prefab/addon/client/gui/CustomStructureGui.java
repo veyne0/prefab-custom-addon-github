@@ -596,7 +596,15 @@ public class CustomStructureGui {
         // 3) 构造 StructureConfiguration
         StructureConfiguration cfg = new StructureConfiguration();
         cfg.Initialize();
-        cfg.pos = currentOpenPos != null ? currentOpenPos : BlockPos.ZERO;
+        // 关键: prefab 的 StructureRenderHandler.bakeBlockAndSubBlock 内部会调
+        //   `player.level().getBlockState(pos)`, 如果不是空气 (且不是水) 就**跳过不画**.
+        //   见 prefab Shared/.../StructureRenderHandler.java:500-506.
+        //   currentOpenPos 是玩家右键点击的方块 (通常是地面/墙, 不是空气), 把 cfg.pos 设为
+        //   currentOpenPos 会让建筑大部分方块在地下/墙里 → prefab 全部跳过 → 什么都不显示.
+        // 修法: 抬到 currentOpenPos **上方 1 格** (建筑最底层从地面上一层开始, 大部分方块位置
+        //   在空气中) → prefab 正常画.
+        BlockPos basePos = currentOpenPos != null ? currentOpenPos : BlockPos.ZERO;
+        cfg.pos = basePos.above();
         cfg.houseFacing = houseFacing;
 
         // 4) 把每个 BuildBlock.blockPos 从 localPos 转换为 worldPos (basePos + rotated local)
@@ -619,13 +627,15 @@ public class CustomStructureGui {
         LAST_ADDON_STRUCTURE_REF.set(structure);
         LAST_ADDON_PREVIEW.set(true);
 
-        // 调用 Prefab 原生 StructureRenderHandler - 让 prefab 重建它的 chunk cache (玩家后续移动/旋转用)
-        StructureRenderHandler.setStructure(structure, cfg);
-        // 立刻清掉 prefab 的 currentStructure, 阻止 prefab 自己的 renderer 画这一份
+        // 清掉 prefab 的 currentStructure, 防止 prefab 自己的 renderer (RenderIndicatorMixin 注入)
+        //   画上一个 prefab 原版建筑 (双预览). prefab 看到 currentStructure=null 就 return.
         StructureRenderHandler.setStructure(null, null);
-        // 注: 我们画用的是 ADDON_PREVIEW_STRUCTURE, 不依赖 prefab 的 currentStructure,
-        //     prefab 的 currentStructure = null 不影响我们. KeyHandler 移动/旋转时直接改
-        //     ADDON_PREVIEW_CONFIG, 不动 prefab 字段.
+        // 我们自己画: CustomStructurePreviewRenderer 走 prefab 的渲染模式 (Tesselator + 按
+        //   chunk 分组 + VertexBuffer 一次性提交) 但跳过 worldState.isAir() 检查, 让所有方块
+        //   都画 (prefab 的 bakeBlockAndSubBlock 跳过非空气, 自定义建筑大部分方块跟地面/墙
+        //   重叠会被跳过). 用 prefab 的 BuildBlock.SetBlockState 处理所有 property 类型.
+        //   KeyHandler 移动/旋转时不需要 triggerPrefabRebuild (我们自己 renderer 检测 cfg.pos /
+        //   houseFacing 变化时自动清 vertex buffer 重建).
 
         PrefabCustomAddon.LOGGER.info("[CUSTOM-GUI-V2] Preview: pack={} id={} pos={} facing={} blocks={}",
             currentConstruction.getPack() != null ? currentConstruction.getPack().getName() : "?",

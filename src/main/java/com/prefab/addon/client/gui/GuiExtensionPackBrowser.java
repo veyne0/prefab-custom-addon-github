@@ -107,6 +107,10 @@ public class GuiExtensionPackBrowser extends GuiBase {
     private static final int CARD_GAP = 6;
     private static final int CARD_COLS = 3;
     private static final int CARD_ROWS = 2;
+    // 云端 tab 单独用 2 列布局, 让卡片更宽, 缩略图更大, 文字更完整
+    private static final int CLOUD_CARD_COLS = 2;
+    private static final int CLOUD_CARD_GAP = 6;
+    private static final int CLOUD_CARD_H = 96;
 
     // === 状态 ===
     private String searchText = "";
@@ -1469,25 +1473,33 @@ public class GuiExtensionPackBrowser extends GuiBase {
             return;
         }
 
-        // 2) 卡片网格 (跟「建筑」tab 一样的 3 列布局, 卡片高一点, 放下底部按钮)
+        // 同步预解码所有有 thumbnailPng 的建筑 (避免异步 triggerLoadCloudThumb 第一次 draw 还没回来 → 显示"中"占位符)
+        for (CloudBuilding b : list) {
+            if (b.thumbnailPng != null && b.thumbnailPng.length > 0
+                && !this.cloudThumbCache.containsKey(b.id)) {
+                ensureCloudThumbLoaded(b);
+            }
+        }
+
+        // 2) 卡片网格: 2 列布局 (云端 tab 单独用, 比 BUILDINGS/EXTENSION 卡片更宽更高)
         int listY = ry + 18;
         int listH = rh - 22;
-        int cardW = (rw - 8 - (CARD_COLS - 1) * CARD_GAP) / CARD_COLS;
-        int cardH = 82;  // 加高, 给名字 + 状态 + 副信息 + 提示 + 按钮更多空间, 避免删除图标和「已放出」重叠
+        int cardW = (rw - 8 - (CLOUD_CARD_COLS - 1) * CLOUD_CARD_GAP) / CLOUD_CARD_COLS;
+        int cardH = CLOUD_CARD_H;
         int total = list.size();
-        int pageSize = Math.max(1, (listH + CARD_GAP) / (cardH + CARD_GAP));
+        int pageSize = Math.max(1, (listH + CLOUD_CARD_GAP) / (cardH + CLOUD_CARD_GAP));
         int pageCount = Math.max(1, (total + pageSize - 1) / pageSize);
         int page = Math.max(0, Math.min(this.scrollOffsetCards, pageCount - 1));
         int start = page * pageSize;
         int end = Math.min(start + pageSize, total);
         int col = 0, row = 0;
         for (int i = start; i < end; i++) {
-            int cx = rx + 4 + col * (cardW + CARD_GAP);
-            int cy = listY + row * (cardH + CARD_GAP);
+            int cx = rx + 4 + col * (cardW + CLOUD_CARD_GAP);
+            int cy = listY + row * (cardH + CLOUD_CARD_GAP);
             drawCloudBuildingCard(guiGraphics, cx, cy, cardW, cardH, list.get(i), mouseX, mouseY);
             this.cloudCardHitRects.put(list.get(i).id, new int[]{cx, cy, cardW, cardH});
             col++;
-            if (col >= CARD_COLS) { col = 0; row++; }
+            if (col >= CLOUD_CARD_COLS) { col = 0; row++; }
         }
         if (pageCount > 1) {
             drawPaginationBar(guiGraphics, rx, ry + rh - 12, rw, page, pageCount, mouseX, mouseY);
@@ -1495,41 +1507,47 @@ public class GuiExtensionPackBrowser extends GuiBase {
     }
 
     /**
-     * 绘制单个云端建筑卡片.
+     * 绘制单个云端建筑卡片 (云端 tab 专用, 2 列布局, 卡片比 BUILDINGS tab 大).
      * 布局:
-     *   ┌─ 图标 (40x40) ─┬─ 名字 (1行) ────┐
-     *   │                 │ 状态 (1行)      │
-     *   ├─────────────────┴────────────────┤
-     *   │  [收回]  [放出]                  │
-     *   └─────────────────────────────────┘
+     *   ┌─ 缩略图 (60x60) ─┬─ 建筑名 (1行)         ┬─ ×┐
+     *   │                  │ 状态 (1行)            │  │
+     *   │                  │ 元信息 (1行)          │  │
+     *   │                  │ 操作提示 (1行)        │  │
+     *   ├──────────────────┴──────────────────────┴──┤
+     *   │ [收回]                       [放出]       │
+     *   └────────────────────────────────────────────┘
      */
     private void drawCloudBuildingCard(GuiGraphics guiGraphics, int cx, int cy, int cw, int ch,
                                          CloudBuilding b, int mouseX, int mouseY) {
         boolean hovered = mouseX >= cx && mouseX <= cx + cw && mouseY >= cy && mouseY <= cy + ch;
 
-        // 卡片底色
+        // 卡片底色 + 边框
         int bg = hovered ? 0xFF2D2D2D : 0xFF1F1F1F;
         guiGraphics.fill(cx, cy, cx + cw, cy + ch, bg);
-        // 顶边色: 已放出=绿, 已收回=灰
         int topColor = b.placed ? 0xFF2E7D32 : 0xFF777777;
         guiGraphics.fill(cx, cy, cx + cw, cy + 1, topColor);
         guiGraphics.fill(cx, cy + ch - 1, cx + cw, cy + ch, 0xFF555555);
         guiGraphics.fill(cx, cy, cx + 1, cy + ch, 0xFF555555);
         guiGraphics.fill(cx + cw - 1, cy, cx + cw, cy + ch, 0xFF555555);
 
-        // 缩略图: 40x40 块, 优先用同名 LocalBuilding 的 .png 加载的图片; 没有就显示首字符
-        int iconSize = 40;
+        // 缩略图 48x48 在左 (缩小一点, 给文字区留出 12px 更多空间, 避免 "2877 块 · @south" 截断成 "@..")
+        int iconSize = 48;
         int iconX = cx + 4;
         int iconY = cy + 4;
         int iconBg = b.placed ? 0xFF1F3A1F : 0xFF2A2A2A;
         guiGraphics.fill(iconX, iconY, iconX + iconSize, iconY + iconSize, iconBg);
         ResourceLocation thumb = this.cloudThumbCache.get(b.id);
+        if (thumb == null && b.thumbnailPng != null && b.thumbnailPng.length > 0) {
+            // 嵌入图存在但还没解码, 同步解码 (避免异步丢失, 第一次切 tab 就能看到图)
+            thumb = ensureCloudThumbLoaded(b);
+        }
         if (thumb != null) {
-            // 拉伸到 40x40
-            guiGraphics.blit(thumb, iconX, iconY, 0, 0, iconSize, iconSize,
-                iconSize, iconSize);
+            // blit: 源尺寸用原图 (64x64 之类), 目标尺寸用 iconSize
+            int srcW = b.thumbWidth > 0 ? b.thumbWidth : iconSize;
+            int srcH = b.thumbHeight > 0 ? b.thumbHeight : iconSize;
+            guiGraphics.blit(thumb, iconX, iconY, 0, 0, iconSize, iconSize, srcW, srcH);
         } else {
-            // 触发懒加载 (按 cb.name 找同名 LocalBuilding)
+            // 兜底: 异步走 LocalBuilding 找同名图
             if (b.name != null && !b.name.isEmpty()
                 && !this.cloudThumbLoading.contains(b.id)) {
                 this.cloudThumbLoading.add(b.id);
@@ -1541,63 +1559,65 @@ public class GuiExtensionPackBrowser extends GuiBase {
                 b.placed ? 0xFF88CC88 : 0xFF888888);
         }
 
-        // 名字 + 状态 (在图标右侧) — 按用户要求: "建筑名（已收回）" / "建筑名（已放出）"
-        // 文本宽度要减去右上角删除按钮 (10px + 3px margin = 13) 和右边距, 避免名字跟 × 重叠
-        int textX = iconX + iconSize + 5;
-        int textW = cw - iconSize - 10 - 16;  // 16 = 删除按钮 + 内边距
+        // 文字区域 (缩略图右侧)
+        // 16 = 右上角删除按钮 (10) + 内边距 (3) + 间距 (3)
+        int textX = iconX + iconSize + 6;
+        int textW = cw - iconSize - 12 - 14;
         if (textW < 30) textW = 30;
-        String baseName = b.name == null || b.name.isEmpty() ? tr("cloud.card.unnamed") : b.name;
-        // 状态后缀: 放出=绿, 收回=灰 (颜色码来自 lang)
-        String statusSuffix = b.placed ? tr("cloud.card.placed") : tr("cloud.card.recalled");
-        String name = baseName + " " + statusSuffix;
-        if (this.font.width(name) > textW) {
-            // 优先截断主名, 保留后缀
-            String kept = statusSuffix;
-            int budget = textW - this.font.width(kept);
-            String trimmed = baseName;
-            if (budget > 8) {
-                while (this.font.width(trimmed + kept) > textW && trimmed.length() > 1) {
-                    trimmed = trimmed.substring(0, trimmed.length() - 1);
-                }
-                if (!trimmed.equals(baseName)) trimmed = trimmed + "..";
-                name = trimmed + " " + kept;
-            } else {
-                // 实在放不下就只显示后缀
-                name = kept;
-            }
-        }
-        guiGraphics.drawString(this.font, name, textX, cy + 5, 0xFFFFFF);
-        // 副信息: 块数 + 时间 (不放位置, 只放元信息)
-        String meta = tr("cloud.card.meta", String.valueOf(b.blocks.size()),
-            b.facing == null ? "south" : b.facing.getName(), formatRelativeTime(b.timestamp));
-        if (b.placed && b.placedAt != null) {
-            meta = tr("cloud.card.meta_placed", String.valueOf(b.blocks.size()),
-                b.placedAt.toShortString(), formatRelativeTime(b.timestamp));
-        }
-        if (this.font.width(meta) > textW) {
-            while (this.font.width(meta + "..") > textW && meta.length() > 1) {
-                meta = meta.substring(0, meta.length() - 1);
-            }
-            meta = meta + "..";
-        }
-        guiGraphics.drawString(this.font, meta, textX, cy + 17, 0xFFAAAAAA);
-        // 末行: 放出版本时显示操作提示
-        String hint = b.placed ? tr("cloud.card.hint_recall") : tr("cloud.card.hint_summon");
-        if (this.font.width(hint) > textW) {
-            while (this.font.width(hint + "..") > textW && hint.length() > 1) {
-                hint = hint.substring(0, hint.length() - 1);
-            }
-            hint = hint + "..";
-        }
-        guiGraphics.drawString(this.font, hint, textX, cy + 29, 0xFF888888);
 
-        // 分隔线
-        int sepY = cy + 44;
+        // 1) 建筑名 (1 行, 不带状态)
+        String baseName = b.name == null || b.name.isEmpty() ? tr("cloud.card.unnamed") : b.name;
+        String nameTrunc = truncateToWidth(baseName, textW);
+        guiGraphics.drawString(this.font, nameTrunc, textX, cy + 4, 0xFFFFFFFF);
+
+        // 2) 状态 (1 行, 独立显示, 不和名字挤)
+        String statusSuffix = b.placed ? tr("cloud.card.placed") : tr("cloud.card.recalled");
+        int statusColor = b.placed ? 0xFF55FF55 : 0xFFAAAAAA;
+        guiGraphics.drawString(this.font, statusSuffix, textX, cy + 16, statusColor);
+
+        // 3) 元信息 (1 行, 块数/朝向/时间) — 紧凑写法, 避免被 truncateToWidth 截成 "@.."
+        //   之前 "2877 块 · @south · 2分钟前" 在 71px 文字区里超出, 被截成 "2877 块 · @.."
+        //   现在: 块数 + 朝向缩写(南北东西) + 相对时间缩写, 单字符分隔
+        String facingShort;
+        if (b.facing == null) {
+            facingShort = "?";
+        } else switch (b.facing.getName()) {
+            case "north" -> facingShort = "北";
+            case "south" -> facingShort = "南";
+            case "east"  -> facingShort = "东";
+            case "west"  -> facingShort = "西";
+            default      -> facingShort = b.facing.getName();
+        };
+        String relTime = formatRelativeTime(b.timestamp);
+        // "刚刚" / "2 分前" / "3 时前" / "8 天前"
+        relTime = relTime.replace("分钟", "分").replace("小时", "时").replace("天", "天");
+        String meta;
+        if (b.placed && b.placedAt != null) {
+            meta = b.blocks.size() + " · " + b.placedAt.toShortString() + " · " + relTime;
+        } else {
+            meta = b.blocks.size() + " · " + facingShort + " · " + relTime;
+        }
+        meta = truncateToWidth(meta, textW);
+        guiGraphics.drawString(this.font, meta, textX, cy + 28, 0xFFAAAAAA);
+
+        // 4) 操作提示 (1 行) — 去掉花引号, 减少字符数
+        String hint = b.placed ? "点收回清理" : "点放出预览";
+        hint = truncateToWidth(hint, textW);
+        guiGraphics.drawString(this.font, hint, textX, cy + 40, 0xFF888888);
+
+        // 预留 5/6 行: 占地信息 (sizeX x sizeY x sizeZ)
+        String sizeInfo = b.sizeX + "×" + b.sizeY + "×" + b.sizeZ;
+        sizeInfo = truncateToWidth(sizeInfo, textW);
+        guiGraphics.drawString(this.font, sizeInfo, textX, cy + 52, 0xFF777777);
+
+        // 分隔线 (缩略图 + 文字 下方, 按钮 上方)
+        int sepY = cy + 70;
         guiGraphics.fill(cx + 2, sepY, cx + cw - 2, sepY + 1, 0xFF444444);
 
         // 底部: 收回 + 放出 两个按钮 (各占一半)
-        int btnY = cy + ch - 18;
-        int btnH = 14;
+        int btnY = sepY + 4;
+        int btnH = ch - (btnY - cy) - 3;
+        if (btnH < 14) btnH = 14;
         int gap = 4;
         int recallW = (cw - 10 - gap) / 2;
         int recallX = cx + 5;
@@ -1607,7 +1627,6 @@ public class GuiExtensionPackBrowser extends GuiBase {
         if (b.placed) {
             drawTextButton(guiGraphics, recallX, btnY, recallW, btnH, tr("cloud.button.recall"), mouseX, mouseY);
         } else {
-            // 已收回: 收回按钮变灰禁用
             int bg2 = 0xFF333333;
             guiGraphics.fill(recallX, btnY, recallX + recallW, btnY + btnH, bg2);
             guiGraphics.drawCenteredString(this.font, tr("cloud.button.recall"), recallX + recallW / 2,
@@ -1616,7 +1635,6 @@ public class GuiExtensionPackBrowser extends GuiBase {
         if (!b.placed) {
             drawTextButton(guiGraphics, summonX, btnY, summonW, btnH, tr("cloud.button.summon"), mouseX, mouseY);
         } else {
-            // 已放出: 放出按钮变灰禁用
             int bg2 = 0xFF333333;
             guiGraphics.fill(summonX, btnY, summonX + summonW, btnY + btnH, bg2);
             guiGraphics.drawCenteredString(this.font, tr("cloud.button.summon"), summonX + summonW / 2,
@@ -1626,7 +1644,7 @@ public class GuiExtensionPackBrowser extends GuiBase {
         this.cloudCardRecallBtnRects.put(b.id, new int[]{recallX, btnY, recallW, btnH});
         this.cloudCardSummonBtnRects.put(b.id, new int[]{summonX, btnY, summonW, btnH});
 
-        // 右上角删除按钮: 12x12 的小 ×, hover 时变红
+        // 右上角删除按钮: 10x10 的小 ×, hover 时变红
         int delSize = 10;
         int delX = cx + cw - delSize - 3;
         int delY = cy + 3;
@@ -1637,12 +1655,67 @@ public class GuiExtensionPackBrowser extends GuiBase {
         guiGraphics.fill(delX + 3, delY + 3, delX + delSize - 2, delY + 4, delColor);
         guiGraphics.fill(delX + delSize - 2, delY + 2, delX + delSize - 1, delY + 3, delColor);
         guiGraphics.fill(delX + 3, delY + delSize - 3, delX + delSize - 2, delY + delSize - 2, delColor);
-        // 主对角线
         for (int i = 0; i < delSize - 4; i++) {
             guiGraphics.fill(delX + 2 + i, delY + 2 + i, delX + 3 + i, delY + 3 + i, delColor);
             guiGraphics.fill(delX + delSize - 3 - i, delY + 2 + i, delX + delSize - 2 - i, delY + 3 + i, delColor);
         }
         this.cloudCardDeleteBtnRects.put(b.id, new int[]{delX, delY, delSize, delSize});
+    }
+
+    /**
+     * 同步解码 cb.thumbnailPng 并上传到 GPU 纹理, 写进 cloudThumbCache.
+     * 替代异步 triggerLoadCloudThumb: 同步版本保证渲染线程能立即拿到图, 避免"中"占位符残留.
+     * 失败时返回 null (调用方继续走异步兜底).
+     */
+    private ResourceLocation ensureCloudThumbLoaded(CloudBuilding b) {
+        if (b == null || b.thumbnailPng == null || b.thumbnailPng.length == 0) return null;
+        ResourceLocation existing = this.cloudThumbCache.get(b.id);
+        if (existing != null) return existing;
+        try {
+            BufferedImage img = ImageIO.read(new java.io.ByteArrayInputStream(b.thumbnailPng));
+            if (img == null) {
+                PrefabCustomAddon.LOGGER.warn("[CLOUD-THUMB] 同步解码嵌入图为 null: id={}", b.id);
+                return null;
+            }
+            int w = img.getWidth(), h = img.getHeight();
+            if (w <= 0 || h <= 0) return null;
+            // 记下原图尺寸, 给 blit 用 (避免用 iconSize 60 当源尺寸导致 UV 错位)
+            b.thumbWidth = w;
+            b.thumbHeight = h;
+            final int ww = w, hh = h;
+            DynamicTexture tex = new DynamicTexture(ww, hh, false);
+            tex.setFilter(false, false);
+            NativeImage pixels = tex.getPixels();
+            for (int y = 0; y < hh; y++) {
+                for (int x = 0; x < ww; x++) {
+                    int argb = img.getRGB(x, y);
+                    int abgr = ((argb & 0xFF00FF00) | ((argb & 0x00FF0000) >> 16) | ((argb & 0x000000FF) << 16));
+                    pixels.setPixelRGBA(x, y, abgr);
+                }
+            }
+            tex.upload();
+            ResourceLocation loc = Minecraft.getInstance().getTextureManager()
+                .register("prefab_cloud_" + b.id, tex);
+            this.cloudThumbCache.put(b.id, loc);
+            PrefabCustomAddon.LOGGER.info("[CLOUD-THUMB] 同步解码嵌入图: id={} {}x{}", b.id, ww, hh);
+            return loc;
+        } catch (Exception e) {
+            PrefabCustomAddon.LOGGER.warn("[CLOUD-THUMB] 同步解码失败: id={} err={}", b.id, e.toString());
+            return null;
+        }
+    }
+
+    /**
+     * 按像素宽度截断字符串 (用于卡片文字过长). 末尾加 "..".
+     */
+    private String truncateToWidth(String s, int maxWidth) {
+        if (s == null) return "";
+        if (this.font.width(s) <= maxWidth) return s;
+        String trimmed = s;
+        while (trimmed.length() > 1 && this.font.width(trimmed + "..") > maxWidth) {
+            trimmed = trimmed.substring(0, trimmed.length() - 1);
+        }
+        return trimmed + "..";
     }
 
     /** 时间戳 → 相对时间 (i18n). */
@@ -1732,7 +1805,9 @@ public class GuiExtensionPackBrowser extends GuiBase {
         // [_] 中间页数按钮 (只显示当前页码, e.g. "1"; 玩家点 [‹]/[›] 时翻页)
         int numX = prevX + prevW + gap;
         int[] numR = new int[]{numX, cy, numW, barH};
-        this.paginationPageRects = new int[][]{numR};
+        // 中心按钮只是显示用, 不作为分页跳转目标 (玩家用 [‹]/[›] 翻页)
+        // 不放进 paginationPageRects, 避免 handlePaginationClick 误把 numR[4] 当页码访问越界
+        this.paginationPageRects = null;
         int bg = 0xFF445577;
         boolean hovered = isHovered(numR, mouseX, mouseY);
         if (hovered) bg = 0xFF556699;
@@ -2571,13 +2646,24 @@ public class GuiExtensionPackBrowser extends GuiBase {
         if (b == null) return;
         String baseName = b.name == null || b.name.isEmpty() ? b.id : b.name;
         baseName = baseName.replaceAll("[\\\\/:*?\"<>|]", "_");
+        // 规范化 ext: 跟下载时一致, 都带点 (".nbt" 而不是 "nbt")
         String ext = b.fileExt == null || b.fileExt.isEmpty() ? ".nbt" : b.fileExt;
+        if (!ext.startsWith(".")) ext = "." + ext;
+        // 去掉点的 ext, 用于跟 LocalBuilding.fileExt (保留点) 比较
+        String extNoDot = ext.substring(1);
 
         // 1) 优先: 用 prefab-download/ 里 baseName 匹配 LocalBuilding
         Path dlRoot = LocalBuildingScanner.getDownloadRoot();
         java.util.List<LocalBuilding> dlList = LocalBuildingScanner.scanDir(dlRoot, "download");
         for (LocalBuilding lb : dlList) {
-            if (lb.id.equals(baseName) && (lb.fileExt == null || lb.fileExt.equalsIgnoreCase(ext.replaceFirst("^\\.", "")))) {
+            // 修复: 之前用 ext.replaceFirst("^\\.", "") 去点, 跟 lb.fileExt (保留点) 比较永远 false
+            // → 已下载的建筑都找不到. 这里改成两个都规范化, 任意一个匹配即可
+            String lbExt = lb.fileExt == null ? "" : lb.fileExt;
+            boolean idMatch = lb.id.equals(baseName);
+            boolean extMatch = lbExt.isEmpty() || lbExt.equalsIgnoreCase(ext)
+                || lbExt.equalsIgnoreCase(extNoDot)
+                || (lbExt.startsWith(".") && lbExt.substring(1).equalsIgnoreCase(extNoDot));
+            if (idMatch && extMatch) {
                 ConstructionInfo c = new ConstructionInfo(lb.id);
                 c.setName(lb.name == null || lb.name.isEmpty() ? b.name : lb.name);
                 c.setAuthor(lb.author == null || lb.author.isEmpty() ? b.author : lb.author);
@@ -2594,7 +2680,12 @@ public class GuiExtensionPackBrowser extends GuiBase {
         Path extRoot = LocalBuildingScanner.getExtensionRoot();
         java.util.List<LocalBuilding> extList = LocalBuildingScanner.scanDir(extRoot, "extension");
         for (LocalBuilding lb : extList) {
-            if (lb.id.equals(baseName) && (lb.fileExt == null || lb.fileExt.equalsIgnoreCase(ext.replaceFirst("^\\.", "")))) {
+            String lbExt = lb.fileExt == null ? "" : lb.fileExt;
+            boolean idMatch = lb.id.equals(baseName);
+            boolean extMatch = lbExt.isEmpty() || lbExt.equalsIgnoreCase(ext)
+                || lbExt.equalsIgnoreCase(extNoDot)
+                || (lbExt.startsWith(".") && lbExt.substring(1).equalsIgnoreCase(extNoDot));
+            if (idMatch && extMatch) {
                 ConstructionInfo c = new ConstructionInfo(lb.id);
                 c.setName(lb.name == null || lb.name.isEmpty() ? b.name : lb.name);
                 c.setAuthor(lb.author == null || lb.author.isEmpty() ? b.author : lb.author);

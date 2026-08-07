@@ -207,14 +207,9 @@ public class StructurePreviewKeyHandler {
             // (CustomStructurePreviewRenderer 读 buildBlock.blockPos, 不是 cfg.pos)
             // 必须传 cfg.houseFacing: 用户已经旋转过, 移动后还要保持旋转, 不传会导致预览方块错位.
             com.prefab.addon.structure.CustomStructureBuilder.offsetStructureBlocks(currentStructure, newPos, cfg.houseFacing);
-            // 我们的自定义预览: prefab 不画 (currentStructure=null 永远 return), 不需要 triggerPrefabRebuild.
-            // 我们的 CustomStructurePreviewRenderer 会自己检测 cfg.pos 变化, 调 AsyncPreviewBatcher
-            // .requestRestart 重新烘焙所有方块, 1-2 tick 内完成, 视觉上无缝.
-            // prefab 原版预览: prefab 自己的 renderer 用 previewChunks cache (按 chunk 位置 key),
-            //   不调 setStructure 重建它永远显示旧位置, 必须 triggerPrefabRebuild.
-            if (isPrefabOriginalPreview) {
-                triggerPrefabRebuild();
-            }
+            // 我们的 CustomStructurePreviewRenderer 检测到 cfg.pos 变化时, 自动清 vertex buffer 重建.
+            // 不调 triggerPrefabRebuild: 我们的预览不走 prefab 渲染 (prefab 的 bakeBlockAndSubBlock
+            // 跳过非空气位置, 自定义建筑大部分方块会跟地面/墙重叠 → prefab 不画).
             lastMoveTimeMs = now;
             PrefabCustomAddon.LOGGER.info("[PREVIEW-MOVE] player={} dx={} dz={} dy={} step={}  {} -> {}",
                 playerFacing, dx, dz, dy, step, oldPos, newPos);
@@ -230,10 +225,7 @@ public class StructurePreviewKeyHandler {
             // 之前只调 (structure, pos) 不传 houseFacing → blockPos 永远不旋转, 预览的"半旋转"
             // 来自 Prefab 自己的 model rotation, 但我们的 renderer 读 blockPos 还是老位置 → 错位
             com.prefab.addon.structure.CustomStructureBuilder.offsetStructureBlocks(currentStructure, cfg.pos, cfg.houseFacing);
-            // prefab 原版预览: 同移动, 必须 triggerPrefabRebuild 强制 prefab 重建 cache.
-            if (isPrefabOriginalPreview) {
-                triggerPrefabRebuild();
-            }
+            // 我们的 CustomStructurePreviewRenderer 检测到 houseFacing 变化时, 自动清 vertex buffer 重建.
             lastMoveTimeMs = now;
             PrefabCustomAddon.LOGGER.info("[PREVIEW-ROTATE] houseFacing {} -> {}", oldFacing, newFacing);
         }
