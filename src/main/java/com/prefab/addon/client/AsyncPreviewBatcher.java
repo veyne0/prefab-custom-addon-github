@@ -8,6 +8,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.block.BlockRenderDispatcher;
 import net.minecraft.core.Direction;
 import net.minecraft.util.RandomSource;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
 
 import java.util.ArrayList;
@@ -60,11 +61,12 @@ public final class AsyncPreviewBatcher {
     private static class Session {
         final Structure structure;
         final List<BuildBlock> pending;       // 待处理 (按索引顺序)
-        final List<ReadyBlock> ready;         // 已就绪 (主线程读)
+        volatile List<ReadyBlock> ready;      // 已就绪 (主线程读) — 改 rotationSteps 时替换
         final AtomicInteger processedCount;   // 已处理总数 (主线程读)
         volatile long nextBatchDeadlineMs;    // 下次批处理最早时间 (ms)
         volatile boolean cancelled;            // 取消标志
         volatile boolean completed;            // 是否全部完成
+        volatile int rotationSteps;           // 90° 旋转步数 (0/1/2/3), 跟实际建造 (AsyncBuildManager) 一致
 
         Session(Structure s) {
             this.structure = s;
@@ -74,6 +76,7 @@ public final class AsyncPreviewBatcher {
             this.nextBatchDeadlineMs = 0L;
             this.cancelled = false;
             this.completed = false;
+            this.rotationSteps = 0;
         }
     }
 
@@ -123,28 +126,55 @@ public final class AsyncPreviewBatcher {
     }
 
     /**
-     * 主线程调用: 确保后台线程在跑.
+     * 主线程调用: 通知 session 当前的旋转步数. 如果变化, 重置 ready 列表, 让 worker 重新烘焙.
+     *
+     * <p>旋转步数变化 (玩家按 CTRL 旋转预览) 必须重新 bake, 因为 state 旋转了,
+     *    quads 方向跟着变, 否则预览里装饰方块 (栅栏/楼梯/门/告示牌) 方向不对.</p>
      */
-    public static void ensureRunning(Structure structure) {
-        if (workerThread != null && workerThread.isAlive()) return;
-        synchronized (START_LOCK) {
-            if (workerThread != null && workerThread.isAlive()) return;
-            workerThread = new Thread(AsyncPreviewBatcher::runLoop, "PrefabAsyncPreview");
-            workerThread.setDaemon(true);
-            workerThread.start();
-            PrefabCustomAddon.LOGGER.info("[PREVIEW-ASYNC] 后台线程启动");
+    public static void setRotationSteps(Structure structure, int steps) {
+        if (structure == null) return;
+        synchronized (SESSIONS) {
+            Session s = SESSIONS.get(structure);
+            if (s == null) return;
+            int normalized = ((steps % 4) + 4) % 4;
+            if (s.rotationSteps == normalized) return;
+            PrefabCustomAddon.LOGGER.info("[PREVIEW-ASYNC] rotationSteps 变化: {} -> {}, 重置 ready",
+                s.rotationSteps, normalized);
+            s.rotationSteps = normalized;
+            // 重置烘焙: 清空 ready 列表 + 重置 processedCount + 取消 completed 标记
+            s.ready = new CopyOnWriteArrayList<>();
+            s.processedCount.set(0);
+            s.completed = false;
+            s.nextBatchDeadlineMs = System.currentTimeMillis();
         }
     }
 
     /**
+     * 主线程调用: 确保后台线程在跑.
+     *
+     * <p>禁用: 现在预览由 prefab 自带的 StructureRenderHandler 渲染, 不再需要后台
+     * 线程做 BakedModel 烘焙. 保留方法签名以避免破坏其它调用方 (CustomStructureGui 之类),
+     * 实际不做任何事.</p>
+     */
+    public static void ensureRunning(Structure structure) {
+        // no-op: prefab 自己渲染
+    }
+
+    /**
      * 主线程调用: 取已就绪方块列表.
+     *
+     * <p><b>修复: 只有 completed=true 才返回数据, 否则返回空列表.</b><br>
+     * 之前总是返回 ready list, 异步 worker 一边填, 主线程一边画 → 每帧画面里
+     * 都多出几个新方块, 玩家视觉上感觉"一帧帧冒出来" (尤其大结构 4w+ 块
+     * worker 跑几秒, 期间整张图在"渐入"), 这就是用户反馈的"预览方块一直闪".
+     * 现在: 全部 ready 一齐放出来, 视觉上跟原版 Prefab 一致 (无闪烁).</p>
      */
     public static List<ReadyBlock> getReadyBlocks(Structure structure) {
         Session s;
         synchronized (SESSIONS) {
             s = SESSIONS.get(structure);
         }
-        if (s == null) return Collections.emptyList();
+        if (s == null || !s.completed) return Collections.emptyList();
         return s.ready;
     }
 
@@ -202,6 +232,7 @@ public final class AsyncPreviewBatcher {
                 int endIdx = Math.min(totalBlocks, startIdx + batchSize);
 
                 BlockRenderDispatcher brd = Minecraft.getInstance().getBlockRenderer();
+                Level level = Minecraft.getInstance().level;
                 int baked = 0;
                 int failed = 0;
                 for (int i = startIdx; i < endIdx; i++) {
@@ -209,6 +240,37 @@ public final class AsyncPreviewBatcher {
                     BuildBlock bb = s.pending.get(i);
                     if (bb == null) continue;
                     BlockState state = bb.getBlockState();
+                    if (state == null || state.isAir()) continue;
+                    // 关键: 跟原版 Prefab 预览 (StructureRenderHandler.drawStructure) 走同一套 SetBlockState.
+                    //   BuildBlock.SetBlockState 内部对所有 property 类型按当前 houseFacing 重算:
+                    //     - facing (HORIZONTAL_FACING)
+                    //     - rotation (告示牌/头颅, 0/4/8/12 → S/W/N/E)
+                    //     - axis (原木/骨头)
+                    //     - 4 向连接 (墙/铁栅栏/玻璃板 CrossCollisionBlock)
+                    //     - WallShape (墙的内/外/高)
+                    //     - VineBlock 4 向布尔
+                    //     - Lever 6 向 (FaceAttachedHorizontalDirectionalBlock)
+                    //   之前用 BlockStateRotator.rotateY 只处理 HORIZONTAL_FACING, 栅栏/告示牌/楼梯方向
+                    //   全部错乱 (装饰方块方向变了的根因).
+                    if (s.structure.configuration != null && level != null) {
+                        try {
+                            BuildBlock rotatedBb = com.prefab.structures.base.BuildBlock.SetBlockState(
+                                s.structure.configuration,
+                                level,
+                                bb.blockPos,
+                                bb,
+                                state.getBlock(),
+                                state,
+                                s.structure);
+                            if (rotatedBb != null) {
+                                state = rotatedBb.getBlockState();
+                            }
+                        } catch (Throwable t) {
+                            // SetBlockState 内部对某些方块可能 NPE (例如方块没 default state), fallback 到原 state
+                            PrefabCustomAddon.LOGGER.debug("[PREVIEW-ASYNC] SetBlockState 失败 ({}), 用原 state",
+                                t.getMessage());
+                        }
+                    }
                     if (state == null || state.isAir()) continue;
                     try {
                         var model = brd.getBlockModel(state);

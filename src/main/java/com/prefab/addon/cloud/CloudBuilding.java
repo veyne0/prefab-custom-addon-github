@@ -65,6 +65,9 @@ public final class CloudBuilding {
     public final List<BlockSnapshot> blocks = new ArrayList<>();  // 原始 (未旋转) 方块快照
     public final List<TileEntitySnapshot> tileEntities = new ArrayList<>();  // 备份时容器/告示牌/漏斗里的内容
     public byte[] thumbnailPng;        // 可选, 64x64 缩略图, 空 = 用占位符
+    /** 缩略图原始尺寸 (解码时记录, 给 blit 用 src 尺寸, 避免 UV 错位). 不参与 NBT 序列化. */
+    public int thumbWidth = 0;
+    public int thumbHeight = 0;
 
     public CloudBuilding(String id) {
         this.id = id;

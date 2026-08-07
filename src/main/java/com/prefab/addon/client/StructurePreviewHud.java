@@ -98,7 +98,8 @@ public class StructurePreviewHud {
             lines = new String[] {
                 com.prefab.addon.PrefabCustomAddon.tr("hud.preview_progress", bar.toString())
             };
-            visibleLines = 2;
+            // 修复: 之前 visibleLines=2 但 lines 只有 1 元素, 第 132 行 lines[1] 越界崩溃
+            visibleLines = 1;
         } else {
             lines = new String[] {
                 com.prefab.addon.PrefabCustomAddon.tr("hud.preview_controls")
