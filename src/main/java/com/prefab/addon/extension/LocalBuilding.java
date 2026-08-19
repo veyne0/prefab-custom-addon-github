@@ -1,6 +1,8 @@
 package com.prefab.addon.extension;
 
 import java.nio.file.Path;
+import java.util.Collections;
+import java.util.List;
 
 /**
  * 本地单文件建筑 (.nbt/.schem/.litematic + .txt + .png 三件套).
@@ -23,6 +25,11 @@ public class LocalBuilding {
     public final String author;
     /** 描述 (从 .txt 的 "描述:" 解析) */
     public final String description;
+    /** 依赖 mod 列表 (从 .txt 的 "依赖:" / "依赖模组:" / "dependencies:" 解析, 已 cleanDepList).
+     *  缺省为空列表 (绝不返回 null, 避免调用方 NPE). */
+    public final List<String> dependencies;
+    /** 分类 (从 .txt 的 "分类:" 解析). 空 = 未分类 (走 "未分类" 虚拟分类). */
+    public final String category;
     /** 建筑文件扩展名, 含前导点, 如 ".nbt"/".schem"/".litematic" */
     public final String fileExt;
     /** 建筑文件大小, 字节 */
@@ -40,12 +47,17 @@ public class LocalBuilding {
     public final Path imagePath;
 
     public LocalBuilding(String id, String name, String author, String description,
+                         List<String> dependencies, String category,
                          String fileExt, long fileSize, String imageExt, String source,
                          Path filePath, Path infoPath, Path imagePath) {
         this.id = id;
         this.name = name;
         this.author = author;
         this.description = description;
+        // 兜底: 不让 dependencies 为 null, 调用方可以放心用 getDependencies() 迭代
+        this.dependencies = (dependencies == null) ? Collections.emptyList() : dependencies;
+        // 分类: 空白视为未分类, 统一存 ""
+        this.category = (category == null || category.isBlank()) ? "" : category.trim();
         this.fileExt = fileExt;
         this.fileSize = fileSize;
         this.imageExt = imageExt;
@@ -53,6 +65,12 @@ public class LocalBuilding {
         this.filePath = filePath;
         this.infoPath = infoPath;
         this.imagePath = imagePath;
+    }
+
+    /** 当前分类; 永远不返回 null / 空白, 空白用 UNCATEGORIZED 占位. */
+    public String getCategoryOrDefault() {
+        if (category == null || category.isBlank()) return com.prefab.addon.config.CategoryManager.UNCATEGORIZED;
+        return category;
     }
 
     /** 是否有预览图文件. */

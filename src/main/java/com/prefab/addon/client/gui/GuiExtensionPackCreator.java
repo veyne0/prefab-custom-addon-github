@@ -11,31 +11,28 @@ import com.lowdragmc.lowdraglib2.gui.ui.data.TextWrap;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Button;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Label;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.ScrollerView;
-import com.lowdragmc.lowdraglib2.gui.ui.elements.Selector;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.TextElement;
 import com.lowdragmc.lowdraglib2.gui.ui.event.UIEvents;
 import com.lowdragmc.lowdraglib2.gui.ui.rendering.GUIContext;
 import com.lowdragmc.lowdraglib2.gui.ui.style.StylesheetManager;
 import com.lowdragmc.lowdraglib2.gui.ColorPattern;
 import com.lowdragmc.lowdraglib2.gui.texture.IGuiTexture;
-import com.lowdragmc.lowdraglib2.gui.ui.styletemplate.Sprites;
 import com.mojang.blaze3d.platform.NativeImage;
 import com.mojang.blaze3d.systems.RenderSystem;
+import com.prefab.addon.PrefabCustomAddon;
+import com.prefab.addon.extension.ConstructionInfo;
+import com.prefab.addon.extension.LocalBuilding;
+import com.prefab.addon.extension.LocalBuildingScanner;
+import com.prefab.addon.work.PackCreator;
+import dev.vfyjxf.taffy.style.AlignContent;
+import dev.vfyjxf.taffy.style.AlignItems;
+import dev.vfyjxf.taffy.style.FlexDirection;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.renderer.texture.DynamicTexture;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 
-import com.prefab.addon.PrefabCustomAddon;
-import com.prefab.addon.extension.PackStatusService;
-import com.prefab.addon.work.PackCreator;
-
-import dev.vfyjxf.taffy.style.AlignContent;
-import dev.vfyjxf.taffy.style.AlignItems;
-import dev.vfyjxf.taffy.style.FlexDirection;
-
-import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -44,67 +41,71 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 拓展包制作界面 (X 键打开) - LDLib2 实现.
+ * 拓展包 / 建筑 管理主界面 (X 键打开) - LDLib2 实现, 侧边栏 + 标签页布局.
  *
- * <h2>布局 (整屏 100%)</h2>
+ * <h2>布局</h2>
  * <pre>
- *   ┌────────────────────────────────────────────────┐
- *   │ 拓展包制作 - 本地工作区                          │ (title h=20)
- *   │ 工作目录: D:\...\prefab-work                     │ (subtitle h=14)
- *   ├──────────┬────────────────────┬────────────────┤
- *   │ 我的拓展包│ 选中包: 标题        │ [封面图 48x48] │
- *   │ ┌──────┐ │ 标识符/作者/版本    │ [更换封面]     │
- *   │ │pack1 │ │ 依赖/链接/描述     │ 状态: ...      │
- *   │ │pack2 │ │ (scroller)        │ 本地: 11 预装: 0│
- *   │ │...   │ │                    │ [➕ 添加]       │
- *   │ └──────┘ │                    │ ┌─建筑列表─┐    │
- *   │ (scroll) │                    │ │b1 b2 ... │    │
- *   │          │                    │ └──────────┘    │
- *   ├──────────┴────────────────────┴────────────────┤
- *   │ [创建拓展][编辑][创建建筑][删建筑][删包][目录][刷新][关闭]│ (h=22)
- *   │ 状态: ...                                       │ (h=12)
- *   └────────────────────────────────────────────────┘
+ *   ┌──────────────────────────────────────────────┐
+ *   │ 建筑管理 - 本地工作区                          │ (title h=20)
+ *   │ 工作目录: .../prefab-extension                 │ (subtitle h=12)
+ *   ├──────────┬───────────────────────────────────┤
+ *   │ [添加建筑]│  添加建筑: 嵌入 createFormElement │
+ *   │ [编辑建筑]│  编辑建筑: LocalBuilding 卡片网格 │
+ *   │ (sidebar)│  (content)                        │
+ *   ├──────────┴───────────────────────────────────┤
+ *   │ 状态: ...                          [关闭]    │ (h=20)
+ *   └──────────────────────────────────────────────┘
  * </pre>
+ *
+ * <h2>两个 tab</h2>
+ * <ul>
+ *   <li><b>添加建筑</b> — 嵌入 {@link GuiCreateBuildingInfo#createFormElement()}, 玩家在
+ *       表单里选 NBT/游戏中选区/选图标 → 保存到 prefab-extension/{id}.{nbt,txt,png} 三件套.
+ *       OBJ 转换 / 游戏中选区 / 图标选择 / 保存 / 删除 全部走 GuiCreateBuildingInfo 原方法, 此处不动.</li>
+ *   <li><b>编辑建筑</b> — 用 {@link LocalBuildingScanner} 扫 prefab-extension/,
+ *       以 3 列卡片网格展示. 每张卡片含图片/名称/查看/编辑按钮.
+ *       查看 = 转 ConstructionInfo 调 {@link GuiConstructionDetail#open(ConstructionInfo)};
+ *       编辑 = 转 BuildingWorkInfo 调 {@link GuiCreateBuildingInfo#open} (独立屏).</li>
+ * </ul>
+ *
+ * <h2>parent 回调</h2>
+ * 嵌入表单后, GuiCreateBuildingInfo 的 doSave / doDelete / 取消按钮仍会调
+ * parent.onChildClosed / onBuildingSaved / onBuildingDeleted. 这里区分两种模式:
+ * <ul>
+ *   <li><b>嵌入式</b> (主界面可见) — 原地刷新表单 / 列表, 不关屏.</li>
+ *   <li><b>独立式</b> (从 "编辑" 进入的独立编辑屏) — 重新打开主界面.</li>
+ * </ul>
+ * 通过 {@code Minecraft.getInstance().screen == currentModularScreen} 判断.
  */
 public final class GuiExtensionPackCreator {
 
     private GuiExtensionPackCreator() {}
 
-    // === 静态状态 (供子界面回调) ===
-    private static final List<PackCreator.PackWorkInfo> packs = new ArrayList<>();
-    private static List<PackCreator.BuildingWorkInfo> buildings = new ArrayList<>();
-    private static int selectedIndex = -1;
-    private static int selectedBuildingIndex = -1;
-    private static PackStatusService.Status currentPackStatus = null;
+    // === 静态状态 ===
+    /** 当前可见的 ModularUIScreen 引用, 用于 parent 回调判断"主界面是否可见". */
+    private static ModularUIScreen currentModularScreen = null;
+    /** 当前 tab: "add" / "edit". */
+    private static String currentTab = "add";
+    /** 编辑建筑 tab 扫描的 LocalBuilding 列表. */
+    private static final List<LocalBuilding> buildingList = new ArrayList<>();
+    /** LocalBuilding.id -> 加载的预览图 ResourceLocation. 关闭主界面时释放. */
+    private static final Map<String, ResourceLocation> buildingImages = new HashMap<>();
 
-    // 封面图缓存: packId -> ResourceLocation
-    private static final Map<String, ResourceLocation> coverTextures = new HashMap<>();
-    private static String loadedCoverFor = null;
+    // === UI 引用 ===
+    private static UIElement addTabContent;
+    private static UIElement editTabContent;
+    private static TextElement statusEl;
+    private static TextElement subtitleEl;
+    private static Button tabAddBtn;
+    private static Button tabEditBtn;
+    private static UIElement editCardGrid;
+    private static ScrollerView editScroller;
+    private static TextElement editEmptyEl;
 
-    // 状态消息
+    // === 状态消息 ===
     private static String statusMessage = null;
     private static int statusColor = 0x55FF55;
     private static int statusTick = 0;
-
-    // === UI 引用 (tick handler 用) ===
-    private static TextElement statusEl;
-    private static UIElement packListContent;
-    private static UIElement buildingListContent;
-    private static UIElement infoContent;
-    private static UIElement coverEl;
-    private static UIElement bScroller;
-    private static UIElement infoScroller;
-    private static Selector<String> packSelector;
-    private static Button btnCreatePack;
-    private static Button btnEditPack;
-    private static Button btnCreateBuilding;
-    private static Button btnDeleteBuilding;
-    private static Button btnDeletePack;
-    private static Button btnEditCover;
-    private static Button btnOpenFolder;
-    private static Button btnRefresh;
-    private static Button btnClose;
-    private static Button btnAddToExtension;
 
     // === 静态单例 (供子界面拿 parent ref) ===
     private static GuiExtensionPackCreator currentInstance = null;
@@ -114,1028 +115,638 @@ public final class GuiExtensionPackCreator {
         return currentInstance;
     }
 
+    /**
+     * 打开主界面 (X 键入口).
+     */
     public static void open() {
-        // 释放旧封面纹理
-        for (ResourceLocation loc : coverTextures.values()) {
-            Minecraft.getInstance().getTextureManager().release(loc);
-        }
-        coverTextures.clear();
-        loadedCoverFor = null;
+        // 释放旧封面/卡片图片纹理
+        releaseAllImages();
 
-        selectedIndex = -1;
-        selectedBuildingIndex = -1;
-        currentPackStatus = null;
+        currentTab = "add";
         statusMessage = null;
         statusTick = 0;
-        buildings = new ArrayList<>();
+        // 打开主界面时, 先把 GuiCreateBuildingInfo 的 static 状态重置
+        // (避免上次编辑建筑/独立打开的残留值污染新打开的添加建筑表单)
+        GuiCreateBuildingInfo.resetForReuse();
         currentInstance = new GuiExtensionPackCreator();
-        refreshPacks();
-        // 关键修复: 默认选中第一个包, 避免用户必须点 刷新 才能看到建筑
-        if (selectedIndex == -1 && !packs.isEmpty()) {
-            selectedIndex = 0;
-            loadBuildingsForSelected();
-        }
+        // 预扫一次, 切到编辑 tab 时不至于空
+        refreshBuildingList();
 
         ModularUI ui = createUI();
-        Minecraft.getInstance().setScreen(
-            new ModularUIScreen(ui, Component.literal("拓展包制作 - 本地工作区")));
+        currentModularScreen = new ModularUIScreen(ui,
+            Component.literal(PrefabCustomAddon.tr("gui.extension_creator.window_title")));
+        Minecraft.getInstance().setScreen(currentModularScreen);
+    }
+
+    /** 释放所有加载的预览图纹理. */
+    private static void releaseAllImages() {
+        for (ResourceLocation loc : buildingImages.values()) {
+            try {
+                Minecraft.getInstance().getTextureManager().release(loc);
+            } catch (Throwable ignored) {}
+        }
+        buildingImages.clear();
+    }
+
+    // === parent 回调 ===
+
+    /**
+     * 子界面 (form 取消按钮) 回调:
+     * <ul>
+     *   <li>嵌入式 — 原地重置表单, 不关屏.</li>
+     *   <li>独立式 — 重新打开主界面.</li>
+     * </ul>
+     */
+    public void onChildClosed() {
+        if (isMainScreenVisible()) {
+            // 嵌入式: 重置表单, 留在添加建筑 tab
+            GuiCreateBuildingInfo.resetForReuse();
+            GuiCreateBuildingInfo.parent = currentInstance;
+            rebuildAddTab();
+            switchTab("add");
+            setStatus(PrefabCustomAddon.tr("gui.extension_creator.cancelled"), 0x888888);
+        } else {
+            // 独立式: 重新打开主界面
+            reopenMainScreen("add");
+        }
     }
 
     /**
-     * 子界面关闭后回调: 重新打开 (保留选中状态).
-     * 同时关闭其他子界面, 防止堆叠多层 GuiCreatePackInfo.
+     * 子界面 (form 保存成功) 回调.
      */
-    public void onChildClosed() {
-        int savedSelectedIndex = selectedIndex;
-        int savedBuildingIndex = selectedBuildingIndex;
-        // 先 close 当前的 (避免叠加)
+    public void onBuildingSaved(String id) {
+        if (isMainScreenVisible()) {
+            // 嵌入式: 重置表单, 留在添加建筑 tab; 同时刷新编辑 tab 列表
+            GuiCreateBuildingInfo.resetForReuse();
+            GuiCreateBuildingInfo.parent = currentInstance;
+            rebuildAddTab();
+            switchTab("add");
+            setStatus(PrefabCustomAddon.tr("gui.extension_creator.saved", id), 0x55FF55);
+            refreshBuildingList();
+        } else {
+            // 独立式 (从 "编辑" 进入的编辑屏): 重新打开, 切到编辑 tab 让玩家看到更新
+            reopenMainScreen("edit");
+        }
+    }
+
+    /**
+     * 子界面 (form 删除成功) 回调.
+     */
+    public void onBuildingDeleted(String buildingId) {
+        if (isMainScreenVisible()) {
+            // 嵌入式: 不太可能触发 (嵌入式是 create 模式, 不显示删除按钮), 但兜底
+            GuiCreateBuildingInfo.resetForReuse();
+            GuiCreateBuildingInfo.parent = currentInstance;
+            rebuildAddTab();
+            switchTab("add");
+            setStatus(PrefabCustomAddon.tr("gui.extension_creator.deleted", buildingId), 0x55FF55);
+            refreshBuildingList();
+        } else {
+            // 独立式 (从 "编辑" 进入的编辑屏): 重新打开, 切到编辑 tab
+            reopenMainScreen("edit");
+        }
+    }
+
+    /** 主界面是否当前可见 (用 ModularUIScreen 引用比较). */
+    private static boolean isMainScreenVisible() {
+        return currentModularScreen != null
+            && Minecraft.getInstance().screen == currentModularScreen;
+    }
+
+    /** 重新打开主界面 (用于独立式子界面关闭后). */
+    private static void reopenMainScreen(String tab) {
+        final String targetTab = tab == null ? "add" : tab;
         Minecraft.getInstance().execute(() -> {
             Minecraft.getInstance().setScreen(null);
-            // 然后重新打开本 GUI
             Minecraft.getInstance().execute(() -> {
                 open();
-                // 恢复选中
-                if (savedSelectedIndex >= 0 && savedSelectedIndex < packs.size()) {
-                    selectedIndex = savedSelectedIndex;
-                    loadBuildingsForSelected();
-                    if (savedBuildingIndex >= 0 && savedBuildingIndex < buildings.size()) {
-                        selectedBuildingIndex = savedBuildingIndex;
-                    }
-                }
-                rebuildInfoPanel();
-                rebuildPackSelector();
-                rebuildBuildingList();
-                rebuildAddButton();
+                switchTab(targetTab);
             });
         });
     }
 
     // === 数据加载 ===
 
-    private static void refreshPacks() {
+    /**
+     * 扫描 prefab-extension/ 下的所有 LocalBuilding, 用于编辑建筑 tab.
+     * 加载的图片存入 buildingImages 缓存.
+     */
+    private static void refreshBuildingList() {
         try {
-            packs.clear();
-            packs.addAll(PackCreator.getInstance().scanPacks());
+            buildingList.clear();
+            buildingList.addAll(LocalBuildingScanner.scanAll());
+            // 按 id 排序保证稳定显示
+            buildingList.sort((a, b) -> a.id.compareToIgnoreCase(b.id));
+            PrefabCustomAddon.LOGGER.info("[CREATOR] 扫描 prefab-extension 找到 {} 个建筑",
+                buildingList.size());
         } catch (Throwable t) {
-            PrefabCustomAddon.LOGGER.error("[CREATOR] scan packs failed", t);
+            PrefabCustomAddon.LOGGER.error("[CREATOR] 扫描 LocalBuilding 失败", t);
         }
-        if (selectedIndex >= packs.size()) {
-            selectedIndex = -1;
-            buildings = new ArrayList<>();
-        }
-        if (selectedIndex >= 0) {
-            loadBuildingsForSelected();
-        }
-        updateButtonStates();
+        rebuildEditGrid();
     }
 
-    private static void loadBuildingsForSelected() {
-        if (selectedIndex < 0 || selectedIndex >= packs.size()) {
-            buildings = new ArrayList<>();
-            currentPackStatus = null;
-            return;
-        }
-        PackCreator.PackWorkInfo p = packs.get(selectedIndex);
-        try {
-            buildings = PackCreator.getInstance().readBuildings(p.id);
-        } catch (Throwable t) {
-            PrefabCustomAddon.LOGGER.error("[CREATOR] read buildings failed", t);
-            buildings = new ArrayList<>();
-        }
-        if (selectedBuildingIndex >= buildings.size()) selectedBuildingIndex = -1;
-        loadCoverFor(p);
-        detectPackStatus();
-    }
-
-    private static void detectPackStatus() {
-        if (selectedIndex < 0 || selectedIndex >= packs.size()) {
-            currentPackStatus = null;
-            return;
-        }
-        try {
-            PackCreator.PackWorkInfo p = packs.get(selectedIndex);
-            currentPackStatus = PackStatusService.checkStatus(p.id);
-            PrefabCustomAddon.LOGGER.info("[CREATOR] pack '{}' status: {} (local={} inst={})",
-                p.id, currentPackStatus.state,
-                currentPackStatus.localBuildings.size(),
-                currentPackStatus.installedBuildings.size());
-        } catch (Throwable t) {
-            PrefabCustomAddon.LOGGER.error("[CREATOR] detectPackStatus failed", t);
-            currentPackStatus = null;
-        }
-    }
-
-    private static void loadCoverFor(PackCreator.PackWorkInfo p) {
-        if (loadedCoverFor != null && loadedCoverFor.equals(p.id)) return;
-        if (loadedCoverFor != null) {
-            ResourceLocation old = coverTextures.remove(loadedCoverFor);
-            if (old != null) Minecraft.getInstance().getTextureManager().release(old);
-        }
-        loadedCoverFor = p.id;
-        if (p.coverImage == null || !Files.exists(p.coverImage)) return;
+    /**
+     * 加载 LocalBuilding 的预览图, 返回 ResourceLocation (缓存).
+     */
+    private static ResourceLocation getOrLoadImage(LocalBuilding lb) {
+        if (lb == null || !lb.hasPreviewImage() || !Files.exists(lb.imagePath)) return null;
+        String key = lb.id;
+        ResourceLocation loc = buildingImages.get(key);
+        if (loc != null) return loc;
         try {
             NativeImage ni;
-            try (var in = Files.newInputStream(p.coverImage)) {
+            try (var in = Files.newInputStream(lb.imagePath)) {
                 ni = NativeImage.read(in);
             }
-            if (ni == null) return;
+            if (ni == null) return null;
             DynamicTexture tex = new DynamicTexture(ni);
-            ResourceLocation loc = Minecraft.getInstance().getTextureManager()
-                .register("prefab_addon/cover_" + p.id, tex);
-            coverTextures.put(p.id, loc);
+            String texKey = "prefab_addon_bldimg_" + key + "_"
+                + Long.toHexString(System.currentTimeMillis());
+            loc = Minecraft.getInstance().getTextureManager().register(texKey, tex);
+            buildingImages.put(key, loc);
+            return loc;
         } catch (Throwable t) {
-            PrefabCustomAddon.LOGGER.warn("[CREATOR] load cover failed for " + p.id, t);
+            PrefabCustomAddon.LOGGER.warn("[CREATOR] 加载建筑预览图失败: {}", lb.imagePath, t);
+            return null;
         }
-    }
-
-    private static void updateButtonStates() {
-        boolean hasPack = (selectedIndex >= 0 && selectedIndex < packs.size());
-        boolean hasBuilding = (selectedBuildingIndex >= 0 && selectedBuildingIndex < buildings.size());
-        if (btnCreateBuilding != null) btnCreateBuilding.setActive(hasPack);
-        if (btnEditPack != null) btnEditPack.setActive(hasPack);
-        if (btnDeleteBuilding != null) btnDeleteBuilding.setActive(hasBuilding);
-        if (btnDeletePack != null) btnDeletePack.setActive(hasPack);
-        if (btnEditCover != null) btnEditCover.setActive(hasPack);
     }
 
     private static void setStatus(String msg, int color) {
         statusMessage = msg;
         statusColor = color;
-        statusTick = 80;
+        statusTick = 100;
     }
 
-    // === UI 重建 (选中/状态变化时) ===
+    // === tab 切换 ===
 
-    /** 构建下拉框候选列表.
-     * 关键: Selector 用 setCandidates + onValueChanged 的 value 做 .equals 比较,
-     * 如果两个包的 display 一样 (e.g. 两个都叫 "测试文件") + id 不一样,
-     * 会因为 Selector 把它们去重 → 只显示一项.
-     * 解决: 直接用 pack id 作为 selector 的 value (唯一), display 写在 setCandidateUIProvider 自渲染.
-     */
-    private static List<String> buildPackCandidates() {
-        List<String> ids = new ArrayList<>();
-        for (PackCreator.PackWorkInfo p : packs) {
-            ids.add(p.id);
+    private static void switchTab(String tab) {
+        String newTab = (tab == null) ? "add" : tab;
+        // 切回 "添加建筑" tab 时, 先把表单清空 (避免之前编辑建筑留下的字段值还占着表单)
+        if ("add".equals(newTab) && !"add".equals(currentTab)) {
+            GuiCreateBuildingInfo.resetForReuse();
+            GuiCreateBuildingInfo.parent = currentInstance;
+            rebuildAddTab();
         }
-        return ids;
+        currentTab = newTab;
+        boolean showAdd = "add".equals(currentTab);
+        if (addTabContent != null) addTabContent.setVisible(showAdd);
+        if (editTabContent != null) editTabContent.setVisible(!showAdd);
+        // 标签按钮高亮
+        if (tabAddBtn != null) {
+            tabAddBtn.textStyle(t -> t.textColor(showAdd ? 0xFFFF55 : 0xFFFFFF));
+        }
+        if (tabEditBtn != null) {
+            tabEditBtn.textStyle(t -> t.textColor(showAdd ? 0xFFFFFF : 0xFFFF55));
+        }
     }
 
     /**
-     * 把 pack.id 渲染成下拉框里的可读行 (id + 可选 name).
-     * 让同一名字的两个包也能区分开来 (后缀 (id)).
+     * 重建 "添加建筑" tab 的内容 = 嵌入的表单.
+     * 每次重建都会调 GuiCreateBuildingInfo.createFormElement() 拿一个新的 UIElement.
+     * 嵌入前先确保 GuiCreateBuildingInfo 的 static 状态 (parent, fields) 已就绪.
      */
-    private static String packDisplay(PackCreator.PackWorkInfo p) {
-        if (p.name == null || p.name.isEmpty() || p.name.equals(p.id)) {
-            return "§f" + p.id;
+    private static void rebuildAddTab() {
+        if (addTabContent == null) return;
+        addTabContent.clearAllChildren();
+        // 把 parent 设上, 让嵌入的表单的保存/删除/取消按钮能找到主界面
+        if (GuiCreateBuildingInfo.parent != currentInstance) {
+            GuiCreateBuildingInfo.parent = currentInstance;
         }
-        return "§f" + p.name + " §7(" + p.id + ")";
-    }
-
-    /** 下拉框选择变更回调 - 现在 value 直接就是 pack.id */
-    private static void onPackSelectorChanged(String newValue) {
-        if (newValue == null) return;
-        int newIdx = -1;
-        for (int i = 0; i < packs.size(); i++) {
-            if (packs.get(i).id.equals(newValue)) {
-                newIdx = i;
-                break;
-            }
-        }
-        if (newIdx != selectedIndex) {
-            selectedIndex = newIdx;
-            selectedBuildingIndex = -1;
-            loadBuildingsForSelected();
-            updateButtonStates();
-            rebuildInfoPanel();
-            rebuildBuildingList();
-            rebuildAddButton();
-            rebuildCover();
-        }
-    }
-
-    private static void rebuildPackSelector() {
-        if (packSelector == null) return;
-        String prev = packSelector.getValue();
-        List<String> newCandidates = buildPackCandidates();
-        packSelector.setCandidates(newCandidates);
-        PrefabCustomAddon.LOGGER.info("[CREATOR] rebuildPackSelector: packs.size={} candidates={}",
-            packs.size(), newCandidates);
-        if (selectedIndex >= 0 && selectedIndex < packs.size()) {
-            packSelector.setValue(packs.get(selectedIndex).id, false);
-        } else if (prev != null && newCandidates.contains(prev)) {
-            packSelector.setValue(prev, false);
-        } else if (!newCandidates.isEmpty()) {
-            packSelector.setValue(newCandidates.get(0), false);
-            selectedIndex = 0;
-        }
-    }
-
-    private static void rebuildPackList() {
-        // 兼容旧调用, 实际更新下拉框
-        rebuildPackSelector();
-    }
-
-    private static UIElement createPackListItem(int idx, PackCreator.PackWorkInfo p) {
-        // 旧方法, 不再使用 (拓展包选择已改为下拉框). 保留以防编译错误.
-        return new UIElement();
-    }
-
-    private static void rebuildInfoPanel() {
-        if (infoContent == null) return;
-        infoContent.clearAllChildren();
-        if (selectedIndex < 0 || selectedIndex >= packs.size()) {
-            // 占位提示
-            TextElement empty = new TextElement();
-            empty.setText("← 选择左侧的拓展包\n或点击「创建拓展包」开始");
-            empty.textStyle(t -> t.textColor(0xAAAAAA)
-                .textAlignHorizontal(Horizontal.CENTER)
-                .textWrap(TextWrap.WRAP));
-            empty.layout(l -> l.widthPercent(100).heightPercent(100)
-                .justifyContent(AlignContent.CENTER));
-            infoContent.addChild(empty);
-            return;
-        }
-        PackCreator.PackWorkInfo p = packs.get(selectedIndex);
-        // 标题
-        String title = p.name == null || p.name.isEmpty() ? p.id : p.name;
-        TextElement titleEl = new TextElement();
-        titleEl.setText("§l" + truncate(title, 20));
-        titleEl.textStyle(t -> t.textColor(0x55AAFF));
-        titleEl.layout(l -> l.widthPercent(100).height(18).flexShrink(0).flexGrow(0));
-        infoContent.addChild(titleEl);
-
-        addField(infoContent, "标识符:", p.id);
-        addField(infoContent, "作者:", p.author);
-        addField(infoContent, "版本:", p.version);
-        // 依赖: 把逗号分隔的依赖列表换成换行分隔, 每个 mod 一行, 方便分辨
-        String deps = p.dependencies;
-        int depLineCount = 0;
-        if (deps != null && !deps.isEmpty()) {
-            deps = deps.replaceAll("[\\r\\n\\s,]+", ",").trim();
-            if (deps.endsWith(",")) deps = deps.substring(0, deps.length() - 1);
-            String[] depArr = deps.split(",");
-            depLineCount = depArr.length;
-            deps = String.join("\n", depArr);
-        }
-        // 高度: 每行约 12px (字号 9 + 间距), 限制在 32~120 之间
-        int depHeight = Math.max(32, Math.min(120, depLineCount * 12 + 4));
-        addField(infoContent, "依赖:", deps, true, depHeight);
-        addField(infoContent, "链接:", p.link);
-        // 描述: 如果太长就截断, 避免一整段话占满屏
-        String desc = p.description;
-        if (desc != null && desc.length() > 60) desc = desc.substring(0, 58) + "..";
-        addField(infoContent, "描述:", desc, true);
-    }
-
-    private static void addField(UIElement parent, String label, String value) {
-        addField(parent, label, value, false, 0);
-    }
-
-    private static void addField(UIElement parent, String label, String value, boolean fullWidth) {
-        addField(parent, label, value, fullWidth, 0);
+        UIElement form = GuiCreateBuildingInfo.createFormElement();
+        // 表单本身要占满整个 tab
+        form.layout(l -> l.widthPercent(100).heightPercent(100));
+        addTabContent.addChild(form);
     }
 
     /**
-     * 添加信息字段 (标签 + 值, 单行 / 多行)
-     * @param customHeight 当 >0 时覆盖 fullWidth 默认的 40px 高度, 用于依赖 (多 mod) 等
+     * 重建 "编辑建筑" tab 的内容 = 3 列 LocalBuilding 卡片网格.
      */
-    private static void addField(UIElement parent, String label, String value, boolean fullWidth, int customHeight) {
-        // 单行: 标签 (固定宽 50) + 值 (flex 1, 固定高度避免滚动时高度变化导致闪烁)
-        UIElement row = new UIElement();
-        row.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW)
-            .gapAll(4).minHeight(0).heightAuto());
-        row.setOverflowVisible(false);
-
-        // 标签 - 固定高度, flexShrink(0) 防止被压缩
-        TextElement labelEl = new TextElement();
-        labelEl.setText(label);
-        labelEl.textStyle(t -> t.textColor(0xAAAAAA));
-        labelEl.layout(l -> l.width(36).height(14).flexShrink(0).flexGrow(0));
-        row.addChild(labelEl);
-
-        // 值 - 固定高度, flexShrink(0) 防止被压缩
-        // fullWidth=true (描述) 40px, 可显示 2-3 行
-        // fullWidth=false 默认 14px 单行
-        String val = value == null || value.isEmpty() ? "-" : value;
-        TextElement valEl = new TextElement();
-        valEl.setText(val);
-        // 关键: WRAP 会触发 recompute() 在 layout 变化时 → 滚动时闪烁
-        // 单行字段直接用 NONE, 描述等长字段单独处理
-        valEl.textStyle(t -> t.textColor(fullWidth ? 0xFFDDCC55 : 0xFFFFFF)
-            .textWrap(TextWrap.NONE).adaptiveHeight(false)
-            .fontSize(customHeight > 0 ? 7f : 9f));
-        int valHeight = customHeight > 0 ? customHeight : (fullWidth ? 40 : 14);
-        // 当 customHeight > 0, value 高度应让字垂直居中 (用 alignItems CENTER)
-        if (customHeight > 0) {
-            valEl.layout(l -> l.height(valHeight).flexShrink(0).flexGrow(1)
-                .alignItems(dev.vfyjxf.taffy.style.AlignItems.FLEX_START));
-        } else if (fullWidth) {
-            valEl.layout(l -> l.height(valHeight).flexShrink(0).flexGrow(1));
-        } else {
-            valEl.layout(l -> l.height(14).flexShrink(0).flexGrow(1));
-        }
-        row.addChild(valEl);
-
-        parent.addChild(row);
-
-        // 间距 - 固定高度避免压缩
-        UIElement spacer = new UIElement();
-        spacer.layout(l -> l.widthPercent(100).height(2).flexShrink(0).flexGrow(0));
-        parent.addChild(spacer);
-    }
-
-    private static void rebuildBuildingList() {
-        if (buildingListContent == null) return;
-        buildingListContent.clearAllChildren();
-        if (buildings.isEmpty()) {
-            TextElement empty = new TextElement();
-            empty.setText("(无)");
-            empty.textStyle(t -> t.textColor(0x888888)
-                .textAlignHorizontal(Horizontal.CENTER));
-            empty.layout(l -> l.widthPercent(100).height(20));
-            buildingListContent.addChild(empty);
+    private static void rebuildEditGrid() {
+        if (editCardGrid == null) return;
+        editCardGrid.clearAllChildren();
+        if (buildingList.isEmpty()) {
+            if (editEmptyEl != null) {
+                editEmptyEl.setVisible(true);
+            }
             return;
         }
-        for (int i = 0; i < buildings.size(); i++) {
-            final int idx = i;
-            PackCreator.BuildingWorkInfo b = buildings.get(i);
-            UIElement item = new UIElement();
-            item.layout(l -> l.widthPercent(100).height(20).marginBottom(1
-                ).flexDirection(FlexDirection.COLUMN).paddingAll(1));
-            item.setOverflowVisible(false);
-            if (idx == selectedBuildingIndex) {
-                // 选中项: 浅灰色 (纯色无边框, 不会闪)
-                item.style(s -> s.backgroundTexture(ColorPattern.GRAY.rectTexture()));
-            } else {
-                // 未选中: 深灰色 (纯色无边框, 不会闪)
-                item.style(s -> s.backgroundTexture(ColorPattern.DARK_GRAY.rectTexture()));
+        if (editEmptyEl != null) editEmptyEl.setVisible(false);
+
+        // 3 列网格: 用 ROW 容器嵌套 COLUMN 容器
+        // 简化实现: 用一个宽度自适应的 ROW 列表, 每行放 3 个 card
+        final int COLS = 3;
+        final int CARD_W = 80;
+        final int CARD_H = 105;
+        final int GAP = 3;
+
+        for (int i = 0; i < buildingList.size(); i += COLS) {
+            UIElement row = new UIElement();
+            row.layout(l -> l.widthPercent(100).height(CARD_H)
+                .flexDirection(FlexDirection.ROW).gapAll(GAP).marginBottom(GAP));
+            row.setOverflowVisible(false);
+            for (int j = 0; j < COLS && i + j < buildingList.size(); j++) {
+                LocalBuilding lb = buildingList.get(i + j);
+                row.addChild(buildBuildingCard(lb, CARD_W, CARD_H));
             }
-            String bname = b.name == null || b.name.isEmpty() ? b.id : b.name;
-            TextElement nameEl = new TextElement();
-            nameEl.setText(truncate(bname, 8));
-            nameEl.textStyle(t -> t.textColor(0xFFFFFF));
-            nameEl.layout(l -> l.widthPercent(100).height(11));
-            item.addChild(nameEl);
-            TextElement sizeEl = new TextElement();
-            sizeEl.setText(b.size == null ? "" : b.size);
-            sizeEl.textStyle(t -> t.textColor(0x55FF55));
-            sizeEl.layout(l -> l.widthPercent(100).height(9));
-            item.addChild(sizeEl);
-            item.addEventListener(UIEvents.MOUSE_DOWN, e -> {
-                selectedBuildingIndex = idx;
-                // 关键: 不重建列表, 只更新选中 item 的 style. 重建会重置 scrollOffset
-                // 导致 viewContainer 整体跳变 ~70 像素 (肉眼可见闪烁).
-                updateAllBuildingItemStyles();
-                updateButtonStates();
-                openEditBuilding();
-            });
-            buildingListContent.addChild(item);
-            // 分隔线: 在每个 item 之后 (最后一个不加) 加 1px 灰线, 让 item 边界清晰
-            if (i < buildings.size() - 1) {
-                UIElement separator = new UIElement();
-                separator.layout(l -> l.widthPercent(100).height(1).flexShrink(0).flexGrow(0));
-                separator.style(s -> s.backgroundTexture(ColorPattern.GRAY.rectTexture()));
-                buildingListContent.addChild(separator);
-            }
+            editCardGrid.addChild(row);
         }
     }
 
-    /** 更新所有 building item 的选中样式 (不重建, 避免 scrollOffset 重置) */
-    private static void updateAllBuildingItemStyles() {
-        if (buildingListContent == null) return;
-        for (int i = 0; i < buildingListContent.getChildren().size(); i++) {
-            UIElement child = buildingListContent.getChildren().get(i);
-            updateBuildingItemStyle(child, i);
-        }
+    /**
+     * 构造一张 LocalBuilding 卡片: 预览图 + 名称 + [查看][编辑] 按钮.
+     */
+    private static UIElement buildBuildingCard(LocalBuilding lb, int cardW, int cardH) {
+        UIElement card = new UIElement();
+        card.layout(l -> l.width(cardW).height(cardH)
+            .flexDirection(FlexDirection.COLUMN).paddingAll(2).gapAll(1));
+        card.style(s -> s.backgroundTexture(ColorPattern.DARK_GRAY.rectTexture()));
+        card.setOverflowVisible(false);
+
+        // === 预览图 (60x60) ===
+        BuildingImageElement img = new BuildingImageElement(60, 60, lb);
+        UIElement imgBox = new UIElement();
+        imgBox.layout(l -> l.widthPercent(100).height(62)
+            .justifyContent(AlignContent.CENTER).alignItems(AlignItems.CENTER));
+        imgBox.style(s -> s.backgroundTexture(ColorPattern.SEAL_BLACK.rectTexture()));
+        imgBox.setOverflowVisible(false);
+        img.layout(l -> l.width(60).height(60));
+        imgBox.addChild(img);
+        card.addChild(imgBox);
+
+        // === 名称 (1 行, 截断) ===
+        String displayName = lb.getDisplayName();
+        if (displayName.length() > 8) displayName = displayName.substring(0, 7) + "..";
+        TextElement nameEl = new TextElement();
+        nameEl.setText(displayName);
+        nameEl.textStyle(t -> t.textColor(0xFFFFFF)
+            .textAlignHorizontal(Horizontal.CENTER)
+            .textWrap(TextWrap.NONE));
+        nameEl.layout(l -> l.widthPercent(100).height(12));
+        card.addChild(nameEl);
+
+        // === 按钮行 [查看][编辑] ===
+        UIElement btnRow = new UIElement();
+        btnRow.layout(l -> l.widthPercent(100).height(20)
+            .flexDirection(FlexDirection.ROW).gapAll(2));
+        btnRow.setOverflowVisible(false);
+
+        Button btnView = new Button()
+            .setText(PrefabCustomAddon.tr("gui.extension_creator.view"));
+        btnView.setOnClick(e -> onViewBuilding(lb));
+        btnView.layout(l -> l.flexGrow(1).heightPercent(100));
+        btnView.textStyle(t -> t.textColor(0x55FF55));
+        btnRow.addChild(btnView);
+
+        Button btnEdit = new Button()
+            .setText(PrefabCustomAddon.tr("gui.extension_creator.edit"));
+        btnEdit.setOnClick(e -> onEditBuilding(lb));
+        btnEdit.layout(l -> l.flexGrow(1).heightPercent(100));
+        btnEdit.textStyle(t -> t.textColor(0x55AAFF));
+        btnRow.addChild(btnEdit);
+
+        card.addChild(btnRow);
+        return card;
     }
 
-    private static void updateBuildingItemStyle(UIElement item, int idx) {
-        if (item == null) return;
-        if (idx == selectedBuildingIndex) {
-            item.style(s -> s.backgroundTexture(ColorPattern.GRAY.rectTexture()));
-        } else {
-            item.style(s -> s.backgroundTexture(ColorPattern.DARK_GRAY.rectTexture()));
-        }
-    }
+    // === 卡片按钮回调 ===
 
-    private static void rebuildAddButton() {
-        if (btnAddToExtension == null) return;
-        if (currentPackStatus == null) {
-            btnAddToExtension.setVisible(false);
-            return;
-        }
-        btnAddToExtension.setVisible(true);
-        switch (currentPackStatus.state) {
-            case NOT_ADDED:
-                btnAddToExtension.setActive(true);
-                btnAddToExtension.setText("➕ 添加");
-                break;
-            case ADDED_SAME:
-                btnAddToExtension.setActive(false);
-                btnAddToExtension.setText("✓ 已添加");
-                break;
-            case ADDED_DIFFERENT:
-                btnAddToExtension.setActive(true);
-                btnAddToExtension.setText("⟳ 重新添加");
-                break;
-        }
-    }
-
-    private static void rebuildCover() {
-        if (coverEl == null) return;
-        // 触发 coverEl 重新计算 (在 tick 里基于 selectedIndex 选图)
-        coverEl.setActive(true);
-    }
-
-    // === 工具方法 ===
-
-    private static String truncate(String s, int max) {
-        if (s == null) return "";
-        if (s.length() <= max) return s;
-        return s.substring(0, max - 2) + "..";
-    }
-
-    private static String stripColor(String s) {
-        if (s == null) return "";
-        return s.replaceAll("§.", "");
-    }
-
-    // ===== FLICKER DEBUG =====
-    private static long lastDebugLogMs = 0L;
-    private static float lastBuildingListTop = Float.NaN;
-    private static float lastInfoContentTop = Float.NaN;
-    private static int frameCounter = 0;
-    private static long lastFlickerCheckMs = 0L;
-    private static int flickerFrameCount = 0;
-    // 微抖动检测: 累积 deltaY 抖动
-    private static float accumulatedJitterB = 0f;
-    private static float accumulatedJitterI = 0f;
-    // text 元素 ref 字 hash
-    private static int lastInfoContentHash = 0;
-    private static int infoContentSetTextCount = 0;
-
-    /** 每帧调用, 检测闪烁根因 */
-    public static void onFrameTick() {
-        if (currentInstance == null) return;
-        frameCounter++;
-        long now = System.currentTimeMillis();
-        if (now - lastDebugLogMs < 500) return; // 0.5s 节流
-        lastDebugLogMs = now;
+    /**
+     * "查看" — 把 LocalBuilding 转成 ConstructionInfo, 打开 GuiConstructionDetail 的 3D 预览.
+     */
+    private static void onViewBuilding(LocalBuilding lb) {
+        if (lb == null) return;
         try {
-            float bTop = buildingListContent != null ? buildingListContent.getPositionY() : Float.NaN;
-            float iTop = infoContent != null ? infoContent.getPositionY() : Float.NaN;
-            float bVPTop = bScroller != null ? bScroller.getPositionY() : Float.NaN;
-            float iVPTop = infoScroller != null ? infoScroller.getPositionY() : Float.NaN;
-            // 检测 top 偏移是否在变
-            float bDelta = 0f, iDelta = 0f;
-            if (!Float.isNaN(lastBuildingListTop)) {
-                bDelta = bTop - lastBuildingListTop;
-                if (Math.abs(bDelta) > 0.001f) accumulatedJitterB += Math.abs(bDelta);
-            }
-            if (!Float.isNaN(lastInfoContentTop)) {
-                iDelta = iTop - lastInfoContentTop;
-                if (Math.abs(iDelta) > 0.001f) accumulatedJitterI += Math.abs(iDelta);
-            }
-            // 检测子元素数量和 hash
-            int infoChildCount = -1;
-            int bChildCount = -1;
-            try { infoChildCount = infoContent != null ? infoContent.getChildren().size() : -1; } catch (Throwable ignored) {}
-            try { bChildCount = buildingListContent != null ? buildingListContent.getChildren().size() : -1; } catch (Throwable ignored) {}
-            StringBuilder bj = new StringBuilder();
-            if (bDelta != 0) bj.append(String.format("⚠B_DRIFT(%.4f)", bDelta));
-            if (iDelta != 0) bj.append(String.format("⚠I_DRIFT(%.4f)", iDelta));
-            PrefabCustomAddon.LOGGER.info("[FLICKER-DBG] f#{} bList={} info={} bVP={} iVP={} dt={}ms jB={} jI={} bN={} iN={} iSet={} {}",
-                frameCounter,
-                String.format("%.4f", bTop),
-                String.format("%.4f", iTop),
-                String.format("%.1f", bVPTop),
-                String.format("%.1f", iVPTop),
-                now - lastFlickerCheckMs,
-                String.format("%.4f", accumulatedJitterB),
-                String.format("%.4f", accumulatedJitterI),
-                bChildCount,
-                infoChildCount,
-                infoContentSetTextCount,
-                bj);
-            lastBuildingListTop = bTop;
-            lastInfoContentTop = iTop;
-            lastFlickerCheckMs = now;
+            ConstructionInfo c = localBuildingToConstructionInfo(lb);
+            // 直接调用 GuiConstructionDetail.open 会替换主界面屏; 用户看完后通过 X 键返回.
+            GuiConstructionDetail.open(c);
         } catch (Throwable t) {
-            PrefabCustomAddon.LOGGER.warn("[FLICKER-DBG] tick err: {}", t.toString());
+            PrefabCustomAddon.LOGGER.error("[CREATOR] 打开建筑预览失败: {}", lb.id, t);
+            setStatus(PrefabCustomAddon.tr("gui.extension_creator.view_fail", lb.id, t.getMessage()),
+                0xFF5555);
         }
+    }
+
+    /**
+     * "编辑" — 把 LocalBuilding 转成 BuildingWorkInfo, 调用 GuiCreateBuildingInfo.open
+     * 打开独立编辑屏. 编辑后通过 parent 回调重新打开主界面.
+     */
+    private static void onEditBuilding(LocalBuilding lb) {
+        if (lb == null) return;
+        try {
+            PackCreator.BuildingWorkInfo bw = localBuildingToBuildingWorkInfo(lb);
+            // packId 用 lb.id (兼容原 form 的标题显示, 新流程没有 pack 概念)
+            GuiCreateBuildingInfo.open(lb.id, bw, currentInstance);
+        } catch (Throwable t) {
+            PrefabCustomAddon.LOGGER.error("[CREATOR] 打开建筑编辑失败: {}", lb.id, t);
+            setStatus(PrefabCustomAddon.tr("gui.extension_creator.edit_fail", lb.id, t.getMessage()),
+                0xFF5555);
+        }
+    }
+
+    /**
+     * LocalBuilding → ConstructionInfo (供 GuiConstructionDetail 预览).
+     */
+    private static ConstructionInfo localBuildingToConstructionInfo(LocalBuilding lb) {
+        ConstructionInfo c = new ConstructionInfo(lb.id);
+        c.setName(lb.name == null || lb.name.isEmpty() ? lb.id : lb.name);
+        c.setAuthor(lb.author == null ? "" : lb.author);
+        c.setDescription(lb.description == null ? "" : lb.description);
+        c.setFormat(lb.fileExt == null ? "nbt" : lb.fileExt.replaceFirst("^\\.", ""));
+        c.setLocalImagePath(lb.imagePath);
+        c.setLocalNbtPath(lb.filePath);
+        return c;
+    }
+
+    /**
+     * LocalBuilding → PackCreator.BuildingWorkInfo (供 GuiCreateBuildingInfo.open 编辑模式).
+     * <p>从 {@code <id>.txt} 解析 size / dependencies, 缺省空.</p>
+     */
+    private static PackCreator.BuildingWorkInfo localBuildingToBuildingWorkInfo(LocalBuilding lb) {
+        String size = "";
+        String deps = "";
+        if (lb.infoPath != null && Files.exists(lb.infoPath)) {
+            try {
+                String content = Files.readString(lb.infoPath,
+                    java.nio.charset.StandardCharsets.UTF_8);
+                for (String line : content.split("\\r?\\n")) {
+                    String[] kv = splitKeyValue(line);
+                    if (kv == null) continue;
+                    String k = kv[0], v = kv[1];
+                    switch (k) {
+                        case "尺寸", "size" -> size = v;
+                        case "依赖", "dependencies" -> deps = v;
+                        default -> {} // 其它字段 GuiCreateBuildingInfo 不直接用
+                    }
+                }
+            } catch (Throwable ignored) {}
+        }
+        return new PackCreator.BuildingWorkInfo(
+            lb.id, lb.filePath, lb.imagePath, lb.infoPath,
+            lb.name == null ? lb.id : lb.name,
+            lb.author == null ? "" : lb.author,
+            size, deps,
+            lb.description == null ? "" : lb.description,
+            ""  // icon 物品 id, 缺省空
+        );
+    }
+
+    /** "key: value" 解析 (同 LocalBuildingScanner.splitKeyValue, 复制一份避免 public 暴露). */
+    private static String[] splitKeyValue(String line) {
+        if (line == null) return null;
+        String trimmed = line.trim();
+        if (trimmed.isEmpty()) return null;
+        int idx = trimmed.indexOf(':');
+        if (idx < 0) idx = trimmed.indexOf('：');
+        if (idx <= 0) return null;
+        String k = trimmed.substring(0, idx).trim();
+        String v = trimmed.substring(idx + 1).trim();
+        if (k.isEmpty()) return null;
+        return new String[]{k, v};
     }
 
     // === UI 创建 ===
 
     private static ModularUI createUI() {
-        PrefabCustomAddon.LOGGER.info("[CREATOR] createUI");
-
-        // 根
+        // 根: 整屏 column
         UIElement root = new UIElement();
         root.layout(l -> l
             .widthPercent(100).heightPercent(100)
             .flexDirection(FlexDirection.COLUMN)
-            .paddingAll(2).gapAll(2)
-        );
+            .paddingAll(2).gapAll(2));
         root.style(s -> s.backgroundTexture(ColorPattern.SEAL_BLACK.rectTexture()));
         root.setOverflowVisible(false);
 
-        // === 标题行 ===
+        // === 标题 ===
         Label titleEl = new Label();
-        titleEl.setText("§l拓展包制作 - 本地工作区");
+        titleEl.setText("§l" + PrefabCustomAddon.tr("gui.extension_creator.window_title"));
         titleEl.textStyle(t -> t.textAlignHorizontal(Horizontal.CENTER));
         titleEl.layout(l -> l.widthPercent(100).height(20));
         root.addChild(titleEl);
 
-        // === 副标题行 ===
-        Path workRoot = PackCreator.getWorkRoot();
-        TextElement subtitleEl = new TextElement();
-        subtitleEl.setText("工作目录: " + workRoot.toString());
+        // === 副标题 (工作目录) ===
+        Path workRoot = LocalBuildingScanner.getExtensionRoot();
+        subtitleEl = new TextElement();
+        subtitleEl.setText(PrefabCustomAddon.tr("gui.extension_creator.work_dir", workRoot.toString()));
         subtitleEl.textStyle(t -> t.textColor(0xAAAAAA)
             .textAlignHorizontal(Horizontal.CENTER));
-        subtitleEl.layout(l -> l.widthPercent(100).height(14));
+        subtitleEl.layout(l -> l.widthPercent(100).height(12));
         root.addChild(subtitleEl);
 
-        // === 拓展包选择行 (下拉框) ===
-        UIElement packSelectRow = new UIElement();
-        packSelectRow.layout(l -> l
-            .widthPercent(100).height(22)
-            .flexDirection(FlexDirection.ROW).gapAll(4)
-            .alignItems(AlignItems.CENTER)
-        );
-        packSelectRow.setOverflowVisible(false);
-        Label packLabel = new Label();
-        packLabel.setText("§l选择拓展包:");
-        packLabel.textStyle(t -> t.textAlignHorizontal(Horizontal.LEFT));
-        packLabel.layout(l -> l.height(18).flexShrink(0));
-        packSelectRow.addChild(packLabel);
+        // === 主体: 侧边栏 + 内容 ===
+        UIElement mainRow = new UIElement();
+        mainRow.layout(l -> l.widthPercent(100).flexGrow(1).flexShrink(1).minHeight(0)
+            .flexDirection(FlexDirection.ROW).gapAll(2));
+        mainRow.setOverflowVisible(false);
+        root.addChild(mainRow);
 
-        packSelector = new Selector<String>();
-        packSelector.setCandidates(buildPackCandidates());
-        // 自定义下拉框候选的渲染 (直接显示 pack.id 即可, 友好显示名)
-        packSelector.setCandidateUIProvider(value -> {
-            // value 可能是 null (初始化)
-            String show = value == null ? "(无)" : value;
-            // 找到对应 pack, 显示友好名 (name + id)
-            for (PackCreator.PackWorkInfo p : packs) {
-                if (p.id.equals(value)) {
-                    show = packDisplay(p);
-                    break;
-                }
-            }
-            Label lbl = new Label();
-            lbl.setText(show);
-            lbl.layout(l -> l.widthPercent(100).height(14));
-            return lbl;
+        // -- 侧边栏 --
+        UIElement sidebar = new UIElement();
+        sidebar.layout(l -> l.width(72).flexShrink(0).flexGrow(0)
+            .minHeight(0)
+            .flexDirection(FlexDirection.COLUMN).gapAll(2).paddingAll(2));
+        sidebar.style(s -> s.backgroundTexture(ColorPattern.DARK_GRAY.rectTexture()));
+        sidebar.setOverflowVisible(false);
+
+        // 侧边栏标题
+        Label sbTitle = new Label();
+        sbTitle.setText("§l" + PrefabCustomAddon.tr("gui.extension_creator.sidebar_title"));
+        sbTitle.textStyle(t -> t.textAlignHorizontal(Horizontal.CENTER));
+        sbTitle.layout(l -> l.widthPercent(100).height(14));
+        sidebar.addChild(sbTitle);
+
+        // "添加建筑" 按钮
+        tabAddBtn = new Button();
+        tabAddBtn.setText(PrefabCustomAddon.tr("gui.extension_creator.tab_add"));
+        tabAddBtn.setOnClick(e -> switchTab("add"));
+        tabAddBtn.layout(l -> l.widthPercent(100).height(28));
+        tabAddBtn.textStyle(t -> t.textColor(0xFFFF55));  // 默认选中, 高亮
+        sidebar.addChild(tabAddBtn);
+
+        // "编辑建筑" 按钮
+        tabEditBtn = new Button();
+        tabEditBtn.setText(PrefabCustomAddon.tr("gui.extension_creator.tab_edit"));
+        tabEditBtn.setOnClick(e -> {
+            // 切到编辑 tab 前重新扫一次, 让用户看到最新列表
+            refreshBuildingList();
+            switchTab("edit");
         });
-        packSelector.setOnValueChanged(GuiExtensionPackCreator::onPackSelectorChanged);
-        packSelector.layout(l -> l.flexGrow(1).height(18));
-        packSelector.selectorStyle(s -> s.maxItemCount(8).scrollerViewHeight(120));
-        if (selectedIndex >= 0 && selectedIndex < packs.size()) {
-            packSelector.setValue(packs.get(selectedIndex).id, false);
-        }
-        packSelectRow.addChild(packSelector);
-        root.addChild(packSelectRow);
+        tabEditBtn.layout(l -> l.widthPercent(100).height(28));
+        tabEditBtn.textStyle(t -> t.textColor(0xFFFFFF));
+        sidebar.addChild(tabEditBtn);
 
-        // === 主体 (3 列: 建筑列表 / 信息 / 封面+操作) ===
-        // 关键: 用一个外层 ScrollerView 包裹整个 bodyRow, 取消 3 个内层 ScrollerView.
-        // 内层多个 ScrollerView 的 scrollOffset 会在每帧 clamp 造成 viewContainer 跳变闪烁.
-        ScrollerView bodyScroller = new ScrollerView();
-        bodyScroller.layout(l -> l.widthPercent(100).flexGrow(1).flexShrink(1).minHeight(0));
-        bodyScroller.scrollerStyle(s -> s.mode(ScrollerMode.VERTICAL)
+        mainRow.addChild(sidebar);
+
+        // -- 内容区 (容纳两个 tab, 同时只有一个可见) --
+        UIElement content = new UIElement();
+        content.layout(l -> l.flexGrow(1).flexShrink(1).flex(1).minWidth(0).minHeight(0)
+            .flexDirection(FlexDirection.COLUMN).gapAll(2));
+        content.setOverflowVisible(false);
+        mainRow.addChild(content);
+
+        // -- 添加建筑 tab --
+        addTabContent = new UIElement();
+        addTabContent.layout(l -> l.widthPercent(100).heightPercent(100)
+            .flexDirection(FlexDirection.COLUMN).gapAll(2));
+        addTabContent.setOverflowVisible(false);
+        content.addChild(addTabContent);
+
+        // 嵌入表单 (此时 GuiCreateBuildingInfo 的 static 状态: 上次 open()/resetForReuse() 留下的)
+        // 兜底: 第一次打开时 currentInstance 已建, 把 parent 补上
+        if (GuiCreateBuildingInfo.parent == null) {
+            GuiCreateBuildingInfo.parent = currentInstance;
+        }
+        rebuildAddTab();
+
+        // -- 编辑建筑 tab --
+        editTabContent = new UIElement();
+        editTabContent.layout(l -> l.widthPercent(100).heightPercent(100)
+            .flexDirection(FlexDirection.COLUMN).gapAll(2));
+        editTabContent.setOverflowVisible(false);
+        editTabContent.setVisible(false);  // 默认隐藏
+        content.addChild(editTabContent);
+
+        // 编辑建筑 tab 顶部按钮行: [刷新]
+        UIElement editTopBar = new UIElement();
+        editTopBar.layout(l -> l.widthPercent(100).height(20)
+            .flexDirection(FlexDirection.ROW).gapAll(2).alignItems(AlignItems.CENTER));
+        editTopBar.setOverflowVisible(false);
+        Button btnRefresh = new Button()
+            .setText(PrefabCustomAddon.tr("gui.extension_creator.refresh"));
+        btnRefresh.setOnClick(e -> {
+            refreshBuildingList();
+            setStatus(PrefabCustomAddon.tr("gui.extension_creator.refreshed",
+                buildingList.size()), 0x55FF55);
+        });
+        btnRefresh.layout(l -> l.width(50).heightPercent(100));
+        editTopBar.addChild(btnRefresh);
+
+        TextElement editCountEl = new TextElement();
+        editCountEl.setText(PrefabCustomAddon.tr("gui.extension_creator.count_label",
+            buildingList.size()));
+        editCountEl.textStyle(t -> t.textColor(0xAAAAAA));
+        editCountEl.layout(l -> l.flexGrow(1).heightPercent(100));
+        editTopBar.addChild(editCountEl);
+
+        editTabContent.addChild(editTopBar);
+
+        // 编辑建筑 tab 主体: ScrollerView 装卡片网格
+        editScroller = new ScrollerView();
+        editScroller.layout(l -> l.widthPercent(100).flexGrow(1).flexShrink(1).minHeight(0));
+        editScroller.scrollerStyle(s -> s.mode(ScrollerMode.VERTICAL)
             .verticalScrollDisplay(ScrollDisplay.AUTO)
             .horizontalScrollDisplay(ScrollDisplay.NEVER)
-            .minScrollPixel(8)
-            .maxScrollPixel(120));
-        bodyScroller.verticalScroller(s -> s.setScrollBarSize(4));
-        bodyScroller.viewPort(vp -> vp.style(s -> s.backgroundTexture(ColorPattern.SEAL_BLACK.rectTexture()).overlay(IGuiTexture.EMPTY)));
+            .minScrollPixel(8).maxScrollPixel(80));
+        editScroller.verticalScroller(s -> s.setScrollBarSize(4));
+        editScroller.viewPort(vp -> vp.style(s -> s.backgroundTexture(ColorPattern.SEAL_BLACK.rectTexture())
+            .overlay(IGuiTexture.EMPTY)));
 
-        UIElement bodyContent = new UIElement();
-        // 关键: 不用 heightAuto(), 避免浮点漂移
-        bodyContent.layout(l -> l.widthPercent(100)
-            .flexDirection(FlexDirection.COLUMN).gapAll(2).minHeight(0).flexShrink(0));
-        bodyScroller.addScrollViewChild(bodyContent);
-        root.addChild(bodyScroller);
+        editCardGrid = new UIElement();
+        editCardGrid.layout(l -> l.widthPercent(100)
+            .flexDirection(FlexDirection.COLUMN).paddingAll(2).gapAll(2)
+            .minHeight(0).flexShrink(0));
+        editScroller.addScrollViewChild(editCardGrid);
+        editTabContent.addChild(editScroller);
 
-        UIElement bodyRow = new UIElement();
-        bodyRow.layout(l -> l
-            .widthPercent(100).flexShrink(0)
-            .flexDirection(FlexDirection.ROW)
-            .gapAll(2).minHeight(0).minWidth(0)
-            .alignItems(dev.vfyjxf.taffy.style.AlignItems.STRETCH)
-        );
-        bodyRow.setOverflowVisible(false);
-        bodyContent.addChild(bodyRow);
+        // 空列表提示
+        editEmptyEl = new TextElement();
+        editEmptyEl.setText(PrefabCustomAddon.tr("gui.extension_creator.empty_hint",
+            LocalBuildingScanner.getExtensionRoot().toString()));
+        editEmptyEl.textStyle(t -> t.textColor(0xAAAAAA)
+            .textAlignHorizontal(Horizontal.CENTER)
+            .textWrap(TextWrap.WRAP));
+        editEmptyEl.layout(l -> l.widthPercent(100).height(40)
+            .justifyContent(AlignContent.CENTER));
+        editEmptyEl.setVisible(false);
+        editTabContent.addChild(editEmptyEl);
 
-        // -- 左面板: 建筑列表 --
-        // 关键: 显式设 flex(1) 让 leftPanel 在 row-direction 父容器中**拉伸到与父同等高度**,
-        // 否则 heightPercent(100) 在 taffy row flex 容器中可能塌缩成 0, 内部 ScrollerView
-        // 拿不到高度 → 滚动条无法响应鼠标滚轮.
-        UIElement leftPanel = new UIElement();
-        leftPanel.layout(l -> l.width(130).flex(1).flexShrink(0)
-            .flexDirection(FlexDirection.COLUMN).gapAll(2).minHeight(0));
-        leftPanel.setOverflowVisible(false);
-        Label leftTitle = new Label();
-        leftTitle.setText("§l建筑");
-        leftTitle.textStyle(t -> t.textAlignHorizontal(Horizontal.LEFT));
-        leftTitle.layout(l -> l.widthPercent(100).height(16));
-        leftPanel.addChild(leftTitle);
+        // 初始填一次卡片 (open() 时已扫过)
+        rebuildEditGrid();
 
-        bScroller = new UIElement();
-        bScroller.layout(l -> l.widthPercent(100).flexGrow(1).flexShrink(1).minHeight(0));
-        bScroller.setOverflowVisible(false);
-        bScroller.style(s -> s.backgroundTexture(ColorPattern.DARK_GRAY.rectTexture()));
-        buildingListContent = new UIElement();
-        // 关键: 不用 heightAuto(), 避免浮点漂移
-        buildingListContent.layout(l -> l.widthPercent(100)
-            .flexDirection(FlexDirection.COLUMN).minHeight(0).flexShrink(0));
-        bScroller.addChild(buildingListContent);
-        leftPanel.addChild(bScroller);
-        bodyRow.addChild(leftPanel);
+        // === 底部: 状态行 + 关闭按钮 ===
+        UIElement bottomBar = new UIElement();
+        bottomBar.layout(l -> l.widthPercent(100).height(22)
+            .flexDirection(FlexDirection.ROW).gapAll(4).alignItems(AlignItems.CENTER));
+        bottomBar.setOverflowVisible(false);
 
-        // -- 中面板: 选中包信息 --
-        UIElement midPanel = new UIElement();
-        midPanel.layout(l -> l.flexGrow(1).flexShrink(1).flex(1)
-            .minHeight(0).minWidth(0)
-            .flexDirection(FlexDirection.COLUMN).paddingAll(2));
-        midPanel.style(s -> s.backgroundTexture(ColorPattern.DARK_GRAY.rectTexture()));
-        midPanel.setOverflowVisible(false);
-
-        infoScroller = new UIElement();
-        infoScroller.layout(l -> l.widthPercent(100).flexGrow(1).flexShrink(1).minHeight(0));
-        infoScroller.setOverflowVisible(false);
-        infoScroller.style(s -> s.backgroundTexture(ColorPattern.DARK_GRAY.rectTexture()));
-        infoContent = new UIElement();
-        infoContent.layout(l -> l.widthPercent(100)
-            .flexDirection(FlexDirection.COLUMN).paddingAll(2).minHeight(0).flexShrink(0));
-        infoScroller.addChild(infoContent);
-        midPanel.addChild(infoScroller);
-        bodyRow.addChild(midPanel);
-
-        // -- 右面板: 封面 + 状态 (用 UIElement clip 即可) --
-        UIElement rightScroller = new UIElement();
-        rightScroller.layout(l -> l.width(130).flex(1).flexShrink(0).flexGrow(0)
-            .minHeight(0));
-        rightScroller.setOverflowVisible(false);
-
-        UIElement rightPanel = new UIElement();
-        rightPanel.layout(l -> l.widthPercent(100)
-            .flexDirection(FlexDirection.COLUMN).gapAll(4).minHeight(0).flexShrink(0));
-        rightPanel.setOverflowVisible(false);
-
-        // 封面图 (40x40 + 边框)
-        UIElement coverBox = new UIElement();
-        coverBox.layout(l -> l.widthPercent(100).height(46)
-            .justifyContent(AlignContent.CENTER).alignItems(AlignItems.CENTER));
-        coverBox.style(s -> s.backgroundTexture(ColorPattern.DARK_GRAY.rectTexture()));
-        coverBox.setOverflowVisible(false);
-        // 用 CoverImageElement 显示封面
-        coverEl = new CoverImageElement(40, 40);
-        coverEl.layout(l -> l.width(40).height(40));
-        coverBox.addChild(coverEl);
-        rightPanel.addChild(coverBox);
-
-        // 更换封面按钮
-        btnEditCover = new Button().setText("更换封面");
-        btnEditCover.setOnClick(e -> openCoverChooser());
-        btnEditCover.layout(l -> l.widthPercent(100).height(18));
-        rightPanel.addChild(btnEditCover);
-
-        // 状态信息 (本地/预装建筑数) - 固定区域, 不参与布局压缩
-        UIElement statusBox = new UIElement();
-        statusBox.layout(l -> l.widthPercent(100).height(46).minHeight(46)
-            .flexDirection(FlexDirection.COLUMN).gapAll(2).paddingAll(2));
-        statusBox.style(s -> s.backgroundTexture(ColorPattern.DARK_GRAY.rectTexture()));
-        statusBox.setOverflowVisible(false);
-        TextElement statusInfoEl = new TextElement();
-        statusInfoEl.setId("creator_status_info");
-        statusInfoEl.setText("");
-        statusInfoEl.textStyle(t -> t.textColor(0xAAAAAA).textWrap(TextWrap.WRAP).adaptiveHeight(true));
-        statusInfoEl.layout(l -> l.widthPercent(100).heightAuto().minHeight(0));
-        statusBox.addChild(statusInfoEl);
-        rightPanel.addChild(statusBox);
-
-        // 添加按钮
-        btnAddToExtension = new Button().setText("添加");
-        btnAddToExtension.setOnClick(e -> addSelectedPackToExtension());
-        btnAddToExtension.layout(l -> l.widthPercent(100).height(20).marginTop(4));
-        rightPanel.addChild(btnAddToExtension);
-
-        rightScroller.addChild(rightPanel);
-        bodyRow.addChild(rightScroller);
-        // bodyRow 已经添加到 bodyContent, 不需要 root.addChild(bodyRow)
-
-        // === 底部按钮行 ===
-        UIElement buttonRow = new UIElement();
-        buttonRow.layout(l -> l
-            .widthPercent(100).height(22)
-            .flexDirection(FlexDirection.ROW).gapAll(2)
-            .justifyContent(AlignContent.CENTER)
-        );
-        buttonRow.setOverflowVisible(false);
-
-        btnCreatePack = new Button().setText("创建拓展包");
-        btnCreatePack.setOnClick(e -> GuiCreatePackInfo.open(null, currentInstance));
-        btnCreatePack.layout(l -> l.flexGrow(1).heightPercent(100));
-        buttonRow.addChild(btnCreatePack);
-
-        btnEditPack = new Button().setText("编辑拓展包");
-        btnEditPack.setOnClick(e -> {
-            if (selectedIndex >= 0 && selectedIndex < packs.size()) {
-                GuiCreatePackInfo.open(packs.get(selectedIndex), currentInstance);
-            } else {
-                setStatus("请先选中一个拓展包", 0xFF5555);
-            }
-        });
-        btnEditPack.layout(l -> l.flexGrow(1).heightPercent(100));
-        buttonRow.addChild(btnEditPack);
-
-        btnCreateBuilding = new Button().setText("创建建筑");
-        btnCreateBuilding.setOnClick(e -> {
-            if (selectedIndex < 0) return;
-            PackCreator.PackWorkInfo p = packs.get(selectedIndex);
-            GuiCreateBuildingInfo.open(p.id, null, currentInstance);
-        });
-        btnCreateBuilding.layout(l -> l.flexGrow(1).heightPercent(100));
-        buttonRow.addChild(btnCreateBuilding);
-
-        btnDeleteBuilding = new Button().setText("删建筑");
-        btnDeleteBuilding.setOnClick(e -> deleteSelectedBuilding());
-        btnDeleteBuilding.layout(l -> l.flexGrow(1).heightPercent(100));
-        buttonRow.addChild(btnDeleteBuilding);
-
-        btnDeletePack = new Button().setText("删拓展包");
-        btnDeletePack.setOnClick(e -> deleteSelectedPack());
-        btnDeletePack.layout(l -> l.flexGrow(1).heightPercent(100));
-        buttonRow.addChild(btnDeletePack);
-
-        btnOpenFolder = new Button().setText("打开目录");
-        btnOpenFolder.setOnClick(e -> openWorkFolder());
-        btnOpenFolder.layout(l -> l.flexGrow(1).heightPercent(100));
-        buttonRow.addChild(btnOpenFolder);
-
-        btnRefresh = new Button().setText("刷新");
-        btnRefresh.setOnClick(e -> {
-            refreshPacks();
-            setStatus("已刷新 (" + packs.size() + " 个拓展包, " + buildings.size() + " 个建筑)", 0x55FF55);
-            rebuildPackList();
-            rebuildInfoPanel();
-            rebuildBuildingList();
-        });
-        btnRefresh.layout(l -> l.flexGrow(1).heightPercent(100));
-        buttonRow.addChild(btnRefresh);
-
-        btnClose = new Button().setText("关闭");
-        btnClose.setOnClick(e -> {
-            // 释放封面纹理
-            for (ResourceLocation loc : coverTextures.values()) {
-                Minecraft.getInstance().getTextureManager().release(loc);
-            }
-            coverTextures.clear();
-            currentInstance = null;
-            Minecraft.getInstance().setScreen(null);
-        });
-        btnClose.layout(l -> l.flexGrow(1).heightPercent(100));
-        buttonRow.addChild(btnClose);
-
-        root.addChild(buttonRow);
-
-        // === 状态行 ===
         statusEl = new TextElement();
         statusEl.setText("");
-        statusEl.textStyle(t -> t.textColor(0x55FF55)
-            .textAlignHorizontal(Horizontal.CENTER));
-        statusEl.layout(l -> l.widthPercent(100).height(12));
-        root.addChild(statusEl);
+        statusEl.textStyle(t -> t.textAlignHorizontal(Horizontal.LEFT));
+        statusEl.layout(l -> l.flexGrow(1).heightPercent(100));
+        bottomBar.addChild(statusEl);
 
-        // === tick handler: 状态消息 + 状态信息更新 ===
-        final int[] tickCounter = {0};
+        Button btnClose = new Button();
+        btnClose.setText(PrefabCustomAddon.tr("gui.extension_creator.close"));
+        btnClose.setOnClick(e -> {
+            // 释放所有预览图纹理
+            releaseAllImages();
+            currentModularScreen = null;
+            currentInstance = null;
+            // 切掉 parent 引用避免泄漏
+            GuiCreateBuildingInfo.parent = null;
+            Minecraft.getInstance().setScreen(null);
+        });
+        btnClose.layout(l -> l.width(60).heightPercent(100));
+        bottomBar.addChild(btnClose);
+
+        root.addChild(bottomBar);
+
+        // === tick: 状态消息淡出 ===
         root.addEventListener(UIEvents.TICK, event -> {
-            tickCounter[0]++;
-            // 状态消息倒计时
             if (statusTick > 0 && statusMessage != null) {
                 statusEl.setText(statusMessage);
                 statusEl.textStyle(t -> t.textColor(statusColor));
                 statusTick--;
-                if (statusTick <= 0) statusMessage = null;
+                if (statusTick <= 0) {
+                    statusMessage = null;
+                    statusEl.setText("");
+                }
             } else if (statusEl != null) {
                 statusEl.setText("");
             }
-            // 状态信息 (本地/预装) - 每次 tick 刷新 (可能选了不同包)
-            updateStatusInfoText(statusInfoEl);
         });
 
-        // 初始数据填充
-        rebuildPackList();
-        rebuildInfoPanel();
-        rebuildBuildingList();
-        rebuildAddButton();
-        updateButtonStates();
+        // 初始 tab 状态
+        switchTab(currentTab);
 
         return ModularUI.of(UI.of(root,
             StylesheetManager.INSTANCE.getStylesheetSafe(StylesheetManager.MC)));
     }
 
-    private static void updateStatusInfoText(TextElement statusInfoEl) {
-        if (statusInfoEl == null) return;
-        if (currentPackStatus == null) {
-            statusInfoEl.setText("");
-            return;
-        }
-        int stateColor;
-        switch (currentPackStatus.state) {
-            case NOT_ADDED: stateColor = 0xFFDD66; break;
-            case ADDED_SAME: stateColor = 0x55FF55; break;
-            case ADDED_DIFFERENT: stateColor = 0xFF8855; break;
-            default: stateColor = 0xAAAAAA;
-        }
-        String stateText = currentPackStatus.displayText();
-        int localN = currentPackStatus.localBuildings.size();
-        int instN = currentPackStatus.installedBuildings.size();
-        String text = "§7状态: " + stripColor(stateText) + "\n"
-            + "§7本地:" + localN + " 预装:" + instN;
-        statusInfoEl.setText(text);
-        statusInfoEl.textStyle(t -> t.textColor(stateColor).textWrap(TextWrap.WRAP));
-    }
-
-    // === 业务逻辑 (从原类保留) ===
-
-    private static void addSelectedPackToExtension() {
-        if (selectedIndex < 0 || selectedIndex >= packs.size()) {
-            setStatus("请先选中一个拓展包", 0xFF5555);
-            return;
-        }
-        PackCreator.PackWorkInfo p = packs.get(selectedIndex);
-        if (p == null) return;
-
-        try {
-            Path result = PackStatusService.addToExtension(p.id);
-            if (result != null) {
-                setStatus("✓ 已添加 " + p.id + " → " + result, 0x55FF55);
-                detectPackStatus();
-                rebuildAddButton();
-                try {
-                    com.prefab.addon.extension.ExtensionPackManager.getInstance().scanExtensionPacks();
-                } catch (Throwable t) {
-                    PrefabCustomAddon.LOGGER.warn("[CREATOR] ExtensionPackManager 重扫失败", t);
-                }
-            } else {
-                setStatus("✗ 添加失败, 看日志", 0xFF5555);
-            }
-        } catch (Throwable t) {
-            PrefabCustomAddon.LOGGER.error("[CREATOR] addSelectedPackToExtension 失败", t);
-            setStatus("✗ 添加失败: " + t.getMessage(), 0xFF5555);
-        }
-    }
-
-    private static void openCoverChooser() {
-        if (selectedIndex < 0 || selectedIndex >= packs.size()) return;
-        PackCreator.PackWorkInfo p = packs.get(selectedIndex);
-        setStatus("正在打开文件选择器...", 0x55AAFF);
-        SystemFilePicker.openAsync("选择拓展包封面 PNG", "png", r -> {
-            if (r.isOk()) {
-                handleCoverSelected(p, r.file);
-            } else if (r.isCancelled()) {
-                setStatus("✗ 已取消", 0x888888);
-            } else {
-                setStatus("✗ 选择器错误: " + r.message, 0xFF5555);
-            }
-        });
-    }
-
-    private static void handleCoverSelected(PackCreator.PackWorkInfo p, File f) {
-        try {
-            byte[] data = Files.readAllBytes(f.toPath());
-            try (var in = Files.newInputStream(f.toPath())) {
-                NativeImage ni = NativeImage.read(in);
-                if (ni == null) {
-                    setStatus("✗ 无效的 PNG 文件", 0xFF5555);
-                    return;
-                }
-            }
-            Path cover = PackCreator.getWorkRoot()
-                .resolve(p.id).resolve("information").resolve("cover.png");
-            Files.createDirectories(cover.getParent());
-            Files.write(cover, data);
-            ResourceLocation old = coverTextures.remove(p.id);
-            if (old != null) Minecraft.getInstance().getTextureManager().release(old);
-            loadedCoverFor = null;
-            refreshPacks();
-            setStatus("✓ 已保存封面: " + f.getName(), 0x55FF55);
-        } catch (Throwable t) {
-            PrefabCustomAddon.LOGGER.error("[CREATOR] save cover failed", t);
-            setStatus("✗ 保存失败: " + t.getMessage(), 0xFF5555);
-        }
-    }
-
-    private static void deleteSelectedPack() {
-        if (selectedIndex < 0 || selectedIndex >= packs.size()) return;
-        PackCreator.PackWorkInfo p = packs.get(selectedIndex);
-        try {
-            PackCreator.getInstance().deletePack(p.id);
-            setStatus("已删除拓展包: " + p.id, 0x55FF55);
-            ResourceLocation old = coverTextures.remove(p.id);
-            if (old != null) Minecraft.getInstance().getTextureManager().release(old);
-            selectedIndex = -1;
-            selectedBuildingIndex = -1;
-            buildings = new ArrayList<>();
-            refreshPacks();
-            rebuildPackList();
-            rebuildInfoPanel();
-            rebuildBuildingList();
-            rebuildAddButton();
-        } catch (Exception e) {
-            PrefabCustomAddon.LOGGER.error("[CREATOR] delete pack failed", e);
-            setStatus("✗ 删除失败: " + e.getMessage(), 0xFF5555);
-        }
-    }
-
-    private static void openEditBuilding() {
-        if (selectedBuildingIndex < 0 || selectedBuildingIndex >= buildings.size()) return;
-        PackCreator.PackWorkInfo p = packs.get(selectedIndex);
-        PackCreator.BuildingWorkInfo b = buildings.get(selectedBuildingIndex);
-        GuiCreateBuildingInfo.open(p.id, b, currentInstance);
-    }
-
-    private static void deleteSelectedBuilding() {
-        if (selectedBuildingIndex < 0 || selectedBuildingIndex >= buildings.size()) return;
-        PackCreator.PackWorkInfo p = packs.get(selectedIndex);
-        PackCreator.BuildingWorkInfo b = buildings.get(selectedBuildingIndex);
-        try {
-            PackCreator.getInstance().deleteBuilding(p.id, b.id);
-            setStatus("已删除建筑: " + b.id, 0x55FF55);
-            selectedBuildingIndex = -1;
-            loadBuildingsForSelected();
-            refreshPacks();
-            updateButtonStates();
-            rebuildBuildingList();
-        } catch (Exception e) {
-            PrefabCustomAddon.LOGGER.error("[CREATOR] delete building failed", e);
-            setStatus("✗ 删除失败: " + e.getMessage(), 0xFF5555);
-        }
-    }
-
-    private static void openWorkFolder() {
-        Path root = PackCreator.getWorkRoot();
-        try {
-            if (!Files.exists(root)) Files.createDirectories(root);
-        } catch (java.io.IOException e) {
-            setStatus("创建目录失败: " + e.getMessage(), 0xFF5555);
-            return;
-        }
-        try {
-            net.minecraft.Util.getPlatform().openUri(java.net.URI.create(root.toUri().toString()));
-            setStatus("已打开: " + root, 0x55FF55);
-        } catch (Throwable t1) {
-            try {
-                java.awt.Desktop.getDesktop().open(root.toFile());
-                setStatus("已打开: " + root, 0x55FF55);
-            } catch (Throwable t2) {
-                setStatus("无法打开目录: " + t2.getMessage(), 0xFF5555);
-            }
-        }
-    }
-
-    // === 自定义 UIElement: 封面图 ===
+    // === 自定义 UIElement: 建筑预览图 ===
 
     /**
-     * 在指定尺寸内绘制当前选中拓展包的封面图 (从 coverTextures 中取).
-     * tick 时会基于 selectedIndex 刷新 texture.
+     * 在指定尺寸内绘制 LocalBuilding 的预览图. tick 时按需懒加载.
      */
-    private static class CoverImageElement extends UIElement {
-        private int tw, th;
-        CoverImageElement(int w, int h) {
+    private static class BuildingImageElement extends UIElement {
+        private final int tw, th;
+        private final LocalBuilding lb;
+        BuildingImageElement(int w, int h, LocalBuilding lb) {
             this.tw = w;
             this.th = h;
+            this.lb = lb;
         }
         @Override
         public void drawBackgroundAdditional(GUIContext guiContext) {
             super.drawBackgroundAdditional(guiContext);
-            // 用 tick 替代 - 此方法每个 frame 调一次
-            ResourceLocation loc = null;
-            if (selectedIndex >= 0 && selectedIndex < packs.size()) {
-                PackCreator.PackWorkInfo p = packs.get(selectedIndex);
-                loc = coverTextures.get(p.id);
-            }
+            if (lb == null) return;
+            ResourceLocation loc = getOrLoadImage(lb);
+            int px = (int) getPositionX();
+            int py = (int) getPositionY();
             if (loc == null) {
-                // 画占位 (灰色)
-                int px = (int) getPositionX() + 2, py = (int) getPositionY() + 2;
-                int pw = (int) getSizeWidth() - 4, ph = (int) getSizeHeight() - 4;
-                guiContext.graphics.fill(px, py, px + pw, py + ph, 0xFF222222);
+                // 占位: 深灰底 + 文字
+                guiContext.graphics.fill(px, py, px + tw, py + th, 0xFF222233);
+                guiContext.graphics.drawCenteredString(Minecraft.getInstance().font,
+                    "无图", px + tw / 2, py + th / 2 - 4, 0xFF888888);
             } else {
                 try {
                     GuiGraphics g = guiContext.graphics;
                     RenderSystem.enableBlend();
                     RenderSystem.defaultBlendFunc();
                     RenderSystem.setShaderColor(1, 1, 1, 1);
-                    g.blit(loc, (int) getPositionX(), (int) getPositionY(), 0, 0,
-                        (int) getSizeWidth(), (int) getSizeHeight(),
-                        (int) getSizeWidth(), (int) getSizeHeight());
+                    g.blit(loc, px, py, 0, 0, tw, th, tw, th);
                     RenderSystem.setShaderColor(1, 1, 1, 1);
                     RenderSystem.disableBlend();
-                } catch (Throwable t) {
-                    // 忽略
-                }
+                } catch (Throwable ignored) {}
             }
         }
     }

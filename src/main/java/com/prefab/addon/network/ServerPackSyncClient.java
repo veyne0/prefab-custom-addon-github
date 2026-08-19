@@ -2,6 +2,7 @@ package com.prefab.addon.network;
 
 import com.prefab.addon.PrefabCustomAddon;
 import com.prefab.addon.extension.ExtensionPackManager;
+import com.prefab.addon.extension.ServerBuildingInfo;
 import net.minecraft.client.Minecraft;
 
 import java.io.ByteArrayOutputStream;
@@ -17,16 +18,24 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * 客户端拓展包同步状态机。
+ * 客户端建筑同步状态机 (建筑级, 不再是包级).
  *
- * 流程：
- *   1. 收到 ServerPackManifestPayload → 跟本地 server-cache 比对 SHA-1
- *   2. 把缺失/过期的包发 RequestServerPacksPayload 给服务端
- *   3. 收 ServerPackChunkPayload → 按 packName 累计到 ByteArrayOutputStream
- *   4. 收完（offset+len == totalSize）→ 写 server-cache/&lt;name&gt;.zip
- *   5. 所有缺包收完 → 触发 ExtensionPackManager 重扫
+ * <p>流程:
+ * <ol>
+ *   <li>收 ServerPackManifestPayload → 跟本地 server-cache 比对 SHA-1, 生成 ServerBuildingInfo 列表 (每个建筑一条, 含 synced 状态)</li>
+ *   <li>把缺失/过期的源文件 (按 packName 去重) 发 RequestServerPacksPayload 给服务端</li>
+ *   <li>收 ServerPackChunkPayload → 按 packName 累计到 ByteArrayOutputStream</li>
+ *   <li>收完 → 写 server-cache/&lt;packName&gt;.&lt;sourceExt&gt;</li>
+ *   <li>所有缺包收完 → 触发 ExtensionPackManager 重扫, 重建 ServerBuildingInfo 列表</li>
+ * </ol>
  *
- * 状态通过 GUI 顶部的 statusMessage 字段反馈给玩家。
+ * <p><strong>已废弃"拓展包"概念</strong>:
+ * <ul>
+ *   <li>每个建筑 = 1 个 ServerBuildingInfo 卡片</li>
+ *   <li>老式 .zip 包: 1 个 zip 里有 N 个建筑 → N 个 ServerBuildingInfo, 共享 packName (zip basename) 和 sha1/size (zip 指纹)</li>
+ *   <li>新格式独立 .nbt: 1 个文件 = 1 个 ServerBuildingInfo, packName == buildingId</li>
+ * </ul>
+ * 同步一个建筑 = 下载源文件 (zip 或 nbt). 老 zip 同步一次, 包里所有建筑同时变 synced.
  */
 public class ServerPackSyncClient {
 
@@ -51,9 +60,9 @@ public class ServerPackSyncClient {
     private volatile long totalBytesToSync = 0;
     private volatile long bytesReceived = 0;
 
-    /** 当前正在收的包：name → (expectedTotalSize, accumulator) */
+    /** 当前正在收的包: packName → (expectedTotalSize, accumulator, sourceFileName) */
     private final Map<String, Inflight> inflight = new HashMap<>();
-    /** 本轮要收的包 (用于完成度统计) */
+    /** 本轮要收的包 (用于完成度统计, 按 packName 去重) */
     private final Set<String> wanted = new HashSet<>();
 
     /**
@@ -61,13 +70,15 @@ public class ServerPackSyncClient {
      * 用于 GUI "服务器" 标签页显示所有可同步的建筑 (含未同步的).
      * 不阻塞 sync 流程, 即使没用也无所谓.
      */
-    private final List<ServerPackManifestPayload.Entry> serverManifestCache = new ArrayList<>();
-    private final Object manifestLock = new Object();
+    private final List<ServerBuildingInfo> serverBuildingsCache = new ArrayList<>();
+    private final Object cacheLock = new Object();
 
     private static class Inflight {
         long totalSize;
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         long received;
+        /** 源文件名 (e.g. "test.zip" / "huochaihe.nbt"), 收完写盘时用 */
+        String sourceFileName = "unknown.zip";
     }
 
     public State getState() { return state; }
@@ -79,13 +90,40 @@ public class ServerPackSyncClient {
     }
 
     /**
-     * 返回服务端 manifest 的快照 (含 name, sha1, size). 用于 GUI "服务器" tab 显示未同步建筑.
+     * 返回当前所有可同步建筑的快照 (含 name, sha1, size, synced 等).
      * 返回的是新 list, 修改不影响内部缓存.
      */
-    public List<ServerPackManifestPayload.Entry> getServerManifestSnapshot() {
-        synchronized (manifestLock) {
-            return new ArrayList<>(serverManifestCache);
+    public List<ServerBuildingInfo> getServerBuildingSnapshot() {
+        synchronized (cacheLock) {
+            return new ArrayList<>(serverBuildingsCache);
         }
+    }
+
+    /**
+     * 返回最近一次收到的 manifest 原始 entries (兼容老 API).
+     * <p>用于 {@link ExtensionPackManager#getServerBuildings()} 在
+     * {@link #getServerBuildingSnapshot()} 还没填好 (例如启动早期) 时兜底.</p>
+     */
+    public List<ServerPackManifestPayload.Entry> getServerManifestSnapshot() {
+        List<ServerPackManifestPayload.Entry> out = new ArrayList<>();
+        synchronized (cacheLock) {
+            for (ServerBuildingInfo b : serverBuildingsCache) {
+                out.add(new ServerPackManifestPayload.Entry(
+                        b.buildingId,
+                        b.sha1,
+                        b.size,
+                        b.buildingId,
+                        b.displayName,
+                        ".nbt",
+                        b.packName,
+                        b.sourceFileName,
+                        b.author,
+                        b.description,
+                        b.pngData
+                ));
+            }
+        }
+        return out;
     }
 
     /** 收到服务端 manifest */
@@ -93,17 +131,9 @@ public class ServerPackSyncClient {
         Minecraft mc = Minecraft.getInstance();
         if (mc == null || mc.player == null) return;
         state = State.CHECKING;
-        statusMessage = "正在比对服务器拓展包...";
+        statusMessage = "正在比对服务器建筑...";
         doneCount = 0;
         bytesReceived = 0;
-
-        // 缓存 manifest (给 GUI "服务器" tab 显示未同步建筑用)
-        synchronized (manifestLock) {
-            serverManifestCache.clear();
-            if (payload.packs() != null) {
-                serverManifestCache.addAll(payload.packs());
-            }
-        }
 
         // 确保 server-cache 目录存在
         Path cacheDir = ExtensionPackManager.getInstance().getServerCacheDir();
@@ -120,64 +150,127 @@ public class ServerPackSyncClient {
             return;
         }
 
-        // 比对 SHA-1：找本地缺 / 哈希不一致的包
-        List<String> need = new ArrayList<>();
+        // 解析 manifest → 生成 ServerBuildingInfo 列表 + 按 packName 找要下载的源文件
+        List<ServerBuildingInfo> buildings = new ArrayList<>();
+        Set<String> needPackNames = new HashSet<>();  // 去重: 一个 zip 多个建筑只下载一次
         long totalBytes = 0;
-        for (ServerPackManifestPayload.Entry e : payload.packs()) {
-            if (e.name() == null || e.name().isEmpty()) continue;
-            // 安全校验: 文件名里不能有 .. 或 /
-            String safe = sanitizeFileName(e.name());
-            Path zipPath = cacheDir.resolve(safe + ".zip");
+        for (ServerPackManifestPayload.Entry e : payload.buildings()) {
+            if (e.buildingId() == null || e.buildingId().isEmpty()) continue;
+            String srcFile = e.sourceFileName() == null || e.sourceFileName().isEmpty()
+                    ? (e.packName() == null ? e.buildingId() + ".zip" : e.packName() + ".zip")
+                    : e.sourceFileName();
+            String safeName = sanitizeFileName(srcFile);
+            Path cacheFile = cacheDir.resolve(safeName);
+            // 检查本地缓存 SHA-1
             String localSha1 = null;
-            if (Files.exists(zipPath)) {
-                localSha1 = ExtensionPackManager.computeSha1Hex(zipPath);
+            if (Files.exists(cacheFile)) {
+                localSha1 = ExtensionPackManager.computeSha1Hex(cacheFile);
             }
-            if (!e.sha1().equalsIgnoreCase(localSha1)) {
-                need.add(e.name());
-                totalBytes += e.size();
-                PrefabCustomAddon.LOGGER.info("[PACK-SYNC] Need pack '{}' (server sha1={}, local sha1={})",
-                        e.name(), e.sha1(), localSha1);
+            boolean synced = e.sha1() != null && e.sha1().equalsIgnoreCase(localSha1);
+            if (!synced) {
+                // 按 packName 去重: 老 zip 多个建筑只下一个 zip
+                if (e.packName() != null && !e.packName().isEmpty()) {
+                    needPackNames.add(e.packName());
+                }
+                PrefabCustomAddon.LOGGER.info("[BUILD-SYNC] Need building '{}' (src={}, server sha1={}, local sha1={})",
+                        e.buildingId(), srcFile, e.sha1(), localSha1);
             } else {
-                PrefabCustomAddon.LOGGER.info("[PACK-SYNC] Have pack '{}' (sha1 match), skip", e.name());
+                PrefabCustomAddon.LOGGER.info("[BUILD-SYNC] Have building '{}' (sha1 match), skip", e.buildingId());
+            }
+            buildings.add(new ServerBuildingInfo(
+                    e.buildingId(),
+                    e.displayName(),
+                    e.author(),
+                    e.description(),
+                    srcFile,
+                    e.packName(),
+                    e.sha1(),
+                    e.size(),
+                    e.pngData(),
+                    synced
+            ));
+            // 进度统计按 packName (而不是 building), 跟实际下载对齐
+            if (!synced) {
+                // 注意: 同一 zip 多个建筑会重复加 size, 但 totalToSync 用了 needPackNames 长度所以是去重的
+                // 这里 totalBytes 先算所有建筑总和, 然后按比例估算
+                totalBytes += e.size();
             }
         }
 
-        totalToSync = need.size();
-        totalBytesToSync = totalBytes;
-        wanted.clear();
-        wanted.addAll(need);
+        // 缓存给 GUI 用
+        synchronized (cacheLock) {
+            serverBuildingsCache.clear();
+            serverBuildingsCache.addAll(buildings);
+        }
 
-        if (need.isEmpty()) {
+        // 实际下载数 = packName 去重后的数量
+        int actualDownloads = needPackNames.size();
+        // totalBytes 改成按 packName 去重后的总和 (避免大 zip 多建筑时数字虚高)
+        long actualBytes = 0;
+        for (ServerBuildingInfo b : buildings) {
+            if (b.synced) continue;
+            if (b.packName != null && needPackNames.contains(b.packName)) {
+                // 第一次遇到这个 packName, 加上 size
+                // 用 contains 检查过的跳过
+            }
+        }
+        // 简化: 直接用第一个匹配的 unsynced building 的 size 作为该 packName 的下载字节
+        Set<String> counted = new HashSet<>();
+        for (ServerBuildingInfo b : buildings) {
+            if (b.synced) continue;
+            if (b.packName != null && !counted.contains(b.packName) && needPackNames.contains(b.packName)) {
+                actualBytes += b.size;
+                counted.add(b.packName);
+            }
+        }
+
+        totalToSync = actualDownloads;
+        totalBytesToSync = actualBytes;
+        wanted.clear();
+        wanted.addAll(needPackNames);
+        // 缓存每个 packName 的 sourceFileName, 收完时写盘用
+        packNameToSourceFile.clear();
+        for (ServerBuildingInfo b : buildings) {
+            if (b.packName != null && !b.packName.isEmpty() && b.sourceFileName != null) {
+                packNameToSourceFile.put(b.packName, b.sourceFileName);
+            }
+        }
+
+        if (needPackNames.isEmpty()) {
             state = State.DONE;
-            statusMessage = "✓ 服务器拓展包已是最新 (" + payload.packs().size() + " 个)";
+            statusMessage = "✓ 服务器建筑已是最新 (" + buildings.size() + " 个)";
             doneCount = totalToSync;
-            // 还是触发一次重扫，确保 server-cache 里的包出现在 GUI 中
+            // 触发重扫, 确保 server-cache 里的新文件出现在 GUI 中
             ExtensionPackManager.getInstance().reloadClient();
             return;
         }
 
         state = State.REQUESTING;
-        statusMessage = "请求 " + need.size() + " 个拓展包 (" + humanBytes(totalBytes) + ")...";
-        NetworkHandler.sendToServer(new RequestServerPacksPayload(need));
+        statusMessage = "请求 " + actualDownloads + " 个源文件 (" + humanBytes(actualBytes) + ")...";
+        // 把 packName 列表发给服务端 (服务端按 packName 找源文件)
+        NetworkHandler.sendToServer(new RequestServerPacksPayload(new ArrayList<>(needPackNames)));
     }
+
+    /** packName → 源文件完整名 (e.g. "test" → "test.zip"), 用于收完写盘 */
+    private final Map<String, String> packNameToSourceFile = new HashMap<>();
 
     /** 收到服务端发来的一个分片 */
     public void handleChunk(ServerPackChunkPayload payload) {
         if (state != State.REQUESTING && state != State.DOWNLOADING) {
-            // 收完了还来一片，忽略
+            // 收完了还来一片, 忽略
             return;
         }
         state = State.DOWNLOADING;
         Inflight inf = inflight.computeIfAbsent(payload.packName(), k -> {
             Inflight x = new Inflight();
             x.totalSize = payload.totalSize();
+            x.sourceFileName = packNameToSourceFile.getOrDefault(payload.packName(), payload.packName() + ".zip");
             return x;
         });
-        // 防呆: 客户端期望的 offset 和服务端发的不一致，说明有 ACK 漏了
+        // 防呆: 客户端期望的 offset 和服务端发的不一致, 说明有 ACK 漏了
         if (inf.received != payload.offset()) {
-            PrefabCustomAddon.LOGGER.warn("[PACK-SYNC] Chunk offset mismatch for '{}': expected={} got={}, skip",
+            PrefabCustomAddon.LOGGER.warn("[BUILD-SYNC] Chunk offset mismatch for '{}': expected={} got={}, skip",
                     payload.packName(), inf.received, payload.offset());
-            // 还是 ACK 一下让服务端继续发后面的
             NetworkHandler.sendToServer(new ServerPackChunkAckPayload(payload.packName(), inf.received, false));
             return;
         }
@@ -193,50 +286,46 @@ public class ServerPackSyncClient {
         statusMessage = "下载中 [" + idx + "/" + totalToSync + "] " + payload.packName() + "  " + pct + "%";
 
         if (inf.received >= inf.totalSize) {
-            // 收完一个包: 写盘 + 校验
             finalizeOne(payload.packName(), inf);
-            // 通知服务端这一包已完成
             NetworkHandler.sendToServer(new ServerPackChunkAckPayload(payload.packName(), inf.received, true));
         } else {
-            // 通知服务端发下一片
             NetworkHandler.sendToServer(new ServerPackChunkAckPayload(payload.packName(), inf.received, false));
         }
     }
 
-    /** 收完一个包, 写 server-cache, 从 inflight 移除 */
-    private void finalizeOne(String name, Inflight inf) {
+    /** 收完一个源文件, 写 server-cache, 从 inflight 移除 */
+    private void finalizeOne(String packName, Inflight inf) {
         try {
             Path cacheDir = ExtensionPackManager.getInstance().getServerCacheDir();
-            String safe = sanitizeFileName(name);
-            Path target = cacheDir.resolve(safe + ".zip");
+            String safeName = sanitizeFileName(inf.sourceFileName);
+            Path target = cacheDir.resolve(safeName);
             byte[] bytes = inf.baos.toByteArray();
             Files.write(target, bytes, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
 
             // 校验写入的文件
             String actualSha1 = ExtensionPackManager.computeSha1Hex(target);
-            PrefabCustomAddon.LOGGER.info("[PACK-SYNC] Wrote pack '{}' ({} bytes, sha1={}) to {}",
-                    name, bytes.length, actualSha1, target);
+            PrefabCustomAddon.LOGGER.info("[BUILD-SYNC] Wrote source '{}' ({} bytes, sha1={}) to {}",
+                    packName, bytes.length, actualSha1, target);
 
             doneCount++;
-            wanted.remove(name);
-            inflight.remove(name);
+            wanted.remove(packName);
+            inflight.remove(packName);
 
             if (wanted.isEmpty()) {
                 state = State.FINALIZING;
-                statusMessage = "所有包已下载, 重新扫描...";
-                // 触发重扫: 此时 server-cache/ 里的新 zip 才会出现在 GUI 列表中
+                statusMessage = "所有源文件已下载, 重新扫描...";
                 ExtensionPackManager.getInstance().reloadClient();
                 state = State.DONE;
-                statusMessage = "✓ 服务器拓展包同步完成 (" + totalToSync + " 个)";
+                statusMessage = "✓ 服务器建筑同步完成 (" + totalToSync + " 个源文件)";
             }
         } catch (IOException e) {
             state = State.ERROR;
-            statusMessage = "✗ 写入 " + name + " 失败: " + e.getMessage();
-            PrefabCustomAddon.LOGGER.error("[PACK-SYNC] Failed to finalize pack {}", name, e);
+            statusMessage = "✗ 写入 " + packName + " 失败: " + e.getMessage();
+            PrefabCustomAddon.LOGGER.error("[BUILD-SYNC] Failed to finalize source {}", packName, e);
         }
     }
 
-    /** 玩家手动点「同步服务器拓展包」按钮: 让服务端重发 manifest（支持管理员中途加包） */
+    /** 玩家手动点「同步服务器建筑」按钮: 让服务端重发 manifest (支持管理员中途加包) */
     public void requestResync() {
         if (isSyncing()) {
             statusMessage = "已在同步中...";
@@ -244,52 +333,56 @@ public class ServerPackSyncClient {
         }
         state = State.IDLE;
         statusMessage = "⟳ 正在请求服务器清单...";
-        PrefabCustomAddon.LOGGER.info("[PACK-SYNC] User clicked resync button");
+        PrefabCustomAddon.LOGGER.info("[BUILD-SYNC] User clicked resync button");
         NetworkHandler.sendToServer(new RequestServerPackManifestPayload());
     }
 
     /**
-     * 玩家在「服务器」tab 点击单个未同步卡片: 拉这一个建筑.
-     * <p>走 RequestServerPacksPayload, 但只放一个 name. 服务端会从 prefab-extension 找到对应
-     * zip 然后发过来; 客户端用同一个 handleChunk 通道写入 server-cache/.</p>
-     *
-     * <p>约束: 必须保证服务端的 ServerPackSyncServer 已经把对应 zip 的 metadata 记过 (即 manifest 已经收到过一次).
-     * 这里直接根据缓存的 manifest 找, 没找到就报错让玩家走"同步服务器"按钮重发 manifest.</p>
+     * 玩家在「服务器」tab 点击单个未同步卡片: 拉这一个建筑对应的源文件.
+     * <p>对于老式 .zip 里的建筑: 拉的是整个 zip, 同步后包内所有建筑都变 synced.
+     * 对于独立 .nbt 建筑: 拉的就是那个 .nbt.</p>
      */
-    public void requestSyncSingle(String packName) {
-        if (packName == null || packName.isEmpty()) return;
+    public void requestSyncSingle(String buildingId) {
+        if (buildingId == null || buildingId.isEmpty()) return;
         if (isSyncing()) {
             statusMessage = "已在同步中, 请稍候";
             return;
         }
-        // 在缓存的 manifest 里找
-        ServerPackManifestPayload.Entry entry = null;
-        synchronized (manifestLock) {
-            for (ServerPackManifestPayload.Entry e : serverManifestCache) {
-                if (packName.equals(e.name())) {
-                    entry = e;
+        // 在缓存里找该建筑
+        ServerBuildingInfo target = null;
+        synchronized (cacheLock) {
+            for (ServerBuildingInfo b : serverBuildingsCache) {
+                if (buildingId.equals(b.buildingId)) {
+                    target = b;
                     break;
                 }
             }
         }
-        if (entry == null) {
+        if (target == null) {
             state = State.ERROR;
-            statusMessage = "✗ 没找到建筑 '" + packName + "' 的清单, 请先点「同步服务器」";
-            PrefabCustomAddon.LOGGER.warn("[PACK-SYNC] requestSyncSingle: '{}' not in cached manifest, abort", packName);
+            statusMessage = "✗ 没找到建筑 '" + buildingId + "' 的清单, 请先点「同步服务器」";
+            PrefabCustomAddon.LOGGER.warn("[BUILD-SYNC] requestSyncSingle: '{}' not in cached manifest, abort", buildingId);
             return;
         }
-        // 准备下载
+        if (target.synced) {
+            // 已同步, 玩家应该是误点了 - 不需要下载
+            return;
+        }
+        // 准备下载源文件
+        String packName = target.packName == null ? buildingId : target.packName;
         totalToSync = 1;
-        totalBytesToSync = entry.size();
+        totalBytesToSync = target.size;
         bytesReceived = 0;
         doneCount = 0;
         wanted.clear();
         wanted.add(packName);
         inflight.remove(packName);
+        packNameToSourceFile.put(packName, target.sourceFileName);
 
         state = State.REQUESTING;
-        statusMessage = "请求同步建筑 '" + packName + "' (" + humanBytes(entry.size()) + ")...";
-        PrefabCustomAddon.LOGGER.info("[PACK-SYNC] User requested single sync: {} ({} bytes)", packName, entry.size());
+        statusMessage = "请求同步建筑 '" + target.getDisplayName() + "' (" + humanBytes(target.size) + ")...";
+        PrefabCustomAddon.LOGGER.info("[BUILD-SYNC] User requested single sync: {} (src={}, {} bytes)",
+                buildingId, target.sourceFileName, target.size);
 
         // 确保 server-cache 目录存在
         Path cacheDir = ExtensionPackManager.getInstance().getServerCacheDir();

@@ -17,9 +17,10 @@ import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.BufferUploader;
 import com.prefab.addon.PrefabCustomAddon;
 import com.prefab.addon.client.GuiThumbRenderer;
-import com.prefab.addon.client.VanillaStructureRegistry;
+import com.prefab.addon.client.ThumbnailCache;
 import com.prefab.addon.cloud.CloudBuilding;
 import com.prefab.addon.cloud.CloudBuildingClientCache;
+import com.prefab.addon.config.CategoryManager;
 import com.prefab.addon.config.PlayerPreferences;
 import com.prefab.addon.download.PackDownloadManager;
 import com.prefab.addon.download.PackDownloadManager.BuildingInfo2;
@@ -29,16 +30,22 @@ import com.prefab.addon.extension.ExtensionPackManager;
 import com.prefab.addon.extension.LocalBuilding;
 import com.prefab.addon.extension.LocalBuildingScanner;
 import com.prefab.addon.extension.ServerBuildingInfo;
+import com.prefab.addon.integration.xaero.XaeroWaypointBridge;
 import com.prefab.addon.work.FolderOpener;
 import com.prefab.gui.GuiBase;
 import com.prefab.gui.controls.ExtendedButton;
 
+
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.AbstractButton;
+import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.renderer.texture.DynamicTexture;
+import net.minecraft.core.registries.Registries;
 import net.minecraft.network.chat.Component;
+import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.world.level.Level;
 
 /**
  * 拓展包 / 建筑 管理界面 (新版: 左侧标签栏 + 右侧卡片列表).
@@ -62,10 +69,16 @@ import net.minecraft.resources.ResourceLocation;
  *       卡片样式: 预览图 + 建筑名 + 作者. 顶部带搜索框. 点击 → 打开 GuiConstructionDetail.</li>
  *   <li><b>云端建筑</b>: 显示当前玩家已经存到云端的建筑 (由自定义蓝图建造后自动备份).
  *       卡片样式: 缩略图 + 建筑名 + 状态(已放出/已收回) + 收回/放出按钮. 跨存档/跨世界保留.</li>
- *   <li><b>服务器</b>: 显示 server-cache/ 下的标准格式包 (服务器同步下来的). 跟扩展包 tab 同样能进包详情.</li>
+ *   <li><b>服务器</b>: 显示服务器 manifest 里的建筑 (单建筑粒度同步), 跟下载 tab 类似卡片.
+ *       卡片样式: 图片 + 建筑名 + 同步/查看按钮. 已同步点卡片进 detail, 未同步点按钮单建筑拉取.</li>
  *   <li><b>收藏</b>: 显示 PlayerPreferences.favoriteKeys 对应的建筑. 没有就是空状态.</li>
  *   <li><b>下载</b>: 快捷打开 GuiExtensionPackDownloader, 留出未来扩展空间 (服务器列表等).</li>
- *   <li><b>原版</b>: 显示原版 MC-Prefab mod 提供的所有建筑 (只读浏览, 不可直接建造).</li>
+ *   <li><b>下载</b>: 从 /api/buildings 拉取在线建筑列表, 玩家可一键下载到 prefab-download/.</li>
+ * </ul>
+ *
+ * <h3>已移除</h3>
+ * <ul>
+ *   <li><b>原版</b> tab: 内置 Prefab 原版建筑目录会触发 Modrinth 版权审核拒绝, 整 tab 移除.</li>
  * </ul>
  *
  * <h2>导航栈</h2>
@@ -75,14 +88,13 @@ import net.minecraft.resources.ResourceLocation;
  */
 public class GuiExtensionPackBrowser extends GuiBase {
 
-    // === 6 个标签 ===
+    // === 5 个标签 ===
     private enum Tab {
         BUILDINGS("建筑"),
         CLOUD("云端建筑"),
         SERVERS("服务器"),
         FAVORITES("收藏"),
-        DOWNLOAD("下载"),
-        VANILLA("原版");
+        DOWNLOAD("下载");
         final String label;
         Tab(String label) { this.label = label; }
     }
@@ -111,16 +123,70 @@ public class GuiExtensionPackBrowser extends GuiBase {
     private static final int CLOUD_CARD_COLS = 2;
     private static final int CLOUD_CARD_GAP = 6;
     private static final int CLOUD_CARD_H = 96;
+    // 服务器 tab 跟下载 tab 同样 2 列: 左侧缩略图 + 右侧文字 + 底部按钮
+    // 高度压到 56 让一屏放 3 行 (≈ 188 / 62 = 3), 共 6 个/页, 8 个建筑 2 页搞定
+    private static final int SERVER_CARD_COLS = 2;
+    private static final int SERVER_CARD_GAP = 6;
+    private static final int SERVER_CARD_H = 56;
+    // 建筑 tab 用 2 列 (右侧 110px 给分类列表), 4 个/页
+    private static final int BUILDINGS_CARD_COLS = 2;
+    // 分类列表宽度 (右栏, 跟搜索框宽度一样)
+    private static final int CAT_LIST_W = 110;
+    // 搜索框宽度 (建筑 tab 缩短, 其它 tab 仍用 SEARCH_FULL_W)
+    private static final int SEARCH_BOX_W = 110;
+    private static final int SEARCH_FULL_W = PANEL_W - TABS_W - 12;  // 约 316, 其它 tab 用
 
     // === 状态 ===
     private String searchText = "";
     private int scrollOffsetCards = 0;  // 卡片网格滚动偏移 (按 "页" 翻, 每页 CARD_COLS * CARD_ROWS)
+    /** 建筑 tab 当前选中的分类 (null = 全部). 切换 tab 时重置为 null. */
+    private String currentCategory = null;
+
+    // === 跨 GUI 实例记忆: 玩家关闭 GUI 再打开后, 恢复上次的分类/页码/面板状态 ===
+    private static String rememberedCategory = null;
+    private static int rememberedPage = 0;
+    private static boolean rememberedPanelHidden = false;
+
+    // === 跨 tab 记忆: 玩家在「建筑」tab 选「原版」翻到第 2 页 → 切到「服务器」tab → 再切回「建筑」,
+    //   应该还是「原版」第 2 页. 下面的 Map 存每个 tab 自己的状态. ===
+    private static final java.util.Map<Tab, TabState> TAB_STATES = new java.util.EnumMap<>(Tab.class);
+
+    /** 每个 tab 的状态快照. */
+    private static final class TabState {
+        String currentCategory;
+        int scrollOffsetCards;
+        boolean categoryPanelHidden;
+        String searchText;
+        TabState(String cat, int page, boolean hidden, String search) {
+            this.currentCategory = cat;
+            this.scrollOffsetCards = page;
+            this.categoryPanelHidden = hidden;
+            this.searchText = search;
+        }
+    }
 
     // === 分页按钮 hit rect (各 tab 共用, 每次重绘前重置) ===
     private int[] paginationBarRect = null;     // 整个分页条
     private int[] paginationPrevRect = null;     // ‹ 上一页
     private int[] paginationNextRect = null;     // › 下一页
     private int[][] paginationPageRects = null;  // [N] 数字按钮, 每项 [x,y,w,h,pageIndex]
+
+    // === 分类列表 (建筑 tab 右侧) ===
+    /** 单个分类项 hit rect, 用于点击检测. 每项 [x, y, w, h]. */
+    private final List<int[]> categoryItemRects = new ArrayList<>();
+    /** 分类列表 "添加" 按钮 (弹 GuiCategoryManager) hit rect. */
+    private int[] categoryAddBtnRect = null;
+    /** 分类面板隐藏按钮 hit rect (右上角 ◀ 收起 / 隐藏状态下左边缘 ▶ 展开). */
+    private int[] categoryToggleBtnRect = null;
+    /** 分类面板是否被玩家收起. 收起后只显示一个 ▶ 小按钮 + 卡片占满全宽. */
+    private boolean categoryPanelHidden = false;
+
+    {
+        // 默认值用静态记忆的"上次状态" (玩家在 Initialize() 之前 new GUI 也会先走这里)
+        this.categoryPanelHidden = GuiExtensionPackBrowser.rememberedPanelHidden;
+        this.currentCategory = GuiExtensionPackBrowser.rememberedCategory;
+        this.scrollOffsetCards = GuiExtensionPackBrowser.rememberedPage;
+    }
 
     // === 缓存的依赖检测结果 ===
     private final java.util.Map<String, java.util.List<String>> depCheckMissing = new java.util.HashMap<>();
@@ -152,6 +218,14 @@ public class GuiExtensionPackBrowser extends GuiBase {
     private final java.util.Map<String, ResourceLocation> localImageCache = new java.util.HashMap<>();
     /** 本地图片加载去重, 防止同一张图被并发读. */
     private final java.util.Set<String> localImageLoading = new java.util.HashSet<>();
+
+    // === 服务器 Tab: 同步建筑缩略图缓存 ===
+    /** server-cache/ 已同步建筑缩略图: name -> ResourceLocation. */
+    private final java.util.Map<String, ResourceLocation> serverImageCache = new java.util.HashMap<>();
+    /** 同步按钮 hit rect: name -> [x, y, w, h]. */
+    private final java.util.Map<String, int[]> serverCardSyncBtnRects = new java.util.HashMap<>();
+    /** 缩略图加载去重: name -> "loading" 标志 (用 Set). */
+    private final java.util.Set<String> serverImageLoading = new java.util.HashSet<>();
 
     // === 下载 Tab: 网站建筑列表 (从 /api/buildings 拉) ===
     /** 网站上所有用户上传的建筑. 进游戏首次进入下载 tab 时拉取, 之后手动刷新. */
@@ -188,6 +262,10 @@ public class GuiExtensionPackBrowser extends GuiBase {
     private final java.util.Map<String, int[]> cloudCardSummonBtnRects = new java.util.LinkedHashMap<>();
     /** 云端建筑「删除」按钮 hit rect: buildingId -> [x, y, w, h]. */
     private final java.util.Map<String, int[]> cloudCardDeleteBtnRects = new java.util.LinkedHashMap<>();
+    /** 云端建筑「导航」按钮 hit rect: buildingId -> [x, y, w, h]. 仅在装了 Xaero 且建筑已放出时启用. */
+    private final java.util.Map<String, int[]> cloudCardNavigateBtnRects = new java.util.LinkedHashMap<>();
+    /** 「导航」按钮调试日志已打过的 buildingId 集合, 每个建筑只打一次避免刷屏. */
+    private final java.util.Set<String> navigateDebugLogged = new java.util.HashSet<>();
     /** 待删除的云端建筑 (非空时显示确认弹窗). */
     private String pendingDeleteBuildingId = null;
     /** 确认弹窗「取消」按钮 hit rect. */
@@ -227,21 +305,10 @@ public class GuiExtensionPackBrowser extends GuiBase {
             try (InputStream is = Files.newInputStream(imgPath)) {
                 BufferedImage img = ImageIO.read(is);
                 if (img == null) return;
-                int w = img.getWidth(), h = img.getHeight();
-                if (w <= 0 || h <= 0) return;
                 Minecraft.getInstance().execute(() -> {
                     try {
-                        DynamicTexture tex = new DynamicTexture(w, h, false);
-                        tex.setFilter(false, false);
-                        NativeImage pixels = tex.getPixels();
-                        for (int y = 0; y < h; y++) {
-                            for (int x = 0; x < w; x++) {
-                                int argb = img.getRGB(x, y);
-                                int abgr = ((argb & 0xFF00FF00) | ((argb & 0x00FF0000) >> 16) | ((argb & 0x000000FF) << 16));
-                                pixels.setPixelRGBA(x, y, abgr);
-                            }
-                        }
-                        tex.upload();
+                        DynamicTexture tex = uploadIconTexture(img);
+                        if (tex == null) return;
                         ResourceLocation loc = Minecraft.getInstance().getTextureManager()
                             .register("prefab_dl_" + lb.id, tex);
                         this.localImageCache.put(lb.id, loc);
@@ -253,6 +320,84 @@ public class GuiExtensionPackBrowser extends GuiBase {
                 PrefabCustomAddon.LOGGER.warn("[DOWNLOAD-TAB] local image read failed for {}", lb.id, e);
             }
         });
+    }
+
+    // === 缩略图最大边长 ===
+    // 之前 128 太小, 源图(1920x1080 截图)经 bilinear 下采样到 128 后会丢很多细节,
+    // 再用 nearest 像素投到 60x60 卡片上会糊成"被 JPEG 压缩"的样子.
+    // 256 是平衡: 60x60 卡片 (含 2x DPR 余量 120) 4x over-sample, 显存 256x256x4 = 256KB/张可接受,
+    // bicubic 下采样比 bilinear 锐利得多, 最终 bilinear 投到屏幕平滑.
+    private static final int ICON_MAX_DIM = 256;
+
+    /**
+     * 把 BufferedImage 缩到 ICON_MAX_DIM 以内, 上传为 Minecraft DynamicTexture.
+     * 失败返回 null.
+     *
+     * <p>之前两处都是用原图尺寸上传: 玩家手贱加一张 1920x1080 截图 (1.7 MB) 当建筑图,
+     * 会导致: ① getRGB 单像素 JNI 调用跑 200 万次, 渲染线程卡几秒;
+     * ② GPU 申请几十 MB 纹理, 部分驱动会静默失败 → UI 显示占位符, 跟"图片没生效" 表现一样.
+     * 这里用 Graphics2D 一次性 bilinear 缩到 ≤128, 既不卡顿, 又一定能在驱动允许的范围内上传.</p>
+     */
+    private static DynamicTexture uploadIconTexture(BufferedImage img) {
+        if (img == null) return null;
+        int w = img.getWidth(), h = img.getHeight();
+        if (w <= 0 || h <= 0) return null;
+
+        // === Step 1: 中心裁剪成正方形 ===
+        // 卡片是 iconSize×iconSize 正方形显示, 但原图往往是 16:9 截图 / 4:3 缩略图 / 竖屏.
+        // 之前用 Math.min(scale) 等比缩, 16:9 → 256×144 → 投到 100×100 上下留黑条, 看起来"四周发黑".
+        // 缩略图通用做法: 中心 crop 成正方形, 再缩到 ICON_MAX_DIM, 永远铺满不黑边.
+        // 中心 crop (而不是 top/bottom crop) 保证主体 (一般是建筑中段) 不被切掉.
+        int cropSide = Math.min(w, h);
+        int cropX = (w - cropSide) / 2;
+        int cropY = (h - cropSide) / 2;
+        if (cropSide < w || cropSide < h) {
+            BufferedImage cropped = img.getSubimage(cropX, cropY, cropSide, cropSide);
+            // getSubimage 共享底层 raster, 不能直接 dispose 原图, 这里 copy 一份脱离
+            BufferedImage croppedCopy = new BufferedImage(cropSide, cropSide, BufferedImage.TYPE_INT_ARGB);
+            croppedCopy.createGraphics().drawImage(cropped, 0, 0, null);
+            img = croppedCopy;
+            w = cropSide;
+            h = cropSide;
+        }
+
+        // === Step 2: 下采样到 ICON_MAX_DIM (已经是正方形, 缩出来就是正方形) ===
+        if (w > ICON_MAX_DIM) {
+            double scale = (double) ICON_MAX_DIM / w;
+            int nw = ICON_MAX_DIM;
+            int nh = ICON_MAX_DIM;  // 因为已 crop 成正方形, 缩出来仍是正方形
+            BufferedImage scaled = new BufferedImage(nw, nh, BufferedImage.TYPE_INT_ARGB);
+            java.awt.Graphics2D g = scaled.createGraphics();
+            try {
+                // BICUBIC 比 BILINEAR 锐利得多, 边角细节 (MC 截图里的方块/树叶) 不会糊.
+                g.setRenderingHint(java.awt.RenderingHints.KEY_INTERPOLATION,
+                    java.awt.RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+                g.setRenderingHint(java.awt.RenderingHints.KEY_RENDERING,
+                    java.awt.RenderingHints.VALUE_RENDER_QUALITY);
+                g.setRenderingHint(java.awt.RenderingHints.KEY_ANTIALIASING,
+                    java.awt.RenderingHints.VALUE_ANTIALIAS_ON);
+                g.drawImage(img, 0, 0, nw, nh, null);
+            } finally {
+                g.dispose();
+            }
+            img = scaled;
+            w = nw;
+            h = nh;
+        }
+        DynamicTexture tex = new DynamicTexture(w, h, false);
+        // bilinear: 源已 256 (4x over-sample), 投到 60x60 时平滑; nearest 会有马赛克.
+        // (drawIconNearest 名字虽然叫 Nearest, 但实际走 GuiGraphics.blit, 用的是纹理自己的 filter)
+        tex.setFilter(true, true);
+        NativeImage pixels = tex.getPixels();
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                int argb = img.getRGB(x, y);
+                int abgr = ((argb & 0xFF00FF00) | ((argb & 0x00FF0000) >> 16) | ((argb & 0x000000FF) << 16));
+                pixels.setPixelRGBA(x, y, abgr);
+            }
+        }
+        tex.upload();
+        return tex;
     }
 
     // === 云端建筑 Tab: 缩略图懒加载 ===
@@ -522,6 +667,10 @@ public class GuiExtensionPackBrowser extends GuiBase {
 
     @Override
     protected void Initialize() {
+        // 显式从 static 字段恢复状态 (instance initializer 在 super() 之前跑, 可能被 super 覆盖)
+        this.categoryPanelHidden = GuiExtensionPackBrowser.rememberedPanelHidden;
+        this.currentCategory = GuiExtensionPackBrowser.rememberedCategory;
+        this.scrollOffsetCards = GuiExtensionPackBrowser.rememberedPage;
         super.Initialize();
         this.modifiedInitialXAxis = PANEL_W / 2;
         this.modifiedInitialYAxis = PANEL_H / 2;
@@ -546,11 +695,13 @@ public class GuiExtensionPackBrowser extends GuiBase {
         // 这里不再创建
 
         // === 搜索框 (在右面板顶部) ===
+        // 宽度: 建筑 tab 用短款 (SEARCH_BOX_W=110, 右侧让出位置给分类列表), 其它 tab 用全宽.
+        // 简单做法: 初始建为全宽, switchTab 时按需重新建. 详见 switchTab() 里的 rebuildSearchBox().
         int sbX = grayBoxX + TABS_W + 6;
         int sbY = grayBoxY + 4;
-        int sbW = PANEL_W - TABS_W - 12;
+        int initialW = isBuildingsTab() ? SEARCH_BOX_W : SEARCH_FULL_W;
         this.searchBox = new net.minecraft.client.gui.components.EditBox(
-            this.font, sbX, sbY, sbW, SEARCH_H - 2,
+            this.font, sbX, sbY, initialW, SEARCH_H - 2,
             net.minecraft.network.chat.Component.literal(tr("browser.search.placeholder")));
         this.searchBox.setMaxLength(64);
         this.searchBox.setBordered(true);
@@ -568,6 +719,7 @@ public class GuiExtensionPackBrowser extends GuiBase {
         PrefabCustomAddon.LOGGER.info("[BROWSER-NEW] Initialize: panel {}x{} at ({},{}), screen={}x{}, tabs={}",
             PANEL_W, PANEL_H, grayBoxX, grayBoxY, this.width, this.height, TABS_W);
     }
+
 
     // ============================================================
     // 渲染
@@ -716,14 +868,14 @@ public class GuiExtensionPackBrowser extends GuiBase {
     /**
      * 右内容区: 减去 tabs 和 search 的可用区域.
      * return [x, y, w, h] 用于放卡片网格.
+     * 注意: BUILDINGS tab 右栏还有分类列表 (CAT_LIST_W 宽), 卡片可用宽度要再减掉.
+     * 调用方按需决定要不要减 (buildings tab 走自己的 getBuildingsCardRect, 其它 tab 用本返回值).
      */
     private int[] getContentRect(int grayBoxX, int grayBoxY) {
         int cx = grayBoxX + TABS_W + 6;
         int cy = grayBoxY + 4;
         int cw = PANEL_W - TABS_W - 12;
-        boolean needSearch = (this.currentTab == Tab.BUILDINGS
-            || this.currentTab == Tab.FAVORITES
-            || (this.currentDrilldownPack != null));  // 包内建筑也有搜索
+        boolean needSearch = isBuildingsTab() || this.currentTab == Tab.FAVORITES;
         int ch = PANEL_H - 8;
         if (needSearch) {
             cy += SEARCH_H;
@@ -732,11 +884,22 @@ public class GuiExtensionPackBrowser extends GuiBase {
         return new int[]{cx, cy, cw, ch};
     }
 
+    /**
+     * 建筑 tab 的卡片区 rect: 从 getContentRect() 减掉右侧分类列表.
+     * 高度也再减 2 留 padding.
+     * 分类面板被收起时, 卡片用全宽 (只让出隐藏状态下的 ▶ 按钮宽度, ≈14px).
+     */
+    private int[] getBuildingsCardRect(int grayBoxX, int grayBoxY) {
+        int[] base = getContentRect(grayBoxX, grayBoxY);
+        if (this.categoryPanelHidden) {
+            return new int[]{base[0], base[1] + 2, base[2] - 18, base[3] - 2};
+        }
+        return new int[]{base[0], base[1] + 2, base[2] - CAT_LIST_W - 4, base[3] - 2};
+    }
+
     private void drawContent(GuiGraphics guiGraphics, int grayBoxX, int grayBoxY, int mouseX, int mouseY) {
         // 搜索框可见性
-        boolean needSearch = (this.currentTab == Tab.BUILDINGS
-            || this.currentTab == Tab.FAVORITES
-            || this.currentDrilldownPack != null);
+        boolean needSearch = isBuildingsTab() || this.currentTab == Tab.FAVORITES;
         this.searchBox.setVisible(needSearch);
         if (needSearch) {
             String hint = this.currentTab == Tab.FAVORITES
@@ -761,7 +924,6 @@ public class GuiExtensionPackBrowser extends GuiBase {
             case SERVERS:   drawTabServers(guiGraphics, grayBoxX, grayBoxY, mouseX, mouseY); break;
             case FAVORITES: drawTabFavorites(guiGraphics, grayBoxX, grayBoxY, mouseX, mouseY); break;
             case DOWNLOAD:  drawTabDownload(guiGraphics, grayBoxX, grayBoxY, mouseX, mouseY); break;
-            case VANILLA:   drawTabVanilla(guiGraphics, grayBoxX, grayBoxY, mouseX, mouseY); break;
         }
         // 顶层覆盖: 云端删除确认弹窗 (盖在所有 tab 上, 强制玩家先确认/取消)
         if (this.currentTab == Tab.CLOUD && this.pendingDeleteBuildingId != null) {
@@ -826,10 +988,236 @@ public class GuiExtensionPackBrowser extends GuiBase {
     //   - prefab-extension/ 根目录下的单文件建筑 (.nbt + .txt + .png)
     //   - prefab-download/ 根目录下的单文件建筑 (兼容, 因为 prefab-download/ 也算"我的")
     // 同 id 时优先用 zip 内的 (玩家本地副本).
+    //
+    // 跟其它 tab 不一样的地方: 右侧有一个分类列表 (CAT_LIST_W 宽), 玩家点分类后只显示该分类的建筑.
+    // 搜索框也跟着缩短 (见 rebuildSearchBox). 卡片 2 列布局, 4 个/页.
     private void drawTabBuildings(GuiGraphics guiGraphics, int grayBoxX, int grayBoxY, int mouseX, int mouseY) {
+        // 画分类列表 (在 drawContent 之前画, 反正后面覆盖也没关系 — 卡片区不算分类列表)
+        drawCategoryList(guiGraphics, grayBoxX, grayBoxY, mouseX, mouseY);
+
         java.util.List<ConstructionInfo> all = getMergedConstructionsForBuildingsTab();
-        java.util.List<ConstructionInfo> filtered = filterBySearch(all, this.searchText);
-        drawConstructionCards(guiGraphics, grayBoxX, grayBoxY, mouseX, mouseY, filtered);
+        java.util.List<ConstructionInfo> byCat = filterByCategory(all, this.currentCategory);
+        java.util.List<ConstructionInfo> filtered = filterBySearch(byCat, this.searchText);
+        drawConstructionCardsForBuildings(guiGraphics, grayBoxX, grayBoxY, mouseX, mouseY, filtered);
+    }
+
+    /**
+     * 按当前选中分类过滤. currentCategory == null 表示"全部" (不过滤);
+     * 非 null 时, 只保留 c.getCategoryOrDefault() 等于 currentCategory 的建筑.
+     * 跟 CategoryManager.UNCATEGORIZED 配合: 玩家 .txt 留空 = 自动归到 "未分类".
+     */
+    private java.util.List<ConstructionInfo> filterByCategory(java.util.List<ConstructionInfo> src, String cat) {
+        if (cat == null) return src;
+        java.util.List<ConstructionInfo> out = new ArrayList<>();
+        for (ConstructionInfo c : src) {
+            if (cat.equals(c.getCategoryOrDefault())) {
+                out.add(c);
+            }
+        }
+        return out;
+    }
+
+    /**
+     * 画建筑 tab 右侧的分类列表.
+     * 第一项是 "全部" (点 = 清掉分类过滤), 然后是 "未分类", 再下面是用户自定义的.
+     * 列表底部一个 [+] 按钮 → 弹 GuiCategoryManager.
+     * 面板右侧 (右边缘外) 一个 [◀/▶] 细窄按钮 → 收起/展开分类面板. 收起时按钮上方显示当前分类名.
+     */
+    private void drawCategoryList(GuiGraphics guiGraphics, int grayBoxX, int grayBoxY,
+                                  int mouseX, int mouseY) {
+        // 重置 hit rect
+        this.categoryItemRects.clear();
+        this.categoryAddBtnRect = null;
+        this.categoryToggleBtnRect = null;
+
+        int[] pos = computePanelPos();
+        int panelX = pos[0];
+        int panelY = pos[1];
+
+        int listX = panelX + PANEL_W - CAT_LIST_W - 4;
+        int listY = panelY + 4;
+        int listW = CAT_LIST_W;
+        int listH = PANEL_H - 8;
+
+        // === 收起状态: 画一个 [▶ 展开] 横向按钮 (在原分类列表的位置), 上方显示当前分类名 ===
+        if (this.categoryPanelHidden) {
+            int btnW = 28;
+            int btnH = 12;
+            // 贴在原 list 区域 (panelX + PANEL_W - CAT_LIST_W - 4) 内的顶部
+            int btnX = panelX + PANEL_W - btnW - 6;
+            int btnY = listY + 18;
+            boolean hover = mouseX >= btnX && mouseX <= btnX + btnW
+                && mouseY >= btnY && mouseY <= btnY + btnH;
+            guiGraphics.fill(btnX, btnY, btnX + btnW, btnY + btnH,
+                hover ? 0xFF6677AA : 0xFF445577);
+            guiGraphics.drawCenteredString(this.font, "▶ 展开",
+                btnX + btnW / 2, btnY + (btnH - 8) / 2, 0xFFFFFFFF);
+            this.categoryToggleBtnRect = new int[]{btnX, btnY, btnW, btnH};
+
+            // 在按钮上方显示当前分类名 (单行, 超长截断)
+            String catDisplay;
+            if (this.currentCategory == null) {
+                catDisplay = tr("browser.category.all");
+            } else {
+                catDisplay = this.currentCategory;
+            }
+            int maxTextW = CAT_LIST_W + 4;  // 横排多给点宽度
+            if (this.font.width(catDisplay) > maxTextW) {
+                while (catDisplay.length() > 1 && this.font.width(catDisplay + "..") > maxTextW) {
+                    catDisplay = catDisplay.substring(0, catDisplay.length() - 1);
+                }
+                catDisplay = catDisplay + "..";
+            }
+            // 右对齐到 list 区域右边缘
+            int textX = listX + listW - this.font.width(catDisplay);
+            if (textX < listX) textX = listX;
+            int textY = listY + 4;
+            guiGraphics.drawString(this.font, "§7" + catDisplay, textX, textY, 0xFFCCCCCC);
+            return;
+        }
+
+        // 背景
+        guiGraphics.fill(listX, listY, listX + listW, listY + listH, 0xFF1F1F1F);
+        guiGraphics.fill(listX, listY, listX + listW, listY + 1, 0xFF555555);
+        guiGraphics.fill(listX, listY + listH - 1, listX + listW, listY + listH, 0xFF555555);
+        guiGraphics.fill(listX, listY, listX + 1, listY + listH, 0xFF555555);
+        guiGraphics.fill(listX + listW - 1, listY, listX + listW, listY + listH, 0xFF555555);
+
+        // 标题 "分类" (左对齐) + 右上角横向 [◀ 收起] 按钮
+        guiGraphics.drawString(this.font, "§l" + tr("browser.category.title"),
+            listX + 4, listY + 4, 0xFFFFFFFF);
+
+        int tgW = 20;
+        int tgH = 10;
+        int tgX = listX + listW - tgW - 2;
+        int tgY = listY + 3;
+        boolean tgHover = mouseX >= tgX && mouseX <= tgX + tgW
+            && mouseY >= tgY && mouseY <= tgY + tgH;
+        guiGraphics.fill(tgX, tgY, tgX + tgW, tgY + tgH,
+            tgHover ? 0xFF6677AA : 0xFF445577);
+        guiGraphics.drawCenteredString(this.font, "◀ 收起",
+            tgX + tgW / 2, tgY + (tgH - 8) / 2 + 1, 0xFFFFFFFF);
+        this.categoryToggleBtnRect = new int[]{tgX, tgY, tgW, tgH};
+
+        // 选项列表
+        int itemY = listY + 16;
+        int itemH = 14;
+        int padX = 4;
+
+        // 第 0 项: "全部" (currentCategory == null 时选中)
+        drawCategoryItem(guiGraphics, listX, itemY, listW, itemH,
+            tr("browser.category.all"), this.currentCategory == null,
+            this.categoryItemRects.size());
+        this.categoryItemRects.add(new int[]{listX + padX, itemY, listW - padX * 2, itemH});
+        itemY += itemH;
+
+        // 第 1 项: "未分类" (currentCategory == UNCATEGORIZED 时选中)
+        drawCategoryItem(guiGraphics, listX, itemY, listW, itemH,
+            CategoryManager.UNCATEGORIZED,
+            CategoryManager.UNCATEGORIZED.equals(this.currentCategory),
+            this.categoryItemRects.size());
+        this.categoryItemRects.add(new int[]{listX + padX, itemY, listW - padX * 2, itemH});
+        itemY += itemH;
+
+        // 后面: 用户自定义分类 (顺序: getCategories() 已排好, 第 0 项是 UNCATEGORIZED, 跳过)
+        java.util.List<String> all = CategoryManager.get().getCategories();
+        for (int i = 1; i < all.size(); i++) {
+            String name = all.get(i);
+            drawCategoryItem(guiGraphics, listX, itemY, listW, itemH,
+                name, name.equals(this.currentCategory), this.categoryItemRects.size());
+            this.categoryItemRects.add(new int[]{listX + padX, itemY, listW - padX * 2, itemH});
+            itemY += itemH;
+            // 超过区域就停 (列表最多 1+1+10=12 项, 每项 14px = 168px, 区域 232px 够)
+            if (itemY + itemH > listY + listH - 20) break;
+        }
+
+        // 底部 [+] 添加分类 按钮
+        int btnY = listY + listH - 18;
+        int btnH = 14;
+        int btnW = listW - 8;
+        int btnX = listX + 4;
+        boolean btnHover = mouseX >= btnX && mouseX <= btnX + btnW
+            && mouseY >= btnY && mouseY <= btnY + btnH;
+        guiGraphics.fill(btnX, btnY, btnX + btnW, btnY + btnH,
+            btnHover ? 0xFF6677AA : 0xFF445577);
+        guiGraphics.drawCenteredString(this.font, "+ " + tr("browser.category.manage"),
+            btnX + btnW / 2, btnY + 3, 0xFFFFFFFF);
+        this.categoryAddBtnRect = new int[]{btnX, btnY, btnW, btnH};
+    }
+
+    /** 画一个分类项. idx 用于 hover 检测 (mouseX/Y 在 mouseClicked 那边比对). */
+    private void drawCategoryItem(GuiGraphics guiGraphics, int x, int y, int w, int h,
+                                  String label, boolean selected, int idx) {
+        int bg = selected ? 0xFF3A6AAA : 0xFF1A1A1A;
+        int padX = 4;
+        guiGraphics.fill(x + padX, y, x + w - padX, y + h, bg);
+        if (selected) {
+            // 选中标记
+            guiGraphics.fill(x + padX, y, x + padX + 2, y + h, 0xFF55AAFF);
+        }
+        // 文字: 截断, 留 2px padding
+        int maxW = w - padX * 2 - 4;
+        String display = label;
+        if (this.font.width(display) > maxW) {
+            // 简单截断: 按字符截到一定长度
+            while (display.length() > 1 && this.font.width(display + "..") > maxW) {
+                display = display.substring(0, display.length() - 1);
+            }
+            display = display + "..";
+        }
+        int textColor = selected ? 0xFFFFFFFF : 0xFFCCCCCC;
+        guiGraphics.drawString(this.font, display, x + padX + 4, y + 3, textColor);
+    }
+
+    /**
+     * 建筑 tab 专用卡片渲染: 2 列布局, 用更窄的卡片区 (右边给分类列表让位).
+     */
+    private void drawConstructionCardsForBuildings(GuiGraphics guiGraphics, int grayBoxX, int grayBoxY,
+                                                   int mouseX, int mouseY,
+                                                   java.util.List<ConstructionInfo> list) {
+        int[] rect = getBuildingsCardRect(grayBoxX, grayBoxY);
+        int rx = rect[0], ry = rect[1], rw = rect[2], rh = rect[3];
+
+        if (list.isEmpty()) {
+            String title, hint;
+            if (this.currentCategory != null) {
+                title = tr("browser.category.empty_in_category", this.currentCategory);
+                hint = tr("browser.category.empty_in_category_hint");
+            } else if (this.searchText != null && !this.searchText.isEmpty()) {
+                title = tr("browser.empty.no_match");
+                hint = tr("browser.empty.try_clear_search");
+            } else {
+                title = tr("browser.empty.no_buildings");
+                hint = tr("browser.empty.no_buildings_hint");
+            }
+            drawEmpty(guiGraphics, rect, title, hint);
+            return;
+        }
+
+        int cols = BUILDINGS_CARD_COLS;
+        int rows = CARD_ROWS;  // 仍然 2 行
+        int pageSize = cols * rows;
+        int pageCount = Math.max(1, (list.size() + pageSize - 1) / pageSize);
+        int page = Math.max(0, Math.min(this.scrollOffsetCards, pageCount - 1));
+        int start = page * pageSize;
+        int end = Math.min(start + pageSize, list.size());
+
+        int gridW = cols * CARD_W + (cols - 1) * CARD_GAP;
+        int gridX = rx + (rw - gridW) / 2;
+        int gridY = ry + 2;
+
+        for (int i = 0; i < (end - start); i++) {
+            int row = i / cols;
+            int col = i % cols;
+            int cx = gridX + col * (CARD_W + CARD_GAP);
+            int cy = gridY + row * (CARD_H + CARD_GAP);
+            ConstructionInfo c = list.get(start + i);
+            drawConstructionCard(guiGraphics, cx, cy, c, mouseX, mouseY);
+        }
+
+        if (pageCount > 1) {
+            drawPaginationBar(guiGraphics, rx, ry + rh - 12, rw, page, pageCount, mouseX, mouseY);
+        }
     }
 
     /**
@@ -855,17 +1243,41 @@ public class GuiExtensionPackBrowser extends GuiBase {
         }
 
         for (LocalBuilding lb : lbs) {
-            if (existingIds.contains(lb.id)) continue;
-            ConstructionInfo c = new ConstructionInfo(lb.id);
+            // 关键: 不要 skip 重复 id 的 LocalBuilding. ExtensionPack 里可能没有 .png 文件路径,
+            // LocalBuilding 里的 c.setLocalImagePath() 才是图片能渲染出来的关键.
+            // 用一个 id→ConstructionInfo 索引, 找到就回填字段, 找不到才新建.
+            ConstructionInfo existing = null;
+            for (ConstructionInfo c : all) {
+                if (c.getId().equals(lb.id)) { existing = c; break; }
+            }
+            ConstructionInfo c = existing;
+            if (c == null) {
+                c = new ConstructionInfo(lb.id);
+                all.add(c);
+            }
+            // 用 LocalBuilding 的字段回填: name (从 .txt 解析, 优先级高于 ExtensionPack 默认 id),
+            // author/desc 同理. localImagePath 补上后 hasPreviewImage() 才会返回 true.
             c.setName(lb.name);
             c.setAuthor(lb.author);
             c.setDescription(lb.description);
+            // 依赖: LocalBuilding 从 .txt "依赖" 解析出来的, 转给 ConstructionInfo 让详情页能显示出来.
+            // 不能空着不传, 否则 GuiConstructionDetail.getDependencies() 返回 null, UI 显示"无".
+            c.setDependencies(lb.dependencies);
+            // 分类: 同样从 LocalBuilding 透传, 详情页 / 列表分类都靠这个字段.
+            c.setCategory(lb.category);
             if (lb.fileExt != null && !lb.fileExt.isEmpty()) {
                 c.setFormat(lb.fileExt.startsWith(".") ? lb.fileExt.substring(1) : lb.fileExt);
             }
-            c.setLocalImagePath(lb.imagePath);
-            c.setLocalNbtPath(lb.filePath);
-            all.add(c);
+            // localImagePath: 只在 LocalBuilding 里有的 .png 路径. 如果 ExtensionPack 也有 pngData,
+            // hasPreviewImage() 仍会优先用 pngData; 这里设了 localImagePath 是为了 pngData 缺失时能 fallback.
+            if (lb.imagePath != null && Files.exists(lb.imagePath)) {
+                c.setLocalImagePath(lb.imagePath);
+            }
+            if (lb.filePath != null) {
+                c.setLocalNbtPath(lb.filePath);
+            }
+            PrefabCustomAddon.LOGGER.info("[BUILDINGS-TAB]   合并 id='{}' (lb.dependencies={} → c.dependencies={})",
+                lb.id, lb.dependencies, c.getDependencies());
         }
 
         // === 收藏的建筑排在最前面 ===
@@ -1031,24 +1443,31 @@ public class GuiExtensionPackBrowser extends GuiBase {
                                           java.util.List<ServerBuildingInfo> list) {
         // 重置 hit rect
         this.serverCardHitCount = 0;
+        this.serverCardSyncBtnRects.clear();
         if (list.isEmpty()) {
             drawEmpty(guiGraphics, new int[]{rx, ry, rw, rh}, tr("msg.no_match"), tr("msg.try_filter"));
             return;
         }
-        int cardW = rw - 8;
-        int cardH = 32;
-        int cardGap = 3;
+        // 卡片: 2 列网格, 风格跟下载/网站 tab 一致: 左缩略图 + 右文字 + 底按钮
+        int cardW = (rw - 8 - (SERVER_CARD_COLS - 1) * SERVER_CARD_GAP) / SERVER_CARD_COLS;
+        int cardH = SERVER_CARD_H;
+        int cardGap = SERVER_CARD_GAP;
         int listH = rh - 14;
         int total = list.size();
-        int pageSize = Math.max(1, (listH + cardGap) / (cardH + cardGap));
+        // pageSize = (行数 * 列数) = 每页总卡片数. 必须跟 computePageSizeForCurrentTab 的 SERVERS 分支一致,
+        // 否则 maxPage 算错, 点 [›] 翻不了页.
+        int rows = Math.max(1, (listH + cardGap) / (cardH + cardGap));
+        int pageSize = rows * SERVER_CARD_COLS;
         int pageCount = Math.max(1, (total + pageSize - 1) / pageSize);
         int page = Math.max(0, Math.min(this.scrollOffsetCards, pageCount - 1));
         int start = page * pageSize;
         int end = Math.min(start + pageSize, total);
         for (int i = start; i < end; i++) {
             int idx = i - start;
-            int cy = ry + 2 + idx * (cardH + cardGap);
-            int cx = rx + 4;
+            int col = idx % SERVER_CARD_COLS;
+            int row = idx / SERVER_CARD_COLS;
+            int cx = rx + 4 + col * (cardW + cardGap);
+            int cy = ry + 2 + row * (cardH + cardGap);
             drawServerBuildingCard(guiGraphics, cx, cy, cardW, cardH, list.get(i), mouseX, mouseY);
             // 存 hit rect
             if (this.serverCardHitCount < this.serverCardHitRects.length) {
@@ -1061,28 +1480,67 @@ public class GuiExtensionPackBrowser extends GuiBase {
         }
     }
 
+    /**
+     * 服务器建筑卡片 - 跟下载/网站 tab 同样的 "左缩略图 + 右文字 + 底按钮" 布局.
+     * 左: 36x36 缩略图 (已同步显示 PNG, 未同步显示 ↓ 占位)
+     * 右: 建筑名 (大) + 状态(已同步/未同步) + meta(扩展名 · 大小)
+     * 底: 整宽同步/查看按钮
+     */
     private void drawServerBuildingCard(GuiGraphics guiGraphics, int cx, int cy, int cw, int ch,
                                           ServerBuildingInfo b, int mouseX, int mouseY) {
         boolean hovered = mouseX >= cx && mouseX <= cx + cw && mouseY >= cy && mouseY <= cy + ch;
+        // 卡片底色
         int bg = hovered ? 0xFF2D2D2D : 0xFF1F1F1F;
         guiGraphics.fill(cx, cy, cx + cw, cy + ch, bg);
-        int border = b.synced ? 0xFF2E7D32 : 0xFFFF8C00;
-        guiGraphics.fill(cx, cy, cx + cw, cy + 1, border);
+        // 边框: 已同步绿, 未同步橙
+        int borderColor = b.synced ? 0xFF2E7D32 : 0xFFFF8C00;
+        guiGraphics.fill(cx, cy, cx + cw, cy + 1, borderColor);
         guiGraphics.fill(cx, cy + ch - 1, cx + cw, cy + ch, 0xFF555555);
         guiGraphics.fill(cx, cy, cx + 1, cy + ch, 0xFF555555);
         guiGraphics.fill(cx + cw - 1, cy, cx + cw, cy + ch, 0xFF555555);
 
-        int iconSize = ch - 8;
+        // === 上半部分: 左侧缩略图 + 右侧名称/状态/meta ===
+        // 缩略图: 已同步 或 manifest 自带 pngData 都能显示. 完全无图才显示占位符.
+        // 自适应缩略图大小: 卡片矮一点就用小一点, 避免按钮被挤掉.
+        int iconSize = (ch >= 64) ? 36 : 28;
         int iconX = cx + 4;
         int iconY = cy + 4;
-        int iconColor = b.synced ? 0xFF2E7D32 : 0xFFFF8C00;
-        guiGraphics.fill(iconX, iconY, iconX + iconSize, iconY + iconSize, iconColor);
-        String status = b.synced ? "✓" : "↓";
-        guiGraphics.drawCenteredString(this.font, status, iconX + iconSize / 2,
-            iconY + (iconSize - 8) / 2, 0xFFFFFFFF);
+        boolean canShowThumb = b.synced || (b.pngData != null && b.pngData.length > 0);
+        if (canShowThumb) {
+            ensureServerBuildingImageLoaded(b);
+            ResourceLocation tex = this.serverImageCache.get(b.buildingId);
+            if (tex != null) {
+                // uploadIconTexture 输出 ≤256x256 正方形, sheetW/H = 256 才对得上 UV.
+                drawIconNearest(guiGraphics, tex, iconX, iconY, iconSize, iconSize, 0, 0, 256, 256, 256, 256);
+            } else {
+                guiGraphics.fill(iconX, iconY, iconX + iconSize, iconY + iconSize, 0xFF1A1A1A);
+                String initial = b.getDisplayName();
+                if (initial.isEmpty()) initial = "?";
+                else initial = initial.substring(0, 1);
+                guiGraphics.drawCenteredString(this.font, initial,
+                    iconX + iconSize / 2, iconY + iconSize / 2 - 4, 0xFF88CC88);
+            }
+        } else {
+            // 完全没图 (manifest 也没带) → 显示下载占位
+            guiGraphics.fill(iconX, iconY, iconX + iconSize, iconY + iconSize, 0xFF1A1A1A);
+            guiGraphics.drawCenteredString(this.font, "↓",
+                iconX + iconSize / 2, iconY + iconSize / 2 - 8, 0xFFFF8C00);
+            String hint = tr("server.card.unsynced_hint");
+            guiGraphics.drawCenteredString(this.font, hint,
+                iconX + iconSize / 2, iconY + iconSize / 2 + 4, 0xFFAA8866);
+        }
 
-        int textX = iconX + iconSize + 6;
-        int textW = cw - iconSize - 80;
+        // 右侧文字区
+        int textX = iconX + iconSize + 5;
+        int textW = cw - iconSize - 10;
+        if (textW < 30) textW = 30;
+
+        // 文字行 Y 坐标: 卡片矮 (ch=56) 时用紧凑布局, 正常时用宽松布局
+        int nameY = (ch >= 64) ? cy + 5 : cy + 2;
+        int statusY = (ch >= 64) ? cy + 17 : cy + 12;
+        int metaY = (ch >= 64) ? cy + 29 : cy + 22;
+
+        // 1) 名称
         String name = b.getDisplayName();
         if (this.font.width(name) > textW) {
             while (this.font.width(name + "..") > textW && name.length() > 1) {
@@ -1090,19 +1548,146 @@ public class GuiExtensionPackBrowser extends GuiBase {
             }
             name = name + "..";
         }
-        guiGraphics.drawString(this.font, name, textX, cy + 6, 0xFFFFFF);
-        String meta = "§7" + (b.extension == null || b.extension.isEmpty() ? "??" : b.extension)
-            + " · " + formatFileSize(b.size) + " · sha1:" + b.getShortSha1();
-        guiGraphics.drawString(this.font, meta, textX, cy + 18, 0xFF888888);
+        guiGraphics.drawString(this.font, name, textX, nameY, 0xFFFFFFFF);
 
-        String badge = b.synced ? tr("server.badge.synced") : tr("server.badge.unsynced");
-        int badgeW = 56;
-        int badgeH = 14;
-        int badgeX = cx + cw - badgeW - 4;
-        int badgeY = cy + (ch - badgeH) / 2;
-        int badgeColor = b.synced ? 0xCC2E7D32 : 0xCCFF8C00;
-        guiGraphics.fill(badgeX, badgeY, badgeX + badgeW, badgeY + badgeH, badgeColor);
-        guiGraphics.drawCenteredString(this.font, badge, badgeX + badgeW / 2, badgeY + 3, 0xFFFFFFFF);
+        // 2) 状态行
+        String statusLine = tr(b.synced ? "server.badge.synced" : "server.badge.unsynced");
+        int statusColor = b.synced ? 0xFF55FF55 : 0xFFFFAA55;
+        guiGraphics.drawString(this.font, statusLine, textX, statusY, statusColor);
+
+        // 3) meta 行: 扩展名 · 大小
+        String ext = b.getSourceExt();
+        String meta = ext + " · " + formatFileSize(b.size);
+        guiGraphics.drawString(this.font, meta, textX, metaY, 0xFF888888);
+
+        // === 分隔线 (卡片下半) ===
+        int sepY = (ch >= 64) ? (cy + 44) : (cy + 36);
+        guiGraphics.fill(cx + 2, sepY, cx + cw - 2, sepY + 1, 0xFF444444);
+
+        // === 底部按钮: 整宽 ===
+        int btnH = (ch >= 64) ? 16 : 14;
+        int btnX = cx + 5;
+        int btnY = cy + ch - btnH - 3;
+        int btnW = cw - 10;
+        boolean btnHovered = mouseX >= btnX && mouseX <= btnX + btnW
+            && mouseY >= btnY && mouseY <= btnY + btnH;
+        if (b.synced) {
+            int btnBg = btnHovered ? 0xFF3A6A3A : 0xCC2E7D32;
+            guiGraphics.fill(btnX, btnY, btnX + btnW, btnY + btnH, btnBg);
+            guiGraphics.drawCenteredString(this.font, tr("server.button.view"),
+                btnX + btnW / 2, btnY + 4, 0xFFFFFFFF);
+        } else {
+            int btnBg = btnHovered ? 0xFFFFAA55 : 0xFFFF8C00;
+            guiGraphics.fill(btnX, btnY, btnX + btnW, btnY + btnH, btnBg);
+            guiGraphics.drawCenteredString(this.font, tr("server.button.sync_one"),
+                btnX + btnW / 2, btnY + 4, 0xFFFFFFFF);
+        }
+        this.serverCardSyncBtnRects.put(b.buildingId, new int[]{btnX, btnY, btnW, btnH});
+    }
+
+    /**
+     * 加载服务器建筑缩略图. 优先用 manifest 自带的 pngData (新协议),
+     * 没图或未同步时才去 server-cache/ 找同前缀 .png 或 zip 内 .png.
+     * <p><strong>已废弃"拓展包"概念</strong>: 同步/未同步建筑都应该能显示缩略图,
+     * 区别仅是数据源 (manifest pngData vs 本地文件). 完全没图才显示占位符.</p>
+     */
+    private void ensureServerBuildingImageLoaded(ServerBuildingInfo b) {
+        if (b == null || b.buildingId == null) return;
+        final String key = b.buildingId;
+        if (this.serverImageCache.containsKey(key)) return;
+        if (this.serverImageLoading.contains(key)) return;
+        // 1) manifest 自带 pngData → 直接走异步加载, 同步/未同步都生效
+        // 2) 已同步 → 可走 server-cache/ 兜底路径
+        boolean hasPngData = b.pngData != null && b.pngData.length > 0;
+        if (!hasPngData && !b.synced) return;  // 啥都没有, 跳过
+        this.serverImageLoading.add(key);
+
+        CompletableFuture.runAsync(() -> {
+            try {
+                byte[] data = null;
+                // 1) 优先: manifest 自带 pngData (新协议, 服务端发清单时一起塞过来)
+                if (b.pngData != null && b.pngData.length > 0) {
+                    data = b.pngData;
+                } else {
+                    // 2) 兜底: 从 server-cache/ 找
+                    Path cacheDir = com.prefab.addon.extension.ExtensionPackManager.getInstance().getServerCacheDir();
+                    if (cacheDir != null && Files.exists(cacheDir)) {
+                        String srcFile = b.sourceFileName == null ? "" : b.sourceFileName.toLowerCase();
+                        if (srcFile.endsWith(".zip")) {
+                            // 拓展包: 读 zip 内第一个 .png
+                            Path zipPath = findServerFile(cacheDir, b.packName == null ? b.buildingId : b.packName, ".zip");
+                            if (zipPath == null) zipPath = findServerFile(cacheDir, b.buildingId, ".zip");
+                            if (zipPath != null) {
+                                try (java.util.zip.ZipInputStream zis =
+                                    new java.util.zip.ZipInputStream(Files.newInputStream(zipPath))) {
+                                    java.util.zip.ZipEntry ze;
+                                    while ((ze = zis.getNextEntry()) != null) {
+                                        if (ze.getName().toLowerCase().endsWith(".png") && !ze.isDirectory()) {
+                                            java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+                                            byte[] buf = new byte[4096];
+                                            int n;
+                                            while ((n = zis.read(buf)) > 0) bos.write(buf, 0, n);
+                                            data = bos.toByteArray();
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            // 单文件建筑: 找同名 .png
+                            for (String imgExt : new String[]{".png", ".jpg", ".jpeg", ".webp"}) {
+                                Path imgPath = findServerFile(cacheDir, b.buildingId, imgExt);
+                                if (imgPath != null) {
+                                    data = Files.readAllBytes(imgPath);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                if (data == null || data.length == 0) {
+                    Minecraft.getInstance().execute(() -> {
+                        this.serverImageCache.put(key, null);
+                        this.serverImageLoading.remove(key);
+                    });
+                    return;
+                }
+                final byte[] finalData = data;
+                Minecraft.getInstance().execute(() -> {
+                    try (java.io.InputStream is = new java.io.ByteArrayInputStream(finalData)) {
+                        java.awt.image.BufferedImage img = javax.imageio.ImageIO.read(is);
+                        if (img == null) {
+                            this.serverImageCache.put(key, null);
+                        } else {
+                            DynamicTexture tex = uploadIconTexture(img);
+                            if (tex == null) {
+                                this.serverImageCache.put(key, null);
+                            } else {
+                                ResourceLocation loc = Minecraft.getInstance().getTextureManager()
+                                    .register("prefab_server_" + key, tex);
+                                this.serverImageCache.put(key, loc);
+                            }
+                        }
+                    } catch (Exception e) {
+                        PrefabCustomAddon.LOGGER.warn("[SERVER-IMG] {} load failed: {}", key, e.toString());
+                        this.serverImageCache.put(key, null);
+                    } finally {
+                        this.serverImageLoading.remove(key);
+                    }
+                });
+            } catch (Exception e) {
+                PrefabCustomAddon.LOGGER.warn("[SERVER-IMG] {} read failed: {}", key, e.toString());
+                Minecraft.getInstance().execute(() -> {
+                    this.serverImageCache.put(key, null);
+                    this.serverImageLoading.remove(key);
+                });
+            }
+        });
+    }
+
+    private static Path findServerFile(Path dir, String baseName, String ext) {
+        Path p = dir.resolve(baseName + ext);
+        return Files.exists(p) ? p : null;
     }
 
     /**
@@ -1129,100 +1714,6 @@ public class GuiExtensionPackBrowser extends GuiBase {
             return;
         }
         drawConstructionCards(guiGraphics, grayBoxX, grayBoxY, mouseX, mouseY, filtered);
-    }
-
-    // ----- Tab 5: 原版 (只读浏览) -----
-    // 卡片: 缩略图 (原版 GUI 贴图) + 建筑名
-    // 点击: 打开 GuiVanillaStructureView (左边风格按钮 + 右边 3D 预览, 可切换风格)
-    // 不可建造 - 这是只读浏览 tab, 让玩家在不合成蓝图的情况下预览原版所有建筑
-    private void drawTabVanilla(GuiGraphics guiGraphics, int grayBoxX, int grayBoxY, int mouseX, int mouseY) {
-        int[] r = getContentRect(grayBoxX, grayBoxY);
-        int rx = r[0], ry = r[1], rw = r[2], rh = r[3];
-        var list = VanillaStructureRegistry.ALL;
-        if (list.isEmpty()) {
-            drawEmpty(guiGraphics, r, tr("vanilla.empty.title"), tr("vanilla.empty.hint"));
-            return;
-        }
-        // prefab mod 没装时给个明确提示
-        if (!VanillaStructureRegistry.isPrefabModAvailable()) {
-            drawEmpty(guiGraphics, r, tr("vanilla.missing.title"),
-                tr("vanilla.missing.hint"));
-            return;
-        }
-
-        int pageSize = CARD_COLS * CARD_ROWS;
-        int pageCount = Math.max(1, (list.size() + pageSize - 1) / pageSize);
-        int page = Math.max(0, Math.min(this.scrollOffsetCards, pageCount - 1));
-        int start = page * pageSize;
-        int end = Math.min(start + pageSize, list.size());
-
-        int gridW = CARD_COLS * CARD_W + (CARD_COLS - 1) * CARD_GAP;
-        int gridX = rx + (rw - gridW) / 2;
-        int gridY = ry + 4;
-
-        for (int i = 0; i < (end - start); i++) {
-            int row = i / CARD_COLS;
-            int col = i % CARD_COLS;
-            int cx = gridX + col * (CARD_W + CARD_GAP);
-            int cy = gridY + row * (CARD_H + CARD_GAP);
-            VanillaStructureRegistry.Entry entry = list.get(start + i);
-            drawVanillaCard(guiGraphics, cx, cy, entry, mouseX, mouseY);
-        }
-
-        if (pageCount > 1) {
-            drawPaginationBar(guiGraphics, rx, ry + rh - 12, rw, page, pageCount, mouseX, mouseY);
-        }
-    }
-
-    /**
-     * 绘制单个原版建筑卡片.
-     * 缩略图 = 第一个变种的 GUI 贴图, 加载中显示占位.
-     */
-    private void drawVanillaCard(GuiGraphics guiGraphics, int cx, int cy, VanillaStructureRegistry.Entry entry, int mouseX, int mouseY) {
-        boolean hovered = mouseX >= cx && mouseX <= cx + CARD_W
-            && mouseY >= cy && mouseY <= cy + CARD_H;
-        int bg = hovered ? 0xFF3A3A3A : 0xFF1F1F1F;
-        int border = hovered ? 0xFF55AAFF : 0xFF555555;
-        guiGraphics.fill(cx, cy, cx + CARD_W, cy + CARD_H, bg);
-        guiGraphics.fill(cx, cy, cx + CARD_W, cy + 1, border);
-        guiGraphics.fill(cx, cy + CARD_H - 1, cx + CARD_W, cy + CARD_H, border);
-        guiGraphics.fill(cx, cy, cx + 1, cy + CARD_H, border);
-        guiGraphics.fill(cx + CARD_W - 1, cy, cx + CARD_W, cy + CARD_H, border);
-
-        // 缩略图: 60x60, 用第一个变种的 thumb
-        int iconSize = 60;
-        int iconX = cx + (CARD_W - iconSize) / 2;
-        int iconY = cy + 4;
-        if (!entry.variants.isEmpty()) {
-            VanillaStructureRegistry.Variant first = entry.variants.get(0);
-            GuiThumbRenderer.drawThumb(guiGraphics, iconX, iconY, iconSize, iconSize, first.thumb);
-        } else {
-            guiGraphics.fill(iconX, iconY, iconX + iconSize, iconY + iconSize, 0xFF1A1A1A);
-        }
-
-        // 建筑名
-        String name = entry.displayName;
-        if (name.length() > 10) name = name.substring(0, 8) + "..";
-        guiGraphics.drawCenteredString(this.font, name, cx + CARD_W / 2, cy + iconSize + 6, 0xFFFFFF);
-    }
-
-    /**
-     * 预加载当前页所有建筑的缩略图, 避免卡片全空.
-     * 每页最多 6 个 (CARD_COLS * CARD_ROWS).
-     */
-    private void preloadVanillaThumbsForCurrentPage() {
-        var list = VanillaStructureRegistry.ALL;
-        int pageSize = CARD_COLS * CARD_ROWS;
-        int page = Math.max(0, Math.min(this.scrollOffsetCards,
-            Math.max(0, (list.size() + pageSize - 1) / pageSize - 1)));
-        int start = page * pageSize;
-        int end = Math.min(start + pageSize, list.size());
-        for (int i = start; i < end; i++) {
-            VanillaStructureRegistry.Entry e = list.get(i);
-            if (!e.variants.isEmpty()) {
-                GuiThumbRenderer.preload(e.variants.get(0).thumb);
-            }
-        }
     }
 
     // ----- Tab 5: 下载 (网站建筑市场) -----
@@ -1448,6 +1939,12 @@ public class GuiExtensionPackBrowser extends GuiBase {
         this.cloudCardRecallBtnRects.clear();
         this.cloudCardSummonBtnRects.clear();
         this.cloudCardDeleteBtnRects.clear();
+        this.cloudCardNavigateBtnRects.clear();
+        // 切页时清掉调试日志集合, 避免历史 buildingId 永远不再打日志
+        // (但只在第一页清一次, 用一个 dirty 标记控制)
+        if (this.navigateDebugLogged.size() > 200) {
+            this.navigateDebugLogged.clear();
+        }
 
         // 1) 顶部状态行: 数量 + 同步提示
         java.util.List<CloudBuilding> list = CloudBuildingClientCache.getInstance().getAll();
@@ -1487,7 +1984,10 @@ public class GuiExtensionPackBrowser extends GuiBase {
         int cardW = (rw - 8 - (CLOUD_CARD_COLS - 1) * CLOUD_CARD_GAP) / CLOUD_CARD_COLS;
         int cardH = CLOUD_CARD_H;
         int total = list.size();
-        int pageSize = Math.max(1, (listH + CLOUD_CARD_GAP) / (cardH + CLOUD_CARD_GAP));
+        // pageSize = 行数 × 列数 = 一页总卡片数. 必须跟 computePageSizeForCurrentTab 的 CLOUD 分支一致,
+        // 否则 maxPage 算错, 翻页按钮按一行一翻, 一行就 2 个, 一页只能放 2 个.
+        int rows = Math.max(1, (listH + CLOUD_CARD_GAP) / (cardH + CLOUD_CARD_GAP));
+        int pageSize = rows * CLOUD_CARD_COLS;
         int pageCount = Math.max(1, (total + pageSize - 1) / pageSize);
         int page = Math.max(0, Math.min(this.scrollOffsetCards, pageCount - 1));
         int start = page * pageSize;
@@ -1643,6 +2143,49 @@ public class GuiExtensionPackBrowser extends GuiBase {
 
         this.cloudCardRecallBtnRects.put(b.id, new int[]{recallX, btnY, recallW, btnH});
         this.cloudCardSummonBtnRects.put(b.id, new int[]{summonX, btnY, summonW, btnH});
+
+        // 右上角「导航」按钮: 把该建筑最近一次放出的位置 (placedAt) 标到 Xaero 地图上.
+        // 仅在玩家装了 Xaero's World Map/Minimap 且建筑有过实际放出位置时显示.
+        // 没装 Xaero: 整个按钮不画, hit-rect 也不写 → 鼠标点不到.
+        // placed=true 或 false 都行: 已收回的建筑 placedAt 仍保留着, 玩家想回去也能标.
+        //   只有从未放出的建筑 (placedAt = BlockPos.ZERO) 才不显示.
+        boolean hasRealPlacedAt = b.placedAt != null
+            && (b.placedAt.getX() != 0 || b.placedAt.getY() != 0 || b.placedAt.getZ() != 0);
+        boolean xaeroAvail = XaeroWaypointBridge.isAvailable();
+        // 调试日志: 进云端 tab 后第一次画这个 building 时, 打印一次状态
+        if (!navigateDebugLogged.contains(b.id)) {
+            navigateDebugLogged.add(b.id);
+            PrefabCustomAddon.LOGGER.info("[CLOUD-NAV] building='{}' placed={} placedAt={} xaeroAvail={} → {}",
+                b.name, b.placed, b.placedAt, xaeroAvail,
+                (xaeroAvail && hasRealPlacedAt) ? "BUTTON_SHOWN" : "BUTTON_HIDDEN");
+        }
+        if (xaeroAvail && hasRealPlacedAt) {
+            int navSize = 10;
+            // 紧贴 × 按钮左侧 (gap=2)
+            int delXForNav = cx + cw - 3 - 10;         // × 按钮左沿, delSize=10
+            int navX = delXForNav - 2 - navSize;       // 导航按钮左沿: × 按钮左侧再减 2px 间隔
+            int navY = cy + 3;
+            boolean navHovered = mouseX >= navX && mouseX <= navX + navSize
+                && mouseY >= navY && mouseY <= navY + navSize;
+            // 颜色: 蓝绿 (跟 XaeroWaypointBridge.COLOR_BUILDING 一致), hover 时变亮
+            int navColor = navHovered ? 0xFF88FF88 : 0xFF55AA55;
+            // 画一个迷你"地图标记"图标: 圆点 + 下尖 (5 像素圆 + 1 像素尾巴)
+            int cx2 = navX + navSize / 2;
+            int cy2 = navY + navSize / 2;
+            // 圆点 (3x3)
+            guiGraphics.fill(cx2 - 1, cy2 - 2, cx2 + 2, cy2 - 1, navColor);
+            guiGraphics.fill(cx2 - 2, cy2 - 1, cx2 + 3, cy2,     navColor);
+            guiGraphics.fill(cx2 - 1, cy2,     cx2 + 2, cy2 + 1, navColor);
+            // 尾巴 (1 像素)
+            guiGraphics.fill(cx2,     cy2 + 1, cx2 + 1, cy2 + 2, navColor);
+            // hover 时多画一圈高亮
+            if (navHovered) {
+                guiGraphics.fill(cx2 - 2, cy2 - 3, cx2 + 3, cy2 - 2, 0x55FFFFFF);
+                guiGraphics.fill(cx2 - 3, cy2 - 2, cx2 + 4, cy2 - 1, 0x55FFFFFF);
+                guiGraphics.fill(cx2 - 3, cy2 + 1, cx2 + 4, cy2 + 2, 0x55FFFFFF);
+            }
+            this.cloudCardNavigateBtnRects.put(b.id, new int[]{navX, navY, navSize, navSize});
+        }
 
         // 右上角删除按钮: 10x10 的小 ×, hover 时变红
         int delSize = 10;
@@ -1866,6 +2409,62 @@ public class GuiExtensionPackBrowser extends GuiBase {
         return false;
     }
 
+    /**
+     * 分类列表点击处理. 仅在 BUILDINGS tab 调用. 命中:
+     *   - [◀] / [▶] 收起/展开按钮 → 切换 categoryPanelHidden
+     *   - 单个分类项 → 设 currentCategory (再次点同一项 = 取消, 走回 "全部")
+     *   - [+] 管理按钮 → 弹 GuiCategoryManager
+     * 没命中返回 false.
+     */
+    private boolean handleCategoryListClick(int mouseX, int mouseY) {
+        // 1) 收起/展开按钮 (最优先, 任何状态下都有)
+        if (isHovered(this.categoryToggleBtnRect, mouseX, mouseY)) {
+            this.categoryPanelHidden = !this.categoryPanelHidden;
+            this.scrollOffsetCards = 0;  // 收起后宽了, 翻页重置
+            return true;
+        }
+        // 收起状态: 面板其它部分不接收点击
+        if (this.categoryPanelHidden) {
+            return false;
+        }
+        // 2) 单个分类项
+        for (int idx = 0; idx < this.categoryItemRects.size(); idx++) {
+            int[] r = this.categoryItemRects.get(idx);
+            if (isHovered(r, mouseX, mouseY)) {
+                String newCat;
+                if (idx == 0) {
+                    newCat = null;  // "全部"
+                } else if (idx == 1) {
+                    newCat = CategoryManager.UNCATEGORIZED;
+                } else {
+                    // idx 2..N: 对应 CategoryManager.getCategories() 第 1..(N-1) 项
+                    java.util.List<String> all = CategoryManager.get().getCategories();
+                    int realIdx = idx - 1;  // 跳过 UNCATEGORIZED
+                    if (realIdx >= 0 && realIdx < all.size()) {
+                        newCat = all.get(realIdx);
+                    } else {
+                        newCat = null;
+                    }
+                }
+                // 再次点同一项 = 取消, 走 "全部"
+                if (java.util.Objects.equals(newCat, this.currentCategory)) {
+                    this.currentCategory = null;
+                } else {
+                    this.currentCategory = newCat;
+                }
+                this.scrollOffsetCards = 0;  // 切分类时重置翻页
+                return true;
+            }
+        }
+        // 3) [+] 管理按钮
+        if (isHovered(this.categoryAddBtnRect, mouseX, mouseY)) {
+            // 弹独立 LDLib2 屏, 关闭后回到本屏 (玩家分类列表会自动刷新)
+            GuiCategoryManager.openStandalone();
+            return true;
+        }
+        return false;
+    }
+
     /** 打开 .minecraft/prefab-download/ 文件夹. 不存在时自动创建. */
     private void openDownloadFolder() {
         Path dir = LocalBuildingScanner.getDownloadRoot();
@@ -1898,7 +2497,7 @@ public class GuiExtensionPackBrowser extends GuiBase {
         int iconY = cy + (ch - iconSize) / 2;
         ResourceLocation tex = this.localImageCache.get(lb.id);
         if (tex != null) {
-            drawIconNearest(guiGraphics, tex, iconX, iconY, iconSize, iconSize, 0, 0, 48, 48, 48, 48);
+            drawIconNearest(guiGraphics, tex, iconX, iconY, iconSize, iconSize, 0, 0, 256, 256, 256, 256);
         } else {
             guiGraphics.fill(iconX, iconY, iconX + iconSize, iconY + iconSize, 0xFF1A1A1A);
             String initial = lb.name.isEmpty() ? "?" : lb.name.substring(0, 1);
@@ -2086,22 +2685,22 @@ public class GuiExtensionPackBrowser extends GuiBase {
         guiGraphics.fill(cx, cy, cx + 1, cy + CARD_H, border);
         guiGraphics.fill(cx + CARD_W - 1, cy, cx + CARD_W, cy + CARD_H, border);
 
-        // 预览图 (60x60) - 优先级:
-        //   1) 建筑自定义 PNG 图标 (GuiCreateBuildingInfo 里"选择图片..."按钮设的)
-        //   2) 缩略图缓存 (3D 详情预览自动截屏)
-        //   3) 占位 (首字符)
-        int iconSize = 60;
-        int iconX = cx + (CARD_W - iconSize) / 2;
-        int iconY = cy + 4;
+        // 预览图: 铺满卡片宽度 (iconW = CARD_W - 2), 高度铺到 iconH = 64,
+        //   留 12px 底部空间给建筑名. 纹理是 256x256 正方形 (uploadIconTexture 已中心裁剪 + 缩放),
+        //   这里直接拉伸到卡片宽, 避免之前 60x60 居中露出的 16px 左右 + 4px 上下 黑边.
+        int iconW = CARD_W - 2;
+        int iconH = CARD_H - 16;  // 64, 留 14 给建筑名
+        int iconX = cx + 1;
+        int iconY = cy + 1;
         boolean iconDrawn = false;
         if (c.hasPreviewImage()) {
             // 1) 建筑自带 PNG 图标 (拓展包/独立 .nbt 旁边的 .png) - 优先用
             ResourceLocation tex = ensurePreviewTextureLoaded(c);
             if (tex != null) {
-                drawIconNearest(guiGraphics, tex, iconX, iconY, iconSize, iconSize, 0, 0, 48, 48, 48, 48);
+                drawIconNearest(guiGraphics, tex, iconX, iconY, iconW, iconH, 0, 0, 256, 256, 256, 256);
                 iconDrawn = true;
             } else {
-                guiGraphics.fill(iconX, iconY, iconX + iconSize, iconY + iconSize, 0xFF1A1A1A);
+                guiGraphics.fill(iconX, iconY, iconX + iconW, iconY + iconH, 0xFF1A1A1A);
             }
         }
         if (!iconDrawn && com.prefab.addon.client.ThumbnailCache.hasCached(c)) {
@@ -2110,23 +2709,23 @@ public class GuiExtensionPackBrowser extends GuiBase {
             if (pngData != null) {
                 ResourceLocation tex = ensureCachedThumbnailTextureLoaded(c, pngData);
                 if (tex != null) {
-                    drawIconNearest(guiGraphics, tex, iconX, iconY, iconSize, iconSize, 0, 0, 96, 96, 96, 96);
+                    drawIconNearest(guiGraphics, tex, iconX, iconY, iconW, iconH, 0, 0, 256, 256, 256, 256);
                     iconDrawn = true;
                 } else {
-                    guiGraphics.fill(iconX, iconY, iconX + iconSize, iconY + iconSize, 0xFF1A1A1A);
+                    guiGraphics.fill(iconX, iconY, iconX + iconW, iconY + iconH, 0xFF1A1A1A);
                 }
             } else {
-                guiGraphics.fill(iconX, iconY, iconX + iconSize, iconY + iconSize, 0xFF1A1A1A);
+                guiGraphics.fill(iconX, iconY, iconX + iconW, iconY + iconH, 0xFF1A1A1A);
             }
         }
         if (!iconDrawn) {
             // 3) 无图标无缓存 - 显示占位 (打开 detail 后会自动生成缓存)
-            guiGraphics.fill(iconX, iconY, iconX + iconSize, iconY + iconSize, 0xFF1A1A1A);
+            guiGraphics.fill(iconX, iconY, iconX + iconW, iconY + iconH, 0xFF1A1A1A);
             String ch = c.getName().isEmpty() ? "?" : c.getName().substring(0, 1);
-            guiGraphics.drawCenteredString(this.font, ch, iconX + iconSize / 2, iconY + iconSize / 2 - 4, 0xFF888888);
+            guiGraphics.drawCenteredString(this.font, ch, iconX + iconW / 2, iconY + iconH / 2 - 4, 0xFF888888);
         }
 
-        // 建筑名 (2 行). 已收藏时在前面加一个星星图标
+        // 建筑名 (底部 12px). 已收藏时在前面加一个星星图标
         String packKey = c.getPack() == null
             ? ExtensionPackManager.STANDALONE_PACKAGE
             : c.getPack().getPackageName();
@@ -2137,7 +2736,7 @@ public class GuiExtensionPackBrowser extends GuiBase {
         if (name.length() > nameMaxLen) name = name.substring(0, nameMaxLen - 2) + "..";
         String displayName = star + name;
         int nameColor = isFav ? 0xFFFFDD66 : 0xFFFFFF;
-        guiGraphics.drawCenteredString(this.font, displayName, cx + CARD_W / 2, cy + iconSize + 6, nameColor);
+        guiGraphics.drawCenteredString(this.font, displayName, cx + CARD_W / 2, iconY + iconH + 2, nameColor);
     }
 
     // ============================================================
@@ -2146,25 +2745,33 @@ public class GuiExtensionPackBrowser extends GuiBase {
 
     /** 返回 (page 起点) 在卡片列表中的索引; 找不到返回 -1. */
     private int cardHitTest(int mouseX, int mouseY, int totalCount) {
+        return cardHitTest(mouseX, mouseY, totalCount, CARD_COLS, getContentRect(
+            computePanelPos()[0], computePanelPos()[1]));
+    }
+
+    /** 建筑 tab 用: 2 列 + 减掉分类列表宽度的卡片区. */
+    private int cardHitTestBuildings(int mouseX, int mouseY, int totalCount) {
         int[] pos = computePanelPos();
-        int grayBoxX = pos[0];
-        int grayBoxY = pos[1];
-        int[] rect = getContentRect(grayBoxX, grayBoxY);
+        return cardHitTest(mouseX, mouseY, totalCount, BUILDINGS_CARD_COLS,
+            getBuildingsCardRect(pos[0], pos[1]));
+    }
+
+    private int cardHitTest(int mouseX, int mouseY, int totalCount, int cols, int[] rect) {
         int rx = rect[0], ry = rect[1], rw = rect[2], rh = rect[3];
 
         if (mouseX < rx || mouseX > rx + rw || mouseY < ry || mouseY > ry + rh) return -1;
 
-        int pageSize = CARD_COLS * CARD_ROWS;
+        int pageSize = cols * CARD_ROWS;
         int pageCount = Math.max(1, (totalCount + pageSize - 1) / pageSize);
         int page = Math.max(0, Math.min(this.scrollOffsetCards, pageCount - 1));
 
-        int gridW = CARD_COLS * CARD_W + (CARD_COLS - 1) * CARD_GAP;
+        int gridW = cols * CARD_W + (cols - 1) * CARD_GAP;
         int gridX = rx + (rw - gridW) / 2;
         int gridY = ry + 4;
 
         for (int i = 0; i < pageSize; i++) {
-            int row = i / CARD_COLS;
-            int col = i % CARD_COLS;
+            int row = i / cols;
+            int col = i % cols;
             int cx = gridX + col * (CARD_W + CARD_GAP);
             int cy = gridY + row * (CARD_H + CARD_GAP);
             if (mouseX >= cx && mouseX <= cx + CARD_W && mouseY >= cy && mouseY <= cy + CARD_H) {
@@ -2203,9 +2810,15 @@ public class GuiExtensionPackBrowser extends GuiBase {
         } else {
             switch (this.currentTab) {
                 case BUILDINGS: {
-                    java.util.List<ConstructionInfo> list = filterBySearch(
-                        getMergedConstructionsForBuildingsTab(), this.searchText);
-                    int idx = cardHitTest(mx, my, list.size());
+                    // 2a) 分类列表点击 (在卡片前判断 — 如果点中了分类, 就别再走卡片)
+                    if (handleCategoryListClick(mx, my)) {
+                        return true;
+                    }
+                    // 2b) 卡片: 应用分类 + 搜索过滤, 2 列布局
+                    java.util.List<ConstructionInfo> all = getMergedConstructionsForBuildingsTab();
+                    java.util.List<ConstructionInfo> byCat = filterByCategory(all, this.currentCategory);
+                    java.util.List<ConstructionInfo> list = filterBySearch(byCat, this.searchText);
+                    int idx = cardHitTestBuildings(mx, my, list.size());
                     if (idx >= 0) {
                         openConstructionDetail(list.get(idx));
                         return true;
@@ -2276,6 +2889,77 @@ public class GuiExtensionPackBrowser extends GuiBase {
                         // 弹窗期间吞掉其他点击, 防止误操作其他卡片
                         return true;
                     }
+                    // 1.7) 「导航」按钮: 命中 → 在 Xaero 地图上标一个航点
+                    //     守门条件 (绘制端已经过): Xaero 已装 + placedAt 非 ZERO.
+                    //     已收回但放过出的建筑也能用, 标的是最近一次位置.
+                    for (java.util.Map.Entry<String, int[]> e : this.cloudCardNavigateBtnRects.entrySet()) {
+                        int[] r = e.getValue();
+                        if (mx >= r[0] && mx <= r[0] + r[2] && my >= r[1] && my <= r[1] + r[3]) {
+                            String id = e.getKey();
+                            CloudBuilding b = CloudBuildingClientCache.getInstance().getById(id);
+                            if (b == null || b.placedAt == null
+                                || (b.placedAt.getX() == 0 && b.placedAt.getY() == 0 && b.placedAt.getZ() == 0)) {
+                                // 理论上不会到这里, 防御一下
+                                setStatus("✗ 该建筑暂无世界位置", 0xFF5555);
+                                return true;
+                            }
+                            // 1) 解析维度 (从 b.dimensionId 字符串 → ResourceKey; 失败 fallback 到当前客户端所在维度)
+                            ResourceKey<Level> dim;
+                            try {
+                                if (b.dimensionId != null && !b.dimensionId.isEmpty()) {
+                                    ResourceLocation dimLoc = ResourceLocation.parse(b.dimensionId);
+                                    dim = ResourceKey.create(Registries.DIMENSION, dimLoc);
+                                } else {
+                                    dim = Minecraft.getInstance().level != null
+                                        ? Minecraft.getInstance().level.dimension()
+                                        : ResourceKey.create(Registries.DIMENSION,
+                                            ResourceLocation.withDefaultNamespace("overworld"));
+                                }
+                            } catch (Throwable t) {
+                                dim = ResourceKey.create(Registries.DIMENSION,
+                                    ResourceLocation.withDefaultNamespace("overworld"));
+                            }
+                            // 2) Xaero 航点 (走反射, 没装 Xaero 时 isAvailable()=false, 静默失败)
+                            //    命名: "→ <建筑名> [已收回]" 让玩家一眼看出是历史位置
+                            //    切换逻辑: 已有 → 取消, 没有 → 添加. 跨状态名也要兜底
+                            //    (建筑被召回/放出后, 旧航点还在, 同名 remove 不到, 试另一种).
+                            //    用 hasWaypoint() 区分"没找到"和"找到了但 remove 失败", 避免误添加重复航点.
+                            String wpName = b.placed
+                                ? "→ " + b.name
+                                : "→ " + b.name + " (已收回)";
+                            String otherWpName = b.placed
+                                ? "→ " + b.name + " (已收回)"
+                                : "→ " + b.name;
+                            boolean exists = XaeroWaypointBridge.hasWaypoint(wpName);
+                            if (!exists) {
+                                exists = XaeroWaypointBridge.hasWaypoint(otherWpName);
+                            }
+                            if (exists) {
+                                // 找到了 → 删. 优先删当前状态同名, 找不到再删跨状态那个
+                                boolean removed = XaeroWaypointBridge.removeWaypoint(wpName);
+                                if (!removed) removed = XaeroWaypointBridge.removeWaypoint(otherWpName);
+                                if (removed) {
+                                    setStatus("✗ 已取消航点: " + b.name, 0xFFFF55);
+                                } else {
+                                    // 罕见: 找到了但 remove API 不可用. 不能继续 add, 否则变成两条.
+                                    setStatus("✗ 找到航点但无法删除 (Xaero 26.4.2 remove API 不兼容?)", 0xFF5555);
+                                }
+                            } else {
+                                boolean ok = XaeroWaypointBridge.addWaypoint(
+                                    dim, b.placedAt, wpName, XaeroWaypointBridge.COLOR_BUILDING);
+                                if (ok) {
+                                    setStatus("📍 已标航点: " + b.name + " @ "
+                                        + b.placedAt.toShortString()
+                                        + (b.placed ? "" : " §7(已收回, 历史位置)"), 0x55FF55);
+                                } else {
+                                    String reason = com.prefab.addon.integration.xaero.XaeroWaypointBridge.consumeLastAddError();
+                                    if (reason == null || reason.isEmpty()) reason = "Xaero 不可用";
+                                    setStatus("✗ 标航点失败: " + reason, 0xFF5555);
+                                }
+                            }
+                            return true;
+                        }
+                    }
                     // 2) 「放出」按钮: 命中 → 开启世界预览 (走 CloudPreview.start, 不直接发包)
                     //    旧实现: CloudBuildingClientCache.requestSummon(id) → 服务端立即在玩家头顶 1 格
                     //    重建方块, 玩家无法选位置. 现在: 走世界内预览, 玩家用方向键/CTRL 选位置,
@@ -2334,10 +3018,35 @@ public class GuiExtensionPackBrowser extends GuiBase {
                             return true;
                         }
                     }
-                    // 3) 卡片点击: 未同步 → 单卡片同步; 已同步 → 状态提示
+                    // 3) 卡片点击: 先看同步按钮 rect
+                    for (java.util.Map.Entry<String, int[]> e : this.serverCardSyncBtnRects.entrySet()) {
+                        int[] r = e.getValue();
+                        if (mx >= r[0] && mx <= r[0] + r[2] && my >= r[1] && my <= r[1] + r[3]) {
+                            // 找对应 ServerBuildingInfo
+                            java.util.List<ServerBuildingInfo> all =
+                                ExtensionPackManager.getInstance().getServerBuildings();
+                            ServerBuildingInfo target = null;
+                            for (ServerBuildingInfo b : all) {
+                                if (e.getKey().equals(b.buildingId)) { target = b; break; }
+                            }
+                            if (target == null) return true;
+                            if (target.synced) {
+                                // 已同步 → 进入 detail
+                                openSyncedServerBuildingDetail(target);
+                            } else {
+                                if (sync.isSyncing()) {
+                                    setStatus("同步中, 请稍候...", 0xFFAA55);
+                                } else {
+                                    sync.requestSyncSingle(target.buildingId);
+                                    setStatus("开始同步: " + target.getDisplayName(), 0x55AAFF);
+                                }
+                            }
+                            return true;
+                        }
+                    }
+                    // 4) 卡片主体点击: 已同步 → detail; 未同步 → 同步
                     int cardIdx = serverCardHitTest(mx, my);
                     if (cardIdx >= 0) {
-                        // 重新拿当前筛选后的列表 (跟 drawTabServers 保持一致)
                         java.util.List<ServerBuildingInfo> all =
                             ExtensionPackManager.getInstance().getServerBuildings();
                         java.util.List<ServerBuildingInfo> filtered = new java.util.ArrayList<>();
@@ -2349,12 +3058,12 @@ public class GuiExtensionPackBrowser extends GuiBase {
                         if (cardIdx < filtered.size()) {
                             ServerBuildingInfo target = filtered.get(cardIdx);
                             if (target.synced) {
-                                setStatus("✓ 「" + target.getDisplayName() + "」已同步, 可直接建造", 0x55FF55);
+                                openSyncedServerBuildingDetail(target);
                             } else {
                                 if (sync.isSyncing()) {
                                     setStatus("同步中, 请稍候...", 0xFFAA55);
                                 } else {
-                                    sync.requestSyncSingle(target.name);
+                                    sync.requestSyncSingle(target.buildingId);
                                     setStatus("开始同步: " + target.getDisplayName(), 0x55AAFF);
                                 }
                             }
@@ -2434,16 +3143,7 @@ public class GuiExtensionPackBrowser extends GuiBase {
                     }
                     return true;  // consume click
                 }
-                case VANILLA: {
-                    // 原版 tab: 卡片点击 → 打开 GuiVanillaStructureView
-                    int idx = cardHitTest(mx, my, VanillaStructureRegistry.ALL.size());
-                    if (idx >= 0) {
-                        VanillaStructureRegistry.Entry entry = VanillaStructureRegistry.ALL.get(idx);
-                        GuiVanillaStructureView.open(entry);
-                        return true;
-                    }
-                    break;
-                }
+                // 注: 原版 tab 已删除 (Modrinth 版权审核), VANILLA 枚举值不存在, 不会进任何 case.
             }
         }
 
@@ -2465,12 +3165,36 @@ public class GuiExtensionPackBrowser extends GuiBase {
      * (cardH=70, 只算行数不算列数). 结果: 视觉显示 "1/2" 但 maxPage 算成 0, 点 [›] 完全无效.</p>
      */
     private int computePageSizeForCurrentTab() {
-        if (this.currentTab == Tab.CLOUD || this.currentTab == Tab.DOWNLOAD) {
-            // 跟 drawTabCloud / drawTabDownload 完全一致
+        if (this.currentTab == Tab.CLOUD) {
+            // 跟 drawTabCloud 完全一致
             int rh = PANEL_H - 8;                  // getContentRect 的 rh (无 search)
             int listH = rh - 22;                   // draw 里 listH = rh - 22
-            int cardH = 70;                        // draw 里 cardH 写死 70
-            return Math.max(1, (listH + CARD_GAP) / (cardH + CARD_GAP));
+            int cardH = CLOUD_CARD_H;              // draw 里 cardH = CLOUD_CARD_H (96, 不要再写 70)
+            int cardGap = CLOUD_CARD_GAP;
+            return Math.max(1, (listH + cardGap) / (cardH + cardGap)) * CLOUD_CARD_COLS;
+        }
+        if (this.currentTab == Tab.DOWNLOAD) {
+            // 跟 drawTabDownload 完全一致
+            int rh = PANEL_H - 8;
+            int listH = rh - 22;
+            int cardH = 70;
+            int cardGap = 6;
+            return Math.max(1, (listH + cardGap) / (cardH + cardGap)) * 2;
+        }
+        if (this.currentTab == Tab.SERVERS) {
+            // 跟 drawServerTab / drawServerBuildingCards 完全一致
+            int rh = PANEL_H - 8;                  // getContentRect 的 rh (无 search)
+            int filterH = rh - 8;                  // drawServerTab 里 filterH = rh - 8
+            int tabH = 18;                         // drawServerTab 里 tabH 写死
+            int listH = filterH - tabH - 4 - 14;   // drawServerBuildingCards 里 listH = rh - 14
+            int cardH = SERVER_CARD_H;
+            int cardGap = SERVER_CARD_GAP;
+            return Math.max(1, (listH + cardGap) / (cardH + cardGap)) * SERVER_CARD_COLS;
+        }
+        if (this.currentTab == Tab.BUILDINGS) {
+            // 跟 drawConstructionCardsForBuildings 完全一致: 2 列 × 2 行 = 4/页
+            // (不能用默认的 CARD_COLS=3, 那是 3 列的拓展包 tab 用的, 跟建筑 tab 不一致)
+            return BUILDINGS_CARD_COLS * CARD_ROWS;
         }
         return CARD_COLS * CARD_ROWS;
     }
@@ -2479,9 +3203,7 @@ public class GuiExtensionPackBrowser extends GuiBase {
     private int computeMaxPageForCurrentTab() {
         int pageSize = computePageSizeForCurrentTab();
         int total;
-        if (this.currentTab == Tab.VANILLA) {
-            total = VanillaStructureRegistry.ALL.size();
-        } else if (this.currentTab == Tab.DOWNLOAD) {
+        if (this.currentTab == Tab.DOWNLOAD) {
             total = getFilteredWebsiteBuildings().size();
         } else if (this.currentTab == Tab.FAVORITES) {
             total = filterBySearch(
@@ -2489,6 +3211,18 @@ public class GuiExtensionPackBrowser extends GuiBase {
         } else if (this.currentTab == Tab.CLOUD) {
             // 云端 tab 不分搜索, 直接拿 cache 数量
             total = CloudBuildingClientCache.getInstance().size();
+        } else if (this.currentTab == Tab.SERVERS) {
+            // 服务器 tab: 应用 serverFilter 后取总数
+            java.util.List<ServerBuildingInfo> all =
+                ExtensionPackManager.getInstance().getServerBuildings();
+            int n = 0;
+            for (ServerBuildingInfo b : all) {
+                if (b == null) continue;
+                if ("unsynced".equals(this.serverFilter) && b.synced) continue;
+                if ("synced".equals(this.serverFilter) && !b.synced) continue;
+                n++;
+            }
+            total = n;
         } else {
             total = filterBySearch(getMergedConstructionsForBuildingsTab(), this.searchText).size();
         }
@@ -2539,7 +3273,7 @@ public class GuiExtensionPackBrowser extends GuiBase {
             } catch (Exception e) {
                 PrefabCustomAddon.LOGGER.warn("[BROWSER] sync 失败: {}", e.getMessage());
             }
-            setStatus("已请求同步服务器拓展包", 0x55AAFF);
+            setStatus("已请求同步服务器建筑", 0x55AAFF);
             return;
         }
         if (button == this.btnCheckDeps) {
@@ -2597,20 +3331,61 @@ public class GuiExtensionPackBrowser extends GuiBase {
 
     private void switchTab(Tab tab) {
         if (tab == this.currentTab && this.currentDrilldownPack == null) return;
+
+        // === 1. 切走前, 把当前 tab 的状态存到 TAB_STATES ===
+        //   (用 EnumMap, 每个 tab 各自一份, 切回时能恢复 "原版第2页" 那种状态)
+        if (this.currentTab != null) {
+            TAB_STATES.put(this.currentTab, new TabState(
+                this.currentCategory,
+                this.scrollOffsetCards,
+                this.categoryPanelHidden,
+                this.searchText
+            ));
+        }
+
+        // === 2. 切换 tab ===
         this.currentTab = tab;
         this.currentDrilldownPack = null;
         this.btnBack.visible = false;
-        this.scrollOffsetCards = 0;
-        this.searchText = "";
-        if (this.searchBox != null) this.searchBox.setValue("");
+
+        // === 3. 恢复目标 tab 的状态 (没存过 → 用默认: 全部/第0页/未收起/空搜索) ===
+        TabState saved = TAB_STATES.get(tab);
+        final int savedScroll;
+        final boolean savedPanelHidden;
+        final String savedSearch;
+        if (saved != null) {
+            this.currentCategory      = saved.currentCategory;
+            savedScroll               = saved.scrollOffsetCards;
+            savedPanelHidden          = saved.categoryPanelHidden;
+            savedSearch               = saved.searchText;
+        } else {
+            this.currentCategory      = null;
+            savedScroll               = 0;
+            savedPanelHidden          = false;
+            savedSearch               = "";
+        }
+        // 先把面板状态和搜索文本写回 instance 字段 (setValue 会触发 responder,
+        // responder 会把 scrollOffsetCards 清零, 所以页数留到最后再写)
+        this.categoryPanelHidden = savedPanelHidden;
+        this.searchText          = savedSearch;
+        if (this.searchBox != null) {
+            this.searchBox.setValue(this.searchText);
+            // 切 tab 时按需重设搜索框宽度 (建筑 tab 短, 其它 tab 全宽)
+            rebuildSearchBox();
+            // 重建/恢复搜索框后再写回页数, 避免被搜索框 responder 清零
+            this.scrollOffsetCards = savedScroll;
+        } else {
+            this.scrollOffsetCards = savedScroll;
+        }
+        // 切到云端 tab 时, 顺手强制重探一下 Xaero (玩家进入世界后 Xaero session
+        // 可能比 sync 收包晚就绪 → 之前的 probe 失败被永久缓存 → 导航按钮不出).
+        if (tab == Tab.CLOUD) {
+            XaeroWaypointBridge.forceProbe();
+        }
         // 切 tab 时清掉云端删除确认弹窗
         this.pendingDeleteBuildingId = null;
         this.deleteConfirmCancelRect = null;
         this.deleteConfirmOkRect = null;
-        // 切到原版 tab 时: 预加载前 16 个建筑的缩略图, 避免首屏全空
-        if (tab == Tab.VANILLA) {
-            preloadVanillaThumbsForCurrentPage();
-        }
         // 切到下载 tab 时重新扫描本地 prefab-download/ + 拉取网站列表
         if (tab == Tab.DOWNLOAD) {
             refreshDownloadedBuildings();
@@ -2621,15 +3396,61 @@ public class GuiExtensionPackBrowser extends GuiBase {
         }
     }
 
+    /** 是否当前在 BUILDINGS tab (含 drilldown 到单包建筑的情况). */
+    private boolean isBuildingsTab() {
+        return this.currentTab == Tab.BUILDINGS || this.currentDrilldownPack != null;
+    }
+
+    /**
+     * 重建搜索框 widget, 让宽度匹配当前 tab.
+     * Minecraft EditBox 宽度在构造时定, 改不了, 只能 remove + 重新 add.
+     */
+    private void rebuildSearchBox() {
+        if (this.searchBox == null) return;
+        int[] pos = computePanelPos();
+        int grayBoxX = pos[0];
+        int grayBoxY = pos[1];
+        int sbX = grayBoxX + TABS_W + 6;
+        int sbY = grayBoxY + 4;
+        int targetW = isBuildingsTab() ? SEARCH_BOX_W : SEARCH_FULL_W;
+        if (this.searchBox.getWidth() == targetW) {
+            // 已经是目标宽度, 不动
+            return;
+        }
+        // 暂存当前文本, 删旧 widget, 建新 widget
+        String current = this.searchBox.getValue();
+        this.removeWidget(this.searchBox);
+        this.searchBox = new net.minecraft.client.gui.components.EditBox(
+            this.font, sbX, sbY, targetW, SEARCH_H - 2,
+            net.minecraft.network.chat.Component.literal(tr("browser.search.placeholder")));
+        this.searchBox.setMaxLength(64);
+        this.searchBox.setBordered(true);
+        this.searchBox.setValue(current);
+        this.searchBox.setResponder(text -> {
+            this.searchText = text;
+            this.scrollOffsetCards = 0;
+        });
+        this.addRenderableWidget(this.searchBox);
+    }
+
     private void drilldownPack(ExtensionPack p) {
         this.currentDrilldownPack = p;
         this.btnBack.visible = true;
         this.scrollOffsetCards = 0;
         this.searchText = "";
-        if (this.searchBox != null) this.searchBox.setValue("");
+        this.currentCategory = null;  // drilldown 也不带分类
+        if (this.searchBox != null) {
+            this.searchBox.setValue("");
+            // drilldown 仍属于 "建筑" 类 tab, 用短搜索框
+            rebuildSearchBox();
+        }
     }
 
     private void openConstructionDetail(ConstructionInfo c) {
+        // 在打开详情前先保存状态到 static 字段 (onClose 也会保存, 这里双保险, 防止 onClose 顺序问题)
+        GuiExtensionPackBrowser.rememberedCategory = this.currentCategory;
+        GuiExtensionPackBrowser.rememberedPage = this.scrollOffsetCards;
+        GuiExtensionPackBrowser.rememberedPanelHidden = this.categoryPanelHidden;
         // 直接进详情 (无下拉框, 无翻页按钮, 右上角有收藏按钮)
         GuiConstructionDetail.open(c);
     }
@@ -2668,6 +3489,8 @@ public class GuiExtensionPackBrowser extends GuiBase {
                 c.setName(lb.name == null || lb.name.isEmpty() ? b.name : lb.name);
                 c.setAuthor(lb.author == null || lb.author.isEmpty() ? b.author : lb.author);
                 c.setDescription(lb.description);
+                c.setDependencies(lb.dependencies);
+                c.setCategory(lb.category);
                 c.setFormat(lb.fileExt == null ? "nbt" : lb.fileExt.replaceFirst("^\\.", ""));
                 c.setLocalImagePath(lb.imagePath);
                 c.setLocalNbtPath(lb.filePath);
@@ -2690,6 +3513,8 @@ public class GuiExtensionPackBrowser extends GuiBase {
                 c.setName(lb.name == null || lb.name.isEmpty() ? b.name : lb.name);
                 c.setAuthor(lb.author == null || lb.author.isEmpty() ? b.author : lb.author);
                 c.setDescription(lb.description);
+                c.setDependencies(lb.dependencies);
+                c.setCategory(lb.category);
                 c.setFormat(lb.fileExt == null ? "nbt" : lb.fileExt.replaceFirst("^\\.", ""));
                 c.setLocalImagePath(lb.imagePath);
                 c.setLocalNbtPath(lb.filePath);
@@ -2791,6 +3616,11 @@ public class GuiExtensionPackBrowser extends GuiBase {
         String key = c.getId();
         if (this.previewTextureCache.containsKey(key)) return this.previewTextureCache.get(key);
         if (!c.hasPreviewImage()) {
+            // 诊断: 为什么 hasPreviewImage 返回 false. 大概率是 c.getLocalImagePath() 为 null 或者文件不存在
+            PrefabCustomAddon.LOGGER.info("[PREVIEW] {} 无图: pngData={} localImagePath={} exists={}",
+                key, c.getPngData() != null ? c.getPngData().length : "null",
+                c.getLocalImagePath(),
+                c.getLocalImagePath() != null ? Files.exists(c.getLocalImagePath()) : "n/a");
             this.previewTextureCache.put(key, null);
             return null;
         }
@@ -2799,32 +3629,34 @@ public class GuiExtensionPackBrowser extends GuiBase {
         if ((data == null || data.length == 0) && c.getLocalImagePath() != null) {
             try {
                 data = Files.readAllBytes(c.getLocalImagePath());
+                PrefabCustomAddon.LOGGER.info("[PREVIEW] {} 从 {} 读到 {} bytes", key, c.getLocalImagePath(), data.length);
             } catch (Exception e) {
-                PrefabCustomAddon.LOGGER.debug("Failed to read local preview {}: {}",
-                    c.getLocalImagePath(), e.getMessage());
+                PrefabCustomAddon.LOGGER.warn("[PREVIEW] {} 读 {} 失败: {}", key, c.getLocalImagePath(), e.getMessage());
             }
         }
         if (data == null || data.length == 0) {
+            PrefabCustomAddon.LOGGER.info("[PREVIEW] {} data 为空, 跳过", key);
             this.previewTextureCache.put(key, null);
             return null;
         }
         try (java.io.InputStream is = new java.io.ByteArrayInputStream(data)) {
             java.awt.image.BufferedImage img = javax.imageio.ImageIO.read(is);
-            if (img == null) return null;
-            int w = img.getWidth(), h = img.getHeight();
-            net.minecraft.client.renderer.texture.DynamicTexture tex =
-                new net.minecraft.client.renderer.texture.DynamicTexture(w, h, false);
-            tex.setFilter(false, false);
-            for (int y = 0; y < h; y++) {
-                for (int x = 0; x < w; x++) {
-                    int argb = img.getRGB(x, y);
-                    int abgr = ((argb & 0xFF00FF00) | ((argb & 0x00FF0000) >> 16) | ((argb & 0x000000FF) << 16));
-                    tex.getPixels().setPixelRGBA(x, y, abgr);
-                }
+            if (img == null) {
+                PrefabCustomAddon.LOGGER.warn("[PREVIEW] {} ImageIO 解析失败 ({} bytes), 文件可能损坏或格式不支持",
+                    key, data.length);
+                this.previewTextureCache.put(key, null);
+                return null;
             }
-            tex.upload();
+            net.minecraft.client.renderer.texture.DynamicTexture tex = uploadIconTexture(img);
+            if (tex == null) {
+                PrefabCustomAddon.LOGGER.warn("[PREVIEW] {} uploadIconTexture 返回 null (源 {}x{})", key, img.getWidth(), img.getHeight());
+                this.previewTextureCache.put(key, null);
+                return null;
+            }
             ResourceLocation loc = Minecraft.getInstance().getTextureManager()
                 .register("prefab_preview_" + key, tex);
+            PrefabCustomAddon.LOGGER.info("[PREVIEW] {} 上传成功 {}x{} → {}", key,
+                img.getWidth(), img.getHeight(), loc);
             this.previewTextureCache.put(key, loc);
             return loc;
         } catch (Exception e) {
@@ -2841,19 +3673,15 @@ public class GuiExtensionPackBrowser extends GuiBase {
         if (this.cachedThumbTextureCache.containsKey(key)) return this.cachedThumbTextureCache.get(key);
         try (java.io.InputStream is = new java.io.ByteArrayInputStream(pngData)) {
             java.awt.image.BufferedImage img = javax.imageio.ImageIO.read(is);
-            if (img == null) return null;
-            int w = img.getWidth(), h = img.getHeight();
-            net.minecraft.client.renderer.texture.DynamicTexture tex =
-                new net.minecraft.client.renderer.texture.DynamicTexture(w, h, false);
-            tex.setFilter(false, false);
-            for (int y = 0; y < h; y++) {
-                for (int x = 0; x < w; x++) {
-                    int argb = img.getRGB(x, y);
-                    int abgr = ((argb & 0xFF00FF00) | ((argb & 0x00FF0000) >> 16) | ((argb & 0x000000FF) << 16));
-                    tex.getPixels().setPixelRGBA(x, y, abgr);
-                }
+            if (img == null) {
+                this.cachedThumbTextureCache.put(key, null);
+                return null;
             }
-            tex.upload();
+            net.minecraft.client.renderer.texture.DynamicTexture tex = uploadIconTexture(img);
+            if (tex == null) {
+                this.cachedThumbTextureCache.put(key, null);
+                return null;
+            }
             ResourceLocation loc = Minecraft.getInstance().getTextureManager()
                 .register("prefab_thumb_" + key, tex);
             this.cachedThumbTextureCache.put(key, loc);
@@ -2870,12 +3698,14 @@ public class GuiExtensionPackBrowser extends GuiBase {
                                   int u, int v, int uW, int vH, int sheetW, int sheetH) {
         RenderSystem.setShader(net.minecraft.client.renderer.GameRenderer::getPositionTexColorShader);
         RenderSystem.setShaderTexture(0, texture);
+        // 改 GL_LINEAR: uploadIconTexture 里 tex.setFilter(true, true) 设的是 bilinear,
+        // 但这里强制 GL_NEAREST 会覆盖它, 缩到 60x60 时有马赛克. 改 LINEAR 保持平滑.
         RenderSystem.texParameter(com.mojang.blaze3d.platform.GlConst.GL_TEXTURE_2D,
             com.mojang.blaze3d.platform.GlConst.GL_TEXTURE_MIN_FILTER,
-            com.mojang.blaze3d.platform.GlConst.GL_NEAREST);
+            com.mojang.blaze3d.platform.GlConst.GL_LINEAR);
         RenderSystem.texParameter(com.mojang.blaze3d.platform.GlConst.GL_TEXTURE_2D,
             com.mojang.blaze3d.platform.GlConst.GL_TEXTURE_MAG_FILTER,
-            com.mojang.blaze3d.platform.GlConst.GL_NEAREST);
+            com.mojang.blaze3d.platform.GlConst.GL_LINEAR);
         RenderSystem.enableBlend();
         RenderSystem.defaultBlendFunc();
 
@@ -2899,12 +3729,105 @@ public class GuiExtensionPackBrowser extends GuiBase {
 
     @Override
     public void onClose() {
+        // 关闭前记录 GUI 状态, 下次 open() 时恢复
+        GuiExtensionPackBrowser.rememberedCategory = this.currentCategory;
+        GuiExtensionPackBrowser.rememberedPage = this.scrollOffsetCards;
+        GuiExtensionPackBrowser.rememberedPanelHidden = this.categoryPanelHidden;
+
         // 释放纹理
         this.coverTextureCache.clear();
         this.previewTextureCache.clear();
         this.cachedThumbTextureCache.clear();
         this.localImageCache.clear();
         this.websiteImageCache.clear();
+        this.serverImageCache.clear();
         super.onClose();
+    }
+
+    /**
+     * 打开已同步服务器建筑的 detail 界面.
+     * 单文件 (.nbt/.schem/.litematic): 直接读 server-cache/&lt;name&gt;.&lt;ext&gt; 走 ConstructionInfo 路径.
+     * 拓展包 (.zip): 手动解析 zip 找 construction/&lt;id&gt;.nbt + &lt;id&gt;.png, 构造 ConstructionInfo.
+     */
+    private void openSyncedServerBuildingDetail(ServerBuildingInfo b) {
+        if (b == null || !b.synced) return;
+        Path cacheDir = com.prefab.addon.extension.ExtensionPackManager.getInstance().getServerCacheDir();
+        if (cacheDir == null || !Files.exists(cacheDir)) {
+            setStatus("✗ 找不到 server-cache/ 目录", 0xFF5555);
+            return;
+        }
+        // 源文件 basename: 老 zip 是 packName (= 去掉 .zip 后的源文件名), 独立 .nbt 是 buildingId
+        String fileBase = b.packName != null && !b.packName.isEmpty() ? b.packName : b.buildingId;
+        String ext = b.getSourceExt().toLowerCase();
+        if (ext.equals(".zip")) {
+            // 拓展包: 手动解析 zip
+            Path zipPath = findServerFile(cacheDir, fileBase, ".zip");
+            if (zipPath == null) {
+                setStatus("✗ 找不到 zip: " + fileBase + ".zip", 0xFF5555);
+                return;
+            }
+            try (java.util.zip.ZipFile zip = new java.util.zip.ZipFile(zipPath.toFile())) {
+                // 找 construction/ 下的 .nbt (取第一个)
+                java.util.zip.ZipEntry nbtEntry = null;
+                java.util.zip.ZipEntry pngEntry = null;
+                java.util.Enumeration<? extends java.util.zip.ZipEntry> en = zip.entries();
+                while (en.hasMoreElements()) {
+                    java.util.zip.ZipEntry e = en.nextElement();
+                    if (e.isDirectory()) continue;
+                    String ename = e.getName().toLowerCase();
+                    if (nbtEntry == null && (ename.endsWith(".nbt") || ename.endsWith(".litematic")
+                        || ename.endsWith(".schem") || ename.endsWith(".schematic"))) {
+                        nbtEntry = e;
+                    }
+                    if (pngEntry == null && ename.endsWith(".png")) {
+                        pngEntry = e;
+                    }
+                }
+                if (nbtEntry == null) {
+                    setStatus("✗ zip " + fileBase + " 里没找到建筑文件", 0xFF5555);
+                    return;
+                }
+                // 大文件保护: 超过 20MB 提示玩家单独下载, 避免 OOM
+                long nbtSize = nbtEntry.getSize();
+                if (nbtSize > 20L * 1024 * 1024) {
+                    setStatus("✗ 建筑太大 (" + (nbtSize / 1024 / 1024) + "MB), 不支持在线预览", 0xFFAA55);
+                    return;
+                }
+                ConstructionInfo c = new ConstructionInfo(b.buildingId);
+                c.setName(b.getDisplayName());
+                if (pngEntry != null) {
+                    try (java.io.InputStream is = zip.getInputStream(pngEntry)) {
+                        c.setPngData(is.readAllBytes());
+                    }
+                }
+                try (java.io.InputStream is = zip.getInputStream(nbtEntry)) {
+                    c.setNbtData(is.readAllBytes());
+                }
+                GuiConstructionDetail.open(c);
+            } catch (Exception e) {
+                setStatus("✗ 解析 zip 失败: " + e.getMessage(), 0xFF5555);
+                PrefabCustomAddon.LOGGER.warn("[SERVER-DETAIL] zip parse failed for {}", fileBase, e);
+            }
+        } else {
+            // 单文件: 读 server-cache/&lt;fileBase&gt;.&lt;ext&gt;
+            Path filePath = findServerFile(cacheDir, fileBase, ext);
+            if (filePath == null) {
+                setStatus("✗ 找不到文件: " + fileBase + ext, 0xFF5555);
+                return;
+            }
+            Path imgPath = findServerFile(cacheDir, fileBase, ".png");
+            if (imgPath == null) {
+                for (String ie : new String[]{".jpg", ".jpeg", ".webp"}) {
+                    imgPath = findServerFile(cacheDir, fileBase, ie);
+                    if (imgPath != null) break;
+                }
+            }
+            // 直接打开 detail
+            ConstructionInfo c = new ConstructionInfo(b.buildingId);
+            c.setName(b.getDisplayName());
+            c.setLocalImagePath(imgPath);
+            c.setLocalNbtPath(filePath);
+            GuiConstructionDetail.open(c);
+        }
     }
 }

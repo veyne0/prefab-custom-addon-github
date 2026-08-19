@@ -455,8 +455,22 @@ public class CustomStructureBuilder {
     public boolean placeStructure(ServerPlayer player, net.minecraft.server.level.ServerLevel level, BlockPos origin,
                                String packName, String constructionId,
                                net.minecraft.core.Direction houseFacing) {
-        PrefabCustomAddon.LOGGER.info("[PLACE-ASYNC] === placeStructure called: pack={} construction={} pos={} player={} houseFacing={}",
-            packName, constructionId, origin, player != null ? player.getName().getString() : "null", houseFacing);
+        return placeStructure(player, level, origin, packName, constructionId, houseFacing,
+                com.prefab.addon.config.BuildAnimationMode.OFF);
+    }
+
+    /**
+     * 完整重载: 支持 {@link com.prefab.addon.config.BuildAnimationMode} (1.6.0 起支持 4 种动画模式).
+     * 老代码 (传 boolean) 的语义是 {@code true→FALL, false→OFF}, 这里改用枚举让客户端可选模式传过来.
+     */
+    public boolean placeStructure(ServerPlayer player, net.minecraft.server.level.ServerLevel level, BlockPos origin,
+                               String packName, String constructionId,
+                               net.minecraft.core.Direction houseFacing,
+                               com.prefab.addon.config.BuildAnimationMode animationMode) {
+        com.prefab.addon.config.BuildAnimationMode mode = animationMode != null
+                ? animationMode : com.prefab.addon.config.BuildAnimationMode.OFF;
+        PrefabCustomAddon.LOGGER.info("[PLACE-ASYNC] === placeStructure called: pack={} construction={} pos={} player={} houseFacing={} animationMode={}",
+            packName, constructionId, origin, player != null ? player.getName().getString() : "null", houseFacing, mode);
         ConstructionInfo info = ExtensionPackManager.getInstance().findConstruction(packName, constructionId);
         if (info == null) {
             PrefabCustomAddon.LOGGER.error("[PLACE-ASYNC] 找不到建筑: {}/{}", packName, constructionId);
@@ -511,7 +525,7 @@ public class CustomStructureBuilder {
         //    - 完成后自动消耗蓝图 + 红石重算
         PrefabCustomAddon.LOGGER.info("[PLACE-ASYNC] 启动异步任务: {} blocks, batchPercent={}%, houseFacing={}",
             blockDataList.size(), com.prefab.addon.config.PlayerPreferences.get().getBuildBatchPercent(), houseFacing);
-        AsyncBuildManager.startTask(player, level, origin, packName, constructionId, blockDataList, houseFacing);
+        AsyncBuildManager.startTask(player, level, origin, packName, constructionId, blockDataList, houseFacing, mode);
 
         if (player != null) {
             player.sendSystemMessage(net.minecraft.network.chat.Component.literal(

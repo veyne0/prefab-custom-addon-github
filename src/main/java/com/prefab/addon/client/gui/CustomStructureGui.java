@@ -455,8 +455,19 @@ public class CustomStructureGui {
         });
         btnChange.layout(l -> l.flexGrow(1).heightPercent(100));
         // 蓝图锁定时变灰
-        if (currentBlueprint != null && !currentBlueprint.isEmpty()
-            && com.prefab.addon.items.CustomBlueprintItem.isLocked(currentBlueprint)) {
+        // 兼容两种来源:
+        //   - mod 原生 CustomBlueprintItem: 读它的 isLocked(stack) (locked 字段)
+        //   - KubeJS 注册的带 tag 物品: 永远禁用 (玩家自制的蓝图默认锁定, 不允许更换建筑)
+        boolean isLocked = false;
+        if (currentBlueprint != null && !currentBlueprint.isEmpty()) {
+            if (currentBlueprint.getItem() instanceof com.prefab.addon.items.CustomBlueprintItem) {
+                isLocked = com.prefab.addon.items.CustomBlueprintItem.isLocked(currentBlueprint);
+            } else if (com.prefab.addon.client.CustomBlueprintClientHandler.isHandledBlueprint(currentBlueprint)) {
+                // KubeJS 注册的玩家蓝图: 一律禁用 "更换建筑" (无论注册时 locked 是 0/1)
+                isLocked = true;
+            }
+        }
+        if (isLocked) {
             btnChange.setActive(false);
             btnChange.setText(com.prefab.addon.PrefabCustomAddon.tr("gui.custom.locked"));
         }
@@ -701,11 +712,14 @@ public class CustomStructureGui {
             new com.prefab.addon.network.BindConstructionPayload(
                 packName, currentConstruction.getId(), false));
 
-        PrefabCustomAddon.LOGGER.info("[CUSTOM-GUI-V2] Build: pack={} id={} pos={} challengeMode={}",
-            packName, currentConstruction.getId(), buildPos, challengeMode);
+        PrefabCustomAddon.LOGGER.info("[CUSTOM-GUI-V2] Build: pack={} id={} pos={} challengeMode={} animationMode={}",
+            packName, currentConstruction.getId(), buildPos, challengeMode,
+            com.prefab.addon.config.PlayerPreferences.get().getBuildAnimationMode());
         com.prefab.addon.network.NetworkHandler.sendToServer(
             new com.prefab.addon.network.BuildCustomStructurePayload(
-                buildPos, packName, currentConstruction.getId()));
+                buildPos, packName, currentConstruction.getId(),
+                net.minecraft.core.Direction.SOUTH,
+                com.prefab.addon.config.PlayerPreferences.get().getBuildAnimationMode()));
         if (renderScene != null) renderScene.releaseRendererResource();
         Minecraft.getInstance().setScreen(null);
     }

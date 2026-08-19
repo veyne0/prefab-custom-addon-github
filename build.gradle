@@ -17,6 +17,8 @@ repositories {
     flatDir {
         dirs 'libs'
     }
+    // CurseMaven: 解析 curse.maven:* 依赖的官方仓库 (Jade / Xaero / 等 mod 的 jar 文件)
+    maven { url = 'https://www.cursemaven.com' }
     maven { url = 'https://maven.aliyun.com/repository/public' }
     maven { url = 'https://maven.aliyun.com/repository/gradle-plugin' }
     maven { url = 'https://maven.neoforged.net/releases/' }
@@ -63,6 +65,24 @@ dependencies {
     compileOnly files('libs/prefab-neoforge-1.0.8.jar')
     compileOnly 'org.appliedenergistics.yoga:yoga:1.0.0'
     compileOnly 'dev.vfyjxf:taffy:1.1.4'
+
+    // === 可选联动：Jade (方块信息提示) + Xaero's World Map (航点) ===
+    // 全部 compileOnly: 编译时能拿到 API 引用, 运行时不强依赖, 用户没装对应 mod 也不影响使用.
+    // 真正的"是否存在"判断在运行时用 Class.forName 做, 反射调用全 try/catch 包裹.
+
+    // Jade 1.21.1 NeoForge: curse.maven:jade-324717:5803621 (15.5.2, Oct 2024)
+    compileOnly "curse.maven:jade-324717:5803621"
+    // Xaero's World Map 1.21.1 NeoForge: curse.maven:xaeros-world-map-317780:5658241 (1.39.0)
+    compileOnly "curse.maven:xaeros-world-map-317780:5658241"
+    // Xaero's Minimap (航点共享, 可选. 没装不影响 World Map 单独工作)
+    // file ID 6116049 = v25.0.0 for NeoForge 1.21.1 (Jan 2025)
+    compileOnly "curse.maven:xaeros-minimap-263420:6116049"
+
+    // === KubeJS (联动: "制作蓝图" tab 通过 KubeJS 注册自定义蓝图物品) ===
+    // compileOnly 软依赖, 编译时能引用 StartupEvents 等, 运行时不强依赖, 玩家没装 KubeJS 时
+    // "制作蓝图" tab 会被隐藏, 其他功能正常使用.
+    // KubeJS 1.21.1 NeoForge 7.2 build 368: file ID 8083208
+    compileOnly "curse.maven:kubejs-238086:8083208"
 }
 
 tasks.withType(JavaCompile).configureEach {
@@ -183,6 +203,112 @@ public class gen_texture {
         if (runResult != 0) throw new Exception("java failed")
 
         println "Blueprint icon regenerated: ${texFile.absolutePath}"
+    }
+}
+
+// === 自定义推土机贴图 (16x16, 完全原创像素画, 所有黑色像素 alpha=0xFF) ===
+// 之前 prefab 原版贴图基础上加黑色失败: 黑色显示不出来.
+// 这次直接用 BufferedImage 从代码画, 保证:
+//   1. 完全原创 (跟 prefab 推土机版权无关, MIT 仍兼容但视觉上更干净)
+//   2. 黑色用 0xFF1A1A1A (alpha=255, 永远可见, 不会被透明穿透)
+//   3. 16x16 TYPE_INT_ARGB, 每个像素明确 setRGB
+// 跑法: gradlew.bat generateCustomBulldozerTexture
+tasks.register('generateCustomBulldozerTexture') {
+    description = 'Generate original 16x16 custom bulldozer icon PNG (opaque black tracks + blade)'
+    outputs.file file('src/main/resources/assets/prefab_custom_addon/textures/item/custom_bulldozer.png')
+    doLast {
+        def texFile = file('src/main/resources/assets/prefab_custom_addon/textures/item/custom_bulldozer.png')
+        def script = new File('build/gen_bulldozer.java')
+        script.parentFile.mkdirs()
+        script.text = '''
+import javax.imageio.ImageIO;
+import java.awt.image.BufferedImage;
+import java.io.File;
+
+/**
+ * 16x16 自定义推土机像素画 (完全原创, 跟 prefab 推土机版权无关).
+ *
+ * 调色板: 0=透明, 1=车身黄, 4=履带黑, 5=轮毂深灰, 6=窗天蓝, 7=轮廓黑.
+ * 关键: 所有非 0 的颜色 alpha=0xFF (完全不透明) -> 黑色一定显示.
+ */
+public class gen_bulldozer {
+    // 行 0-15, 每行 16 个像素 (col 0-15).
+    //   0=透明, 1=车身黄, 4=履带黑, 5=轮毂深灰, 6=窗天蓝, 7=轮廓黑
+    static final int[][] PIXELS = {
+        // 0: 全透明顶
+        {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+        // 1: 烟囱
+        {0,0,0,0,0,0,0,7,0,0,0,0,0,0,0,0},
+        // 2: 驾驶舱顶
+        {0,0,0,0,0,0,7,1,1,7,0,0,0,0,0,0},
+        // 3: 驾驶舱窗
+        {0,0,0,0,0,0,7,6,6,7,0,0,0,0,0,0},
+        // 4: 驾驶舱窗
+        {0,0,0,0,0,0,7,6,6,7,0,0,0,0,0,0},
+        // 5: 驾驶舱底
+        {0,0,0,0,0,0,7,1,1,7,0,0,0,0,0,0},
+        // 6: 车身顶 (窄)
+        {0,0,0,0,0,7,1,1,1,1,7,0,0,0,0,0},
+        // 7: 车身
+        {0,0,0,0,0,7,1,1,1,1,7,0,0,0,0,0},
+        // 8: 车身加宽 + 推土铲左缘
+        {0,0,0,7,1,1,1,1,1,1,1,1,7,0,0,0},
+        // 9: 车身 + 推土铲
+        {0,0,7,1,1,1,1,1,1,1,1,1,1,7,0,0},
+        // 10: 车身 + 推土铲
+        {0,0,7,1,1,1,1,1,1,1,1,1,1,7,0,0},
+        // 11: 推土铲底 (整行黑色)
+        {0,0,7,7,7,7,7,7,7,7,7,7,7,7,0,0},
+        // 12: 履带顶 (左右两段, 中间空)
+        {0,0,4,4,4,4,0,0,0,0,4,4,4,4,0,0},
+        // 13: 履带 + 轮毂中心点
+        {0,0,4,5,4,4,0,0,0,0,4,4,5,4,0,0},
+        // 14: 履带
+        {0,0,4,4,4,4,0,0,0,0,4,4,4,4,0,0},
+        // 15: 履带底 (连成一条)
+        {0,0,4,4,4,4,4,4,4,4,4,4,4,4,0,0},
+    };
+
+    // 调色板 (ARGB). 注意: 所有非 0 色 alpha=0xFF -> 不会再有"透明黑"
+    static final int[] COLORS = {
+        0x00000000,  // 0  透明
+        0xFFFFD700,  // 1  车身黄金
+        0x00000000,  // 2  备用
+        0x00000000,  // 3  备用
+        0xFF1A1A1A,  // 4  履带黑 (alpha=FF, 必显)
+        0xFF606060,  // 5  轮毂深灰
+        0xFF87CEEB,  // 6  窗天蓝
+        0xFF1A1A1A,  // 7  轮廓黑 (alpha=FF, 必显)
+    };
+
+    public static void main(String[] args) throws Exception {
+        int size = 16;
+        BufferedImage img = new BufferedImage(size, size, BufferedImage.TYPE_INT_ARGB);
+        for (int y = 0; y < size; y++) {
+            for (int x = 0; x < size; x++) {
+                img.setRGB(x, y, COLORS[PIXELS[y][x]]);
+            }
+        }
+        File out = new File(args[0]);
+        out.getParentFile().mkdirs();
+        ImageIO.write(img, "PNG", out);
+        System.out.println("Generated: " + out.getAbsolutePath());
+    }
+}
+'''
+        def javaHome = System.getProperty('java.home')
+        def javac = new File(javaHome, 'bin/javac.exe')
+        def java = new File(javaHome, 'bin/java.exe')
+
+        def compileResult = new ProcessBuilder(javac.absolutePath, '-d', 'build/tex_classes', 'build/gen_bulldozer.java')
+            .directory(projectDir).start().waitFor()
+        if (compileResult != 0) throw new Exception("javac failed")
+
+        def runResult = new ProcessBuilder(java.absolutePath, '-cp', 'build/tex_classes', 'gen_bulldozer', texFile.absolutePath)
+            .directory(projectDir).start().waitFor()
+        if (runResult != 0) throw new Exception("java failed")
+
+        println "Custom bulldozer icon regenerated: ${texFile.absolutePath}"
     }
 }
 

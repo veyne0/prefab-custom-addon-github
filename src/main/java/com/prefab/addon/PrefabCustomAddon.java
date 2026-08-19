@@ -6,6 +6,7 @@ import com.prefab.addon.config.AddonConfig;
 import com.prefab.addon.config.CustomBlueprintRecipeCondition;
 import com.prefab.addon.extension.ExtensionPackManager;
 import com.prefab.addon.items.CustomBlueprintItem;
+import com.prefab.addon.items.ItemCustomBulldozer;
 import com.prefab.addon.network.NetworkHandler;
 import com.prefab.addon.network.ServerPackSyncServer;
 import net.minecraft.core.registries.Registries;
@@ -62,6 +63,15 @@ public class PrefabCustomAddon {
 
     public static final DeferredItem<Item> CUSTOM_BLUEPRINT = ITEMS.register("custom_blueprint",
             () -> new CustomBlueprintItem(new Item.Properties().stacksTo(1)));
+    // 4 耐久推土机 (跟原版 prefab 一致), 区域大小存 NBT
+    public static final DeferredItem<Item> CUSTOM_BULLDOZER = ITEMS.register("custom_bulldozer",
+            () -> {
+                ItemCustomBulldozer item = new ItemCustomBulldozer(new Item.Properties().durability(4));
+                // [DEBUG] 日志点 1: 物品注册时打印 ID
+                LOGGER.info("[CUSTOM_BULLDOZER-DEBUG] 注册 ID = {}", MOD_ID + ":custom_bulldozer");
+                return item;
+            });
+
 
     /**
      * 注册 "prefab_custom_addon:custom_blueprint_recipe" 条件, 配方 JSON 里写
@@ -79,6 +89,7 @@ public class PrefabCustomAddon {
             .icon(() -> new ItemStack(CUSTOM_BLUEPRINT.get()))
             .displayItems((params, output) -> {
                 output.accept(CUSTOM_BLUEPRINT.get());
+                output.accept(CUSTOM_BULLDOZER.get());
             })
             .build());
 
@@ -108,7 +119,7 @@ public class PrefabCustomAddon {
      * 客户端每帧 tick, 用于闪烁调试日志输出 (0.5s 节流)
      */
     public void onClientTick(final ClientTickEvent.Pre event) {
-        com.prefab.addon.client.gui.GuiExtensionPackCreator.onFrameTick();
+        // GuiExtensionPackCreator 已重写, 不再需要 onFrameTick
     }
 
     private void commonSetup(final FMLCommonSetupEvent event) {
@@ -118,6 +129,50 @@ public class PrefabCustomAddon {
     private void clientSetup(final FMLClientSetupEvent event) {
         LOGGER.info("Prefab Custom Addon client setup");
         ExtensionPackManager.getInstance().initializeClient();
+
+        // [DEBUG] 日志点 2: 客户端启动时验证 model 引用 + 实际加载的贴图
+        event.enqueueWork(() -> {
+            try {
+                // 读自己的 model JSON
+                var modelLoc = net.minecraft.resources.ResourceLocation.fromNamespaceAndPath(
+                    MOD_ID, "models/item/custom_bulldozer.json");
+                var opt = net.minecraft.client.Minecraft.getInstance()
+                    .getResourceManager().getResource(modelLoc);
+                if (opt.isPresent()) {
+                    String json = new String(opt.get().open().readAllBytes(),
+                        java.nio.charset.StandardCharsets.UTF_8);
+                    LOGGER.info("[CUSTOM_BULLDOZER-DEBUG] model JSON 路径 = {}", modelLoc);
+                    LOGGER.info("[CUSTOM_BULLDOZER-DEBUG] model JSON 内容 = {}", json);
+                } else {
+                    LOGGER.error("[CUSTOM_BULLDOZER-DEBUG] ❌ 找不到 model JSON: {}", modelLoc);
+                }
+
+                // 读自己的贴图
+                var texLoc = net.minecraft.resources.ResourceLocation.fromNamespaceAndPath(
+                    MOD_ID, "textures/item/custom_bulldozer.png");
+                var optTex = net.minecraft.client.Minecraft.getInstance()
+                    .getResourceManager().getResource(texLoc);
+                if (optTex.isPresent()) {
+                    long size = optTex.get().open().readAllBytes().length;
+                    LOGGER.info("[CUSTOM_BULLDOZER-DEBUG] 贴图 = {} ({} 字节)", texLoc, size);
+                } else {
+                    LOGGER.error("[CUSTOM_BULLDOZER-DEBUG] ❌ 找不到贴图: {}", texLoc);
+                }
+
+                // 检查 Prefab 原版贴图是否被引用
+                var prefabTex = net.minecraft.resources.ResourceLocation.fromNamespaceAndPath(
+                    "prefab", "textures/item/item_bulldozer.png");
+                var optPrefab = net.minecraft.client.Minecraft.getInstance()
+                    .getResourceManager().getResource(prefabTex);
+                if (optPrefab.isPresent()) {
+                    long size = optPrefab.get().open().readAllBytes().length;
+                    LOGGER.warn("[CUSTOM_BULLDOZER-DEBUG] ⚠️ Prefab 原版贴图也存在: {} ({} 字节) — 这正常, 但我们代码不引用它",
+                        prefabTex, size);
+                }
+            } catch (Throwable t) {
+                LOGGER.error("[CUSTOM_BULLDOZER-DEBUG] 验证失败", t);
+            }
+        });
     }
 
     /**
@@ -127,9 +182,10 @@ public class PrefabCustomAddon {
      * 同时我们也注册了上面的 CUSTOM_TAB，让用户能在自定义栏里直接找到。
      */
     private void addCreativeTabContents(BuildCreativeModeTabContentsEvent event) {
-        // 放进 INGREDIENTS（材料）创造栏，确保 JEI 索引到这个物品
+        // 放进 INGREDIENTS（材料）创造栏，确保 JEI 索引到这些物品
         if (event.getTabKey() == CreativeModeTabs.INGREDIENTS) {
             event.accept(CUSTOM_BLUEPRINT.get());
+            event.accept(CUSTOM_BULLDOZER.get());
         }
     }
 

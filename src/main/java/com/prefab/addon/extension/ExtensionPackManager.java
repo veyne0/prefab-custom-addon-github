@@ -1143,28 +1143,102 @@ public class ExtensionPackManager {
     }
 
     /**
-     * 服务器→客户端同步用：返回所有已加载拓展包的 (name, sha1, size) 列表。
-     * name = packageName（缓存文件名用），sha1 = zip 内容指纹，size = zip 字节数。
+     * 服务器→客户端同步用：返回所有可同步建筑的清单（建筑级，非包级）。
+     * <p>
+     * <strong>已废弃"拓展包"概念</strong>：每个建筑都是一条独立清单条目。
+     * <ul>
+     *   <li>老式 .zip 包里有 N 个建筑 → 生成 N 条 entry，packName 都指向同一个 zip</li>
+     *   <li>新格式独立 .nbt/.litematic/.schem → 1 个文件 = 1 条 entry，packName = buildingId</li>
+     * </ul>
+     * sha1 / size 始终是<strong>源文件</strong>（zip 或 nbt）的指纹和大小，
+     * 客户端用它判断本地 server-cache/ 是否需要重下。
      */
     public List<com.prefab.addon.network.ServerPackManifestPayload.Entry> getSyncManifest() {
         List<com.prefab.addon.network.ServerPackManifestPayload.Entry> list = new ArrayList<>();
         for (ExtensionPack p : packs) {
-            String name = p.getPackageName();
-            String sha1 = p.getContentSha1();
-            long size = p.getFileSize();
-            if (name == null || name.isEmpty() || sha1 == null) continue; // 跳过无 package 的异常包
-            list.add(new com.prefab.addon.network.ServerPackManifestPayload.Entry(name, sha1, size));
+            String fileName = p.getFileName();
+            if (fileName == null) continue;
+            String lower = fileName.toLowerCase();
+            // 源文件指纹
+            String srcSha1 = p.getContentSha1();
+            long srcSize = p.getFileSize();
+            if (srcSha1 == null) continue;  // 没扫到就跳过
+            // packName: 旧 zip = 文件名去后缀; 新格式独立 = 文件名去后缀 (= buildingId)
+            String packName = fileName;
+            int dot = packName.lastIndexOf('.');
+            if (dot > 0) packName = packName.substring(0, dot);
+            // 源文件扩展名 (决定 sync 时怎么命名缓存文件)
+            String sourceExt;
+            if (lower.endsWith(".zip")) sourceExt = ".zip";
+            else if (lower.endsWith(".litematic")) sourceExt = ".litematic";
+            else if (lower.endsWith(".schem")) sourceExt = ".schem";
+            else if (lower.endsWith(".schematic")) sourceExt = ".schem";
+            else if (lower.endsWith(".nbt")) sourceExt = ".nbt";
+            else continue;
+
+            // 逐个 construction 展开为 entry
+            for (ConstructionInfo c : p.getConstructions()) {
+                String buildingId = c.getId();
+                if (buildingId == null || buildingId.isEmpty()) continue;
+                String displayName = c.getName();
+                if (displayName == null || displayName.isEmpty()) displayName = buildingId;
+                // 建筑实际格式: 看 construction 自己的 nbt 文件扩展名, 优先用 .nbt (统一标准格式)
+                String buildingFormat = ".nbt";
+                // 缩略图: 优先 construction 自己的 png, 没有就用 pack 封面
+                byte[] png = c.getPngData();
+                if ((png == null || png.length == 0) && p.getCoverImageData() != null) {
+                    png = p.getCoverImageData();
+                }
+                list.add(new com.prefab.addon.network.ServerPackManifestPayload.Entry(
+                        buildingId,    // name (旧字段兼容)
+                        srcSha1,       // sha1
+                        srcSize,       // size
+                        buildingId,
+                        displayName,
+                        buildingFormat,
+                        packName,
+                        fileName,      // sourceFileName
+                        c.getAuthor() == null ? "" : c.getAuthor(),
+                        c.getDescription() == null ? "" : c.getDescription(),
+                        png == null ? new byte[0] : png
+                ));
+            }
         }
         return list;
     }
 
     /**
-     * 服务端按 packageName 找 zip 文件路径（用于读取并分片发到客户端）。
-     * 返回 null 表示该包不存在 / 已被管理员删除。
+     * 服务端按 packName (= 源文件 basename, 无扩展名) 找源文件路径.
+     * 支持 .zip / .nbt / .litematic / .schem / .schematic. 用于读取并分片发到客户端.
+     * 返回 null 表示该源文件不存在 / 已被管理员删除.
      */
+    public java.nio.file.Path findSourceFileByPackName(String packName) {
+        if (packName == null || packName.isEmpty()) return null;
+        for (ExtensionPack p : packs) {
+            String fn = p.getFileName();
+            if (fn == null) continue;
+            String lower = fn.toLowerCase();
+            // 排除 .txt / .png 等非源文件扩展名
+            if (!(lower.endsWith(".zip") || lower.endsWith(".nbt") || lower.endsWith(".litematic")
+                    || lower.endsWith(".schem") || lower.endsWith(".schematic"))) continue;
+            String base = fn;
+            int dot = base.lastIndexOf('.');
+            if (dot > 0) base = base.substring(0, dot);
+            if (packName.equals(base)) {
+                String fp = p.getFilePath();
+                if (fp == null) return null;
+                return java.nio.file.Paths.get(fp);
+            }
+        }
+        return null;
+    }
+
+    /** 旧 API, 兼容旧调用方: 按 packageName 找 (仅匹配 .zip) */
     public java.nio.file.Path findPackZipPath(String packageName) {
         for (ExtensionPack p : packs) {
             if (packageName.equals(p.getPackageName())) {
+                String fn = p.getFileName();
+                if (fn == null || !fn.toLowerCase().endsWith(".zip")) return null;
                 String fp = p.getFilePath();
                 if (fp == null) return null;
                 return java.nio.file.Paths.get(fp);
@@ -1346,12 +1420,19 @@ public class ExtensionPackManager {
      * 因为这些信息要从文件读, 未同步就拿不到.</p>
      */
     public List<ServerBuildingInfo> getServerBuildings() {
+        // 用建筑级的缓存 (新) - 包含 displayName, author, pngData 等完整信息
+        java.util.List<ServerBuildingInfo> snapshot =
+            com.prefab.addon.network.ServerPackSyncClient.getInstance().getServerBuildingSnapshot();
+        if (snapshot != null && !snapshot.isEmpty()) return snapshot;
+
+        // 兼容老 API: 旧 manifest 只有 (name, sha1, size)
         java.util.List<com.prefab.addon.network.ServerPackManifestPayload.Entry> manifest =
             com.prefab.addon.network.ServerPackSyncClient.getInstance().getServerManifestSnapshot();
         if (manifest == null || manifest.isEmpty()) return java.util.Collections.emptyList();
 
         Path cacheDir = getServerCacheDir();
-        // 收集本地 server-cache/ 里所有建筑文件, 按 name (去后缀) 索引
+        // 收集本地 server-cache/ 里所有源文件, 按 basename (无后缀) 索引
+        // 老 .zip 拓展包和独立 .nbt 都用同一个 map (e.g. "test" → test.zip, "huochaihe" → huochaihe.nbt)
         java.util.Map<String, Path> localByName = new java.util.HashMap<>();
         if (cacheDir != null && Files.exists(cacheDir)) {
             try (java.util.stream.Stream<Path> s = Files.list(cacheDir)) {
@@ -1361,10 +1442,10 @@ public class ExtensionPackManager {
                     if (dot <= 0) return;
                     String base = fn.substring(0, dot);
                     String ext = fn.substring(dot).toLowerCase();
-                    // 排除 .png / .txt (单文件建筑的辅助文件)
+                    // 排除辅助文件
                     if (ext.equals(".png") || ext.equals(".txt") || ext.equals(".jpg")
                         || ext.equals(".jpeg") || ext.equals(".gif") || ext.equals(".webp")) return;
-                    // 同名文件: 优先 .zip (标准拓展包), 否则任意
+                    // 同名: 优先 .zip, 其次任意
                     Path existing = localByName.get(base);
                     if (existing == null || ext.equals(".zip")) {
                         localByName.put(base, p);
@@ -1377,22 +1458,36 @@ public class ExtensionPackManager {
 
         java.util.List<ServerBuildingInfo> result = new java.util.ArrayList<>();
         for (var e : manifest) {
-            if (e.name() == null || e.name().isEmpty()) continue;
-            Path localPath = localByName.get(e.name());
+            String bid = e.buildingId() == null || e.buildingId().isEmpty() ? e.name() : e.buildingId();
+            if (bid == null || bid.isEmpty()) continue;
+            String srcFile = e.sourceFileName() == null || e.sourceFileName().isEmpty()
+                    ? (e.packName() == null ? bid + ".zip" : e.packName() + ".zip")
+                    : e.sourceFileName();
+            String base = srcFile;
+            int dot = base.lastIndexOf('.');
+            if (dot > 0) base = base.substring(0, dot);
+            Path localPath = localByName.get(base);
             boolean synced = false;
-            String ext = "";
             if (localPath != null) {
-                String fn = localPath.getFileName().toString();
-                int dot = fn.lastIndexOf('.');
-                if (dot > 0) ext = fn.substring(dot);
                 try {
                     String localSha1 = computeSha1Hex(localPath);
-                    synced = e.sha1().equalsIgnoreCase(localSha1);
+                    synced = e.sha1() != null && e.sha1().equalsIgnoreCase(localSha1);
                 } catch (Exception ex) {
                     synced = false;
                 }
             }
-            result.add(new ServerBuildingInfo(e.name(), e.sha1(), e.size(), synced, ext));
+            result.add(new ServerBuildingInfo(
+                    bid,
+                    e.displayName() == null || e.displayName().isEmpty() ? bid : e.displayName(),
+                    e.author() == null ? "" : e.author(),
+                    e.description() == null ? "" : e.description(),
+                    srcFile,
+                    e.packName() == null ? base : e.packName(),
+                    e.sha1(),
+                    e.size(),
+                    e.pngData() == null ? new byte[0] : e.pngData(),
+                    synced
+            ));
         }
         return result;
     }

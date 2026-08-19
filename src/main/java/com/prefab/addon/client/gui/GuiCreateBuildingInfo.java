@@ -18,6 +18,7 @@ import com.lowdragmc.lowdraglib2.gui.ui.event.UIEvents;
 import com.lowdragmc.lowdraglib2.gui.ui.style.StylesheetManager;
 import com.lowdragmc.lowdraglib2.gui.ui.styletemplate.Sprites;
 import com.prefab.addon.PrefabCustomAddon;
+import com.prefab.addon.config.CategoryManager;
 import com.prefab.addon.extension.ObjToSchematicConverter;
 import com.prefab.addon.work.NbtFormatConverter;
 import com.prefab.addon.work.NbtStructureParser;
@@ -33,7 +34,8 @@ import net.minecraft.world.item.ItemStack;
 
 import java.io.File;
 import java.nio.file.Files;
-import java.util.concurrent.CompletableFuture;
+import java.nio.file.Path;
+import java.nio.charset.StandardCharsets;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -55,31 +57,39 @@ public final class GuiCreateBuildingInfo {
     // === 状态 ===
     private static String currentPackId;
     private static PackCreator.BuildingWorkInfo editing;
-    private static GuiExtensionPackCreator parent;
+    /** 父 GUI 引用 — 同包 GuiExtensionPackCreator 在嵌入本表单时直接赋值 (package-private 字段). */
+    static GuiExtensionPackCreator parent;
 
     // === 表单字段值 (static, 用于 open() → createUI() 之间共享) ===
-    private static String fieldIdValue = "";
-    private static String fieldNameValue = "";
-    private static String fieldAuthorValue = "";
-    private static String fieldSizeValue = "";
-    private static String fieldFormatValue = "";  // 蓝图格式: nbt / litematic / schem / 未知
-    private static String fieldDepsValue = "";
-    private static String fieldDescValue = "";
+    // 注意: 这些字段是 package-private (不加修饰符), 同包的 GuiExtensionPackBrowser 在 ADD tab
+    // 嵌入了简化版表单时, 会直接读写这些字段, 走 doSave() 走同一条保存链路.
+    static String fieldIdValue = "";
+    static String fieldNameValue = "";
+    static String fieldAuthorValue = "";
+    static String fieldSizeValue = "";
+    static String fieldFormatValue = "";  // 蓝图格式: nbt / litematic / schem / 未知
+    static String fieldDepsValue = "";
+    static String fieldDescValue = "";
     /** 蓝图显示图标 - 物品 id, 如 "minecraft:stone". 空 = 使用默认图标. */
-    private static String fieldIconValue = "";
+    static String fieldIconValue = "";
     /** 待保存的图标图片 (PNG/JPG) 字节, 保存时写到 construction/<id>.png 覆盖原图. null = 未改. */
-    private static byte[] fieldIconData = null;
+    static byte[] fieldIconData = null;
     /** 当前图标文件路径 (UI 显示用) - 用于选择图片后提示玩家"已选: xxx.png". */
-    private static String fieldIconPath = "";
+    static String fieldIconPath = "";
+    /**
+     * 当前选中的分类 (从 CategoryManager.getCategories() 选一个).
+     * 空 = 未分类. 跟 LocalBuilding.category / ConstructionInfo.category 字段一致.
+     */
+    static String fieldCategoryValue = CategoryManager.UNCATEGORIZED;
 
     // === 已选 NBT ===
-    private static byte[] nbtData = null;
-    private static String nbtPath = "";
-    private static NbtStructureParser.NbtInfo nbtInfo = null;
+    static byte[] nbtData = null;
+    static String nbtPath = "";
+    static NbtStructureParser.NbtInfo nbtInfo = null;
 
     // === 状态消息 ===
-    private static String statusMessage = null;
-    private static int statusColor = 0x55FF55;
+    static String statusMessage = null;
+    static int statusColor = 0x55FF55;
     private static int statusTick = 0;
 
     // === UI 引用 ===
@@ -89,6 +99,8 @@ public final class GuiCreateBuildingInfo {
     private static TextElement formatEl;  // 蓝图格式 TextElement 引用
     private static TextElement nbtPathEl;
     private static TextElement iconEl;     // 当前已选图标 TextElement 引用
+    /** 当前选中分类显示 (TextField 不可点 → 用 TextElement 当只读显示, 旁边的 ‹ › 按钮翻分类). */
+    private static TextElement categoryEl;
     // 可编辑字段的 TextField 引用 - 用于 litematica 加载后自动填 name/author/desc 到 UI
     private static TextField idTf;
     private static TextField nameTf;
@@ -127,6 +139,9 @@ public final class GuiCreateBuildingInfo {
             fieldNameValue = preserved.name;
             fieldAuthorValue = preserved.author;
             fieldDescValue = preserved.desc;
+            // 分类: 保留用户已选的, 没有就 "未分类"
+            fieldCategoryValue = (preserved.category == null || preserved.category.isBlank())
+                ? CategoryManager.UNCATEGORIZED : preserved.category;
             // nbtData/nbtPath/nbtInfo/fieldSizeValue/fieldDepsValue 已在 applyNbtFromRegion 中赋值
         } else if (editingInfo != null) {
             fieldIdValue = safeStr(editingInfo.id);
@@ -135,6 +150,8 @@ public final class GuiCreateBuildingInfo {
             fieldSizeValue = safeStr(editingInfo.size);
             fieldDepsValue = safeStr(editingInfo.dependencies);
             fieldDescValue = safeStr(editingInfo.description);
+            // 分类: 从 BuildingWorkInfo 回填 (空 → 未分类). 让玩家编辑时能改分类.
+            fieldCategoryValue = editingInfo.getCategoryOrDefault();
             // 编辑模式: 如果该建筑已有 PNG 图标, 显示文件名, 让玩家知道当前图标
             if (editingInfo.png != null && Files.exists(editingInfo.png)) {
                 fieldIconPath = editingInfo.png.getFileName().toString();
@@ -154,7 +171,7 @@ public final class GuiCreateBuildingInfo {
             fieldDepsValue = "prefab";
         }
 
-        ModularUI ui = createUI();
+        ModularUI ui = wrapAsModularUI(createFormElement());
         String title = (editingInfo == null
             ? com.prefab.addon.PrefabCustomAddon.tr("gui.create_building.window_title_create")
             : com.prefab.addon.PrefabCustomAddon.tr("gui.create_building.window_title_edit", editingInfo.id))
@@ -174,7 +191,7 @@ public final class GuiCreateBuildingInfo {
                 editing.id != null ? editing.id : ""))
             + " " + com.prefab.addon.PrefabCustomAddon.tr("gui.create_building.window_title_pack",
                 currentPackId != null ? currentPackId : "?");
-        ModularUI ui = createUI();
+        ModularUI ui = wrapAsModularUI(createFormElement());
         Minecraft.getInstance().setScreen(new ModularUIScreen(ui, Component.literal(title)));
     }
 
@@ -191,12 +208,163 @@ public final class GuiCreateBuildingInfo {
         fieldIconValue = "";
         fieldIconData = null;
         fieldIconPath = com.prefab.addon.PrefabCustomAddon.tr("gui.create_building.not_selected");
+        fieldCategoryValue = CategoryManager.UNCATEGORIZED;
         nbtData = null;
         nbtPath = com.prefab.addon.PrefabCustomAddon.tr("gui.create_building.not_selected");
         nbtInfo = null;
         statusMessage = null;
         statusTick = 0;
         statusColor = 0x55FF55;
+    }
+
+    /**
+     * 重置表单状态以便复用 (保留 parent 引用, 因为嵌入模式下 parent 仍指向主界面).
+     * 用于嵌入到主界面 tab 后, 用户保存/删除/取消时主界面原地刷新表单.
+     */
+    public static void resetForReuse() {
+        GuiExtensionPackCreator savedParent = parent;
+        resetState();
+        parent = savedParent;
+        // 不再默认填 "prefab": 保存成功后调用此方法, 表单应保持空, 让玩家在创建下一个时自行填写依赖
+        // 之前默认填 prefab 会让玩家误以为"上一个建筑的依赖没清掉", 体验不好
+    }
+
+    // === 暴露给外部 (例如 GuiExtensionPackBrowser 的 ADD tab) 调用的入口 ===
+
+    /**
+     * 给 "制作蓝图" tab 用的 NBT 选择: 选完文件**不打开**创建建筑界面, 而是回调到
+     * 传入的 editor (GuiExtensionPackEditor), 由它自己更新 selectedBuilding 字段.
+     *
+     * <p>跟 {@link #openNbtPickerFromExtension()} 的区别: 那个选完会触发 handleNbtSelected
+     * 写入创建建筑用的 static 字段, 还会试图刷新创建建筑 GUI. 我们这里只想拿 NBT 文件路径
+     * + 文件名 + 尺寸, 不需要那个流程.</p>
+     *
+     * <p>实现: 直接调 SystemFilePicker (跟 openNbtChooser 同一条 PowerShell → AWT → in-game
+     * 链路), 选完文件后只把文件 + 解析出的 size + 依赖回传给 editor. 失败/取消时回传 null.</p>
+     */
+    public static void pickNbtForBlueprint(java.util.function.BiConsumer<NbtPickResult, Throwable> cb) {
+        SystemFilePicker.openAsync(
+            com.prefab.addon.PrefabCustomAddon.tr("gui.create_building.choose_nbt_title"),
+            java.util.Arrays.asList("nbt", "litematic", "schem", "schematic"),
+            r -> {
+                if (r.isOk() && r.file != null && r.file.exists()) {
+                    try {
+                        NbtPickResult result = new NbtPickResult();
+                        result.file = r.file;
+                        result.fileName = r.file.getName();
+                        result.sizeString = parseSizeString(r.file);
+                        cb.accept(result, null);
+                    } catch (Throwable t) {
+                        cb.accept(null, t);
+                    }
+                } else if (r.isCancelled()) {
+                    cb.accept(null, null);  // 取消不报错
+                } else {
+                    cb.accept(null, new RuntimeException(
+                        r.message == null ? "unknown" : r.message));
+                }
+            });
+    }
+
+    /** 给 "制作蓝图" tab 用的游戏中选区: 选完不打开创建建筑界面, 回调到 editor. */
+    public static void pickInGameForBlueprint(java.util.function.BiConsumer<InGamePickResult, Throwable> cb) {
+        com.prefab.addon.work.RegionSelector.start(
+            Minecraft.getInstance().player,
+            new com.prefab.addon.work.RegionSelector.OnCompleted() {
+                @Override
+                public void onCompleted(byte[] newNbtData, java.nio.file.Path nbtFile,
+                                        String sizeString, java.util.List<String> modIds) {
+                    InGamePickResult res = new InGamePickResult();
+                    res.nbtData = newNbtData;
+                    res.nbtFile = nbtFile;
+                    res.sizeString = sizeString;
+                    res.modIds = modIds;
+                    // 计算一个展示名 (时间戳), 因为游戏内选区没有文件名
+                    res.fileName = String.format("in_game_%d",
+                        System.currentTimeMillis() / 1000L);
+                    Minecraft.getInstance().execute(() -> cb.accept(res, null));
+                }
+                @Override
+                public void onCancelled() {
+                    Minecraft.getInstance().execute(() -> cb.accept(null, null));
+                }
+            });
+    }
+
+    /** 解析 NBT 文件的尺寸字符串. 解析失败回退空串. */
+    private static String parseSizeString(File f) {
+        try {
+            byte[] data = Files.readAllBytes(f.toPath());
+            // 统一转 vanilla 再 parse, 处理 litematic/schem 等非 vanilla 格式
+            try {
+                CompoundTag root;
+                try (var bais = new java.io.ByteArrayInputStream(data)) {
+                    root = NbtIo.readCompressed(bais, NbtAccounter.unlimitedHeap());
+                } catch (Exception ex1) {
+                    try (var bais = new java.io.ByteArrayInputStream(data)) {
+                        root = NbtIo.read(new java.io.DataInputStream(bais));
+                    }
+                }
+                if (root != null) {
+                    String fmt = NbtFormatConverter.detectFormat(root);
+                    if (!"vanilla".equals(fmt) && !"unknown".equals(fmt)) {
+                        CompoundTag vanilla = NbtFormatConverter.toVanilla(root);
+                        if (vanilla != null) root = vanilla;
+                    }
+                    // 重新序列化为压缩字节流, 让 NbtStructureParser 走统一入口
+                    java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
+                    NbtIo.writeCompressed(root, baos);
+                    NbtStructureParser.NbtInfo info = NbtStructureParser.parse(baos.toByteArray());
+                    if (info != null) return info.sizeString();
+                }
+            } catch (Exception ignore) {}
+            // 兜底: 直接用原始字节流 parse
+            NbtStructureParser.NbtInfo info = NbtStructureParser.parse(data);
+            return info == null ? "" : info.sizeString();
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    /** NBT 文件选完后的回传包. file/sizeString 必填, deps 暂时不传 (让玩家自己看 NBT 内的 meta). */
+    public static class NbtPickResult {
+        public File file;             // 选中的 .nbt/.litematic/.schem 文件
+        public String fileName;       // 短文件名, 用来显示 + 派生 building id
+        public String sizeString;     // 解析出的尺寸, 形如 "10x12x15"
+    }
+
+    /** 游戏内选区完后的回传包. nbtData/sizeString 必填, nbtFile 可空 (没有原始文件). */
+    public static class InGamePickResult {
+        public byte[] nbtData;        // 区域抓到的 NBT 数据 (vanilla structure)
+        public java.nio.file.Path nbtFile;  // 原始文件路径 (没有则为 null)
+        public String sizeString;     // 区域尺寸, 形如 "10x12x15"
+        public java.util.List<String> modIds;  // 区域内扫描到的 mod id 列表
+        public String fileName;       // 展示名 (in_game_<时间戳>)
+    }
+
+    /** 打开 NBT 文件选择器. */
+    public static void openNbtPickerFromExtension() {
+        openNbtChooser();
+    }
+
+    /** 打开游戏中选区 (关闭当前 GUI, 玩家在游戏内选区后返回). */
+    public static void openInGameSelectorFromExtension() {
+        startInWorldPicking();
+    }
+
+    /** 打开 OBJ 转换选项弹窗 (先选 OBJ 文件). */
+    public static void openObjConverterFromExtension() {
+        openNbtChooser();
+    }
+
+    /** 打开图标文件选择器. */
+    public static void openIconPickerFromExtension() {
+        openIconPicker();
+    }
+
+    /** 打开完整编辑器 (弹独立 LDLib2 屏, 处理复杂功能). */
+    public static void openFullEditor() {
+        open(null, null, null);
     }
 
     private static String safeStr(String s) { return s == null ? "" : s; }
@@ -224,20 +392,28 @@ public final class GuiCreateBuildingInfo {
      * 避免 resetState() 把用户已填的 id/name/author/desc 等清空.
      */
     public static final class PreservedFieldValues {
-        public final String id, name, author, size, deps, desc;
+        public final String id, name, author, size, deps, desc, category;
         public PreservedFieldValues(String id, String name, String author,
-                                    String size, String deps, String desc) {
+                                    String size, String deps, String desc, String category) {
             this.id = id;
             this.name = name;
             this.author = author;
             this.size = size;
             this.deps = deps;
             this.desc = desc;
+            this.category = category;
         }
     }
 
     // === 主 UI 创建 ===
-    private static ModularUI createUI() {
+    /**
+     * 创建完整的表单 UIElement (含 scroller 表单区 + 状态行 + 底部按钮行),
+     * 供外部嵌入到其它容器 (例如 GuiExtensionPackCreator 的 "添加建筑" tab) 用.
+     *
+     * <p>注意: 嵌入了本 UI 后, save/delete 弹窗仍用 setScreen 弹独立窗
+     * (因为 OBJ 转化/游戏中选区/图标选择/删除确认 都是多步骤交互, 不适合嵌到 tab 里).</p>
+     */
+    public static UIElement createFormElement() {
         UIElement root = new UIElement();
         root.layout(l -> l
             .widthPercent(100).heightPercent(100)
@@ -248,11 +424,14 @@ public final class GuiCreateBuildingInfo {
         root.setOverflowVisible(false);
 
         // === 标题 ===
+        // packId 为空时 (新流程没有 pack 概念), 隐藏末尾的 " (packId)" 段
+        String packPart = (currentPackId == null || currentPackId.isEmpty()) ? ""
+            : " §7(" + com.prefab.addon.PrefabCustomAddon.tr("gui.create_building.pack_label", currentPackId) + ")";
         Label titleEl = new Label();
         titleEl.setText("§l" + (editing == null
             ? com.prefab.addon.PrefabCustomAddon.tr("gui.create_building.create_title")
             : com.prefab.addon.PrefabCustomAddon.tr("gui.create_building.edit_title", editing.id))
-            + " §7(" + com.prefab.addon.PrefabCustomAddon.tr("gui.create_building.pack_label", currentPackId) + ")");
+            + packPart);
         titleEl.textStyle(t -> t.textAlignHorizontal(Horizontal.CENTER));
         titleEl.layout(l -> l.widthPercent(100).height(18));
         root.addChild(titleEl);
@@ -284,6 +463,59 @@ public final class GuiCreateBuildingInfo {
         // 依赖 (只读, 由 NBT 自动填)
         addReadonlyField(formContent, com.prefab.addon.PrefabCustomAddon.tr("gui.create_building.label_deps"), fieldDepsValue, e -> { depEl = e; });
         descTf = addInputField(formContent, com.prefab.addon.PrefabCustomAddon.tr("gui.create_building.label_desc"), fieldDescValue, v -> fieldDescValue = v, false);
+
+        // === 分类选择行 (用 ‹ › 按钮 + TextElement 拼, 不用 dropdown) ===
+        // 原因: LDLib2 没现成 dropdown, 用按钮切最简. CategoryManager.UNCATEGORIZED 永远在第一位.
+        UIElement catRow = new UIElement();
+        catRow.layout(l -> l.widthPercent(100).height(20)
+            .flexDirection(FlexDirection.ROW).gapAll(4).marginTop(2)
+            .alignItems(AlignItems.CENTER));
+        catRow.setOverflowVisible(false);
+        Label catLbl = new Label();
+        catLbl.setText(com.prefab.addon.PrefabCustomAddon.tr("gui.create_building.label_category"));
+        catLbl.textStyle(t -> t.textColor(0xAAAAAA));
+        catLbl.layout(l -> l.width(50).flexShrink(0));
+        catRow.addChild(catLbl);
+
+        Button btnCatPrev = new Button().setText("‹");
+        btnCatPrev.setOnClick(e -> {
+            java.util.List<String> all = CategoryManager.get().getCategories();
+            int idx = indexOfCategory(all, fieldCategoryValue);
+            int next = (idx <= 0) ? all.size() - 1 : idx - 1;
+            fieldCategoryValue = all.get(next);
+            updateCategoryDisplay();
+        });
+        btnCatPrev.layout(l -> l.heightPercent(100).width(16).flexShrink(0));
+        catRow.addChild(btnCatPrev);
+
+        categoryEl = new TextElement();
+        categoryEl.setText(fieldCategoryValue);
+        categoryEl.textStyle(t -> t.textColor(0xFFFFFF).textWrap(TextWrap.WRAP).adaptiveHeight(true));
+        categoryEl.layout(l -> l.flexGrow(1).heightAuto().minHeight(14));
+        catRow.addChild(categoryEl);
+
+        Button btnCatNext = new Button().setText("›");
+        btnCatNext.setOnClick(e -> {
+            java.util.List<String> all = CategoryManager.get().getCategories();
+            int idx = indexOfCategory(all, fieldCategoryValue);
+            int next = (idx < 0 || idx >= all.size() - 1) ? 0 : idx + 1;
+            fieldCategoryValue = all.get(next);
+            updateCategoryDisplay();
+        });
+        btnCatNext.layout(l -> l.heightPercent(100).width(16).flexShrink(0));
+        catRow.addChild(btnCatNext);
+
+        Button btnCatAdd = new Button().setText(com.prefab.addon.PrefabCustomAddon.tr("gui.create_building.add_category"));
+        btnCatAdd.setOnClick(e -> {
+            // 弹分类管理界面, 关闭时调 reopenCurrentUI 让玩家接着填 (而不是回到主界面)
+            GuiCategoryManager.open(() -> reopenCurrentUI());
+        });
+        btnCatAdd.layout(l -> l.heightPercent(100).width(36).flexShrink(0));
+        catRow.addChild(btnCatAdd);
+
+        formContent.addChild(catRow);
+        // 初始也要刷一次, 因为 fieldCategoryValue 可能在 open() 后被改了
+        updateCategoryDisplay();
 
         // === 图标选择行 ===
         // 让玩家从本地选一张 PNG/JPG 图作为蓝图图标. 图片会在保存时写到 construction/<id>.png,
@@ -405,6 +637,15 @@ public final class GuiCreateBuildingInfo {
             }
         });
 
+        return root;
+    }
+
+    /**
+     * 用 {@link #createFormElement()} 包装成独立 ModularUI 屏幕.
+     * 仅当外部需要以独立窗口弹出整个表单时使用 (例如旧版 open() 入口).
+     * 新代码 (GuiExtensionPackCreator 嵌入) 走 createFormElement() 直接 addChild.
+     */
+    private static ModularUI wrapAsModularUI(UIElement root) {
         return ModularUI.of(UI.of(root,
             StylesheetManager.INSTANCE.getStylesheetSafe(StylesheetManager.MC)));
     }
@@ -469,7 +710,10 @@ public final class GuiCreateBuildingInfo {
     private static void addReadonlyField(UIElement parent, String label, String initial,
                                          java.util.function.Consumer<TextElement> onCreate) {
         UIElement row = new UIElement();
-        row.layout(l -> l.widthPercent(100).heightAuto().minHeight(20)
+        // 用固定 height(20) 而非 heightAuto().minHeight(20) — 之前 heightAuto 在父容器
+        // (formContent 是 ScrollerView 的子) 里会被压成 0, 导致 尺寸 / 蓝图格式 / 依赖 整行不可见
+        // (因为子 TextElement 的 adaptiveHeight 初始是 0, row 的 heightAuto 算出 0, 又没强制 minHeight 生效)
+        row.layout(l -> l.widthPercent(100).height(20)
             .flexDirection(FlexDirection.ROW).gapAll(4).alignItems(AlignItems.CENTER));
         row.setOverflowVisible(false);
         Label lbl = new Label();
@@ -994,6 +1238,12 @@ public final class GuiCreateBuildingInfo {
     private static void handleNbtSelected(File f) {
         try {
             byte[] data = Files.readAllBytes(f.toPath());
+            // 兜底 1: 文件为空或太小, 根本不可能是 NBT
+            if (data == null || data.length < 10) {
+                setStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.create_building.file_too_small",
+                    f.getName(), data == null ? 0 : data.length), 0xFF5555);
+                return;
+            }
             String detectedFmt;
             byte[] vanillaNbtData = data;
             try {
@@ -1025,6 +1275,13 @@ public final class GuiCreateBuildingInfo {
                 info = NbtStructureParser.parse(vanillaNbtData);
             } catch (Exception e) {
                 setStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.create_building.nbt_parse_fail", e.getMessage()), 0xFF5555);
+                return;
+            }
+            // 兜底 2: 解析没抛异常但拿不到任何尺寸 — 该文件不是有效的建筑/结构 NBT
+            // 之前这种情况会静默通过, 用户看到空白字段 + 选了 NBT 后没反应, 很迷惑
+            if (info.sizeX <= 0 && info.sizeY <= 0 && info.sizeZ <= 0) {
+                setStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.create_building.not_a_building_nbt",
+                    f.getName()), 0xFF5555);
                 return;
             }
             nbtData = vanillaNbtData;
@@ -1114,7 +1371,7 @@ public final class GuiCreateBuildingInfo {
         // 缓存现场 (用 PreservedFieldValues 保留用户已填的字段)
         final PreservedFieldValues preserved = new PreservedFieldValues(
             fieldIdValue, fieldNameValue, fieldAuthorValue,
-            fieldSizeValue, fieldDepsValue, fieldDescValue);
+            fieldSizeValue, fieldDepsValue, fieldDescValue, fieldCategoryValue);
         final GuiExtensionPackCreator savedParent = parent;
         final PackCreator.BuildingWorkInfo savedEditing = editing;
 
@@ -1220,7 +1477,22 @@ public final class GuiCreateBuildingInfo {
     }
 
     // === 保存 ===
-    private static void doSave() {
+    /**
+     * 保存为 prefab-extension/<id>.nbt + <id>.txt + <id>.png 三件套.
+     * 直接写文件, 不调 PackCreator (老拓展包工作区系统已废弃).
+     *
+     * <p>.txt 格式跟 {@link com.prefab.addon.extension.LocalBuildingScanner} 解析的格式一致:
+     * <pre>
+     *   建筑名: xxx
+     *   作者: xxx
+     *   描述: xxx
+     *   格式: nbt / litematic / schem / obj->schem
+     *   依赖: prefab
+     *   尺寸: 10x12x15
+     * </pre>
+     * </p>
+     */
+    public static void doSave() {
         String id = fieldIdValue.trim();
         String name = fieldNameValue.trim();
         String size = fieldSizeValue.trim();
@@ -1233,22 +1505,62 @@ public final class GuiCreateBuildingInfo {
         if (nbtData == null) { setStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.create_building.no_nbt"), 0xFF5555); return; }
 
         try {
-            // fieldIconData 是玩家刚选的 PNG/JPG, 传 null 表示不覆盖原 png.
-            // 选过图 → 写到 construction/<id>.png; 没选 → null 保持原图.
-            PackCreator.getInstance().saveBuilding(currentPackId, id, name,
-                fieldAuthorValue.trim(), size, fieldDepsValue.trim(),
-                fieldDescValue.trim(), fieldFormatValue.trim(), fieldIconValue.trim(),
-                nbtData, iconHasData() ? fieldIconData : null);
+            Path root = com.prefab.addon.extension.LocalBuildingScanner.getExtensionRoot();
+            // 不存在就创建 prefab-extension 目录
+            if (!Files.exists(root)) Files.createDirectories(root);
+
+            // 1) 写 <id>.nbt (建筑文件)
+            //    nbtData 内部都是 vanilla NBT (选 litematic/schem 时已转 vanilla), 统一存 .nbt
+            Path nbtFile = root.resolve(id + ".nbt");
+            Files.write(nbtFile, nbtData);
+
+            // 2) 写 <id>.txt (元信息)
+            StringBuilder txt = new StringBuilder();
+            txt.append("建筑名: ").append(name).append("\n");
+            if (!fieldAuthorValue.trim().isEmpty()) {
+                txt.append("作者: ").append(fieldAuthorValue.trim()).append("\n");
+            }
+            if (!fieldDescValue.trim().isEmpty()) {
+                txt.append("描述: ").append(fieldDescValue.trim()).append("\n");
+            }
+            if (!fieldFormatValue.trim().isEmpty()) {
+                txt.append("格式: ").append(fieldFormatValue.trim()).append("\n");
+            }
+            if (!fieldDepsValue.trim().isEmpty()) {
+                String depLine = "依赖: " + fieldDepsValue.trim();
+                txt.append(depLine).append("\n");
+                com.prefab.addon.PrefabCustomAddon.LOGGER.info("[DIAG-CBI] 写入 .txt: [{}] (fieldDepsValue=[{}])", depLine, fieldDepsValue);
+            }
+            // 分类: 不写 "未分类" (那是默认占位, 写到 .txt 反而占空间)
+            if (!fieldCategoryValue.trim().isEmpty()
+                && !CategoryManager.UNCATEGORIZED.equals(fieldCategoryValue.trim())) {
+                txt.append("分类: ").append(fieldCategoryValue.trim()).append("\n");
+            }
+            txt.append("尺寸: ").append(size).append("\n");
+            Path txtFile = root.resolve(id + ".txt");
+            Files.writeString(txtFile, txt.toString(), StandardCharsets.UTF_8);
+
+            // 3) 写 <id>.png (图标, 选过图才有)
+            if (iconHasData()) {
+                // 按 fieldIconValue 后缀决定扩展名, 默认 .png
+                String iconExt = ".png";
+                if (fieldIconPath != null) {
+                    String lower = fieldIconPath.toLowerCase(java.util.Locale.ROOT);
+                    if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) iconExt = ".jpg";
+                    else if (lower.endsWith(".gif")) iconExt = ".gif";
+                    else if (lower.endsWith(".webp")) iconExt = ".webp";
+                }
+                Path pngFile = root.resolve(id + iconExt);
+                Files.write(pngFile, fieldIconData);
+            }
+
             setStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.create_building.saved", id), 0x55FF55);
+            PrefabCustomAddon.LOGGER.info("[CREATOR-LD2] saved {} ({}x{}x{}) to {}",
+                id, name, size, nbtFile.getFileName(), root);
+
+            // 嵌入式调用: 通知父 GUI (GuiExtensionPackCreator) 刷新
             if (parent != null) {
-                // 已有 parent 直接调 onChildClosed, 让父 GUI 自己负责重开/关闭
-                parent.onChildClosed();
-            } else {
-                // 没有 parent 直接关闭
-                CompletableFuture.runAsync(() -> {
-                    try { Thread.sleep(600); } catch (InterruptedException ignored) {}
-                    Minecraft.getInstance().execute(() -> Minecraft.getInstance().setScreen(null));
-                });
+                parent.onBuildingSaved(id);
             }
         } catch (Exception e) {
             PrefabCustomAddon.LOGGER.error("[CREATOR-LD2] save building failed", e);
@@ -1287,10 +1599,18 @@ public final class GuiCreateBuildingInfo {
                                 setStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.create_building.image_empty"), 0xFF5555);
                                 return;
                             }
-                            // 简单大小限制, 防玩家不小心选了 50MB 的图
-                            if (data.length > 2 * 1024 * 1024) {
+                            // 大小硬限制: 16MB, 防玩家选了几百 MB 的巨图炸内存
+                            if (data.length > 16 * 1024 * 1024) {
                                 setStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.create_building.image_too_big"), 0xFF5555);
                                 return;
+                            }
+                            // 2~16MB 的图自动下采样到 256x256 PNG 后再存, 避免 construction/<id>.png 过大
+                            if (data.length > 2 * 1024 * 1024) {
+                                try {
+                                    data = downscaleIconPng(data, 256);
+                                } catch (Throwable t) {
+                                    PrefabCustomAddon.LOGGER.warn("[CREATOR-LD2] downscale failed, store raw: {}", t.getMessage());
+                                }
                             }
                             fieldIconData = data;
                             fieldIconPath = f.getName();
@@ -1311,6 +1631,49 @@ public final class GuiCreateBuildingInfo {
             });
     }
 
+    /**
+     * 把任意尺寸 PNG/JPG 字节下采样到最大边长 maxSide 的 PNG 字节.
+     * 1) 中心裁剪成正方形 (避免宽高比差距大时主体被挤).
+     * 2) BICUBIC 缩放 + 抗锯齿.
+     * 3) 输出 PNG bytes.
+     * 用于建筑图标选择: 玩家选 4MB+ 的原图时, 不会直接拒绝, 而是先下采样再存.
+     */
+    private static byte[] downscaleIconPng(byte[] src, int maxSide) throws Exception {
+        java.awt.image.BufferedImage srcImg = javax.imageio.ImageIO.read(new java.io.ByteArrayInputStream(src));
+        if (srcImg == null) throw new IllegalStateException("ImageIO.read 返回 null");
+        int sw = srcImg.getWidth();
+        int sh = srcImg.getHeight();
+        if (sw <= 0 || sh <= 0) throw new IllegalStateException("image size = 0");
+
+        // 1) 中心裁剪成正方形
+        int side = Math.min(sw, sh);
+        int sx = (sw - side) / 2;
+        int sy = (sh - side) / 2;
+        java.awt.image.BufferedImage cropped = srcImg.getSubimage(sx, sy, side, side);
+
+        // 2) 缩放到 maxSide x maxSide
+        int dst = Math.min(maxSide, side);
+        java.awt.image.BufferedImage scaled = new java.awt.image.BufferedImage(dst, dst,
+            java.awt.image.BufferedImage.TYPE_INT_ARGB);
+        java.awt.Graphics2D g = scaled.createGraphics();
+        try {
+            g.setRenderingHint(java.awt.RenderingHints.KEY_INTERPOLATION,
+                java.awt.RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+            g.setRenderingHint(java.awt.RenderingHints.KEY_RENDERING,
+                java.awt.RenderingHints.VALUE_RENDER_QUALITY);
+            g.setRenderingHint(java.awt.RenderingHints.KEY_ANTIALIASING,
+                java.awt.RenderingHints.VALUE_ANTIALIAS_ON);
+            g.drawImage(cropped, 0, 0, dst, dst, null);
+        } finally {
+            g.dispose();
+        }
+
+        // 3) 写出 PNG bytes
+        java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
+        javax.imageio.ImageIO.write(scaled, "png", baos);
+        return baos.toByteArray();
+    }
+
     /** 当前是否已有可用的图标图片字节. */
     private static boolean iconHasData() {
         return fieldIconData != null && fieldIconData.length > 0;
@@ -1324,6 +1687,26 @@ public final class GuiCreateBuildingInfo {
         } else {
             iconEl.setText(com.prefab.addon.PrefabCustomAddon.tr("gui.create_building.icon_default_display"));
         }
+    }
+
+    /** 刷新当前分类显示文字 (随 CategoryManager 变化保持同步). */
+    private static void updateCategoryDisplay() {
+        if (categoryEl == null) return;
+        String display = fieldCategoryValue;
+        if (display == null || display.isEmpty()) {
+            display = CategoryManager.UNCATEGORIZED;
+            fieldCategoryValue = display;
+        }
+        categoryEl.setText(display);
+    }
+
+    /** 找 name 在 list 里的索引 (大小写不敏感). 找不到返回 -1. */
+    private static int indexOfCategory(java.util.List<String> list, String name) {
+        if (list == null || name == null) return -1;
+        for (int i = 0; i < list.size(); i++) {
+            if (list.get(i).equalsIgnoreCase(name)) return i;
+        }
+        return -1;
     }
 
     // === 删除确认 + 执行 ===
@@ -1392,24 +1775,58 @@ public final class GuiCreateBuildingInfo {
 
     /**
      * 实际执行删除 (在确认弹窗点 "确认删除" 后调用).
-     * 删除后会调 parent.onChildClosed() 让父 GUI 重新刷新建筑列表.
+     * 删除 prefab-extension/<id>.{nbt,schem,litematic} + .txt + .{png,jpg,jpeg,gif,webp} 三件套.
+     * 删除后会调 parent.onBuildingDeleted(id) 让父 GUI 重新扫描.
      */
-    private static void doDelete(String packId, String buildingId) {
+    public static void doDelete(String packId, String buildingId) {
         try {
-            PackCreator.getInstance().deleteBuilding(packId, buildingId);
-            PrefabCustomAddon.LOGGER.info("[CREATOR-LD2] deleted building {}/{}", packId, buildingId);
+            Path root = com.prefab.addon.extension.LocalBuildingScanner.getExtensionRoot();
+            int deleted = 0;
+            // 1) 建筑文件 (.nbt / .schem / .litematic)
+            for (String ext : java.util.Arrays.asList(".nbt", ".schem", ".schematic", ".litematic")) {
+                Path p = root.resolve(buildingId + ext);
+                if (Files.deleteIfExists(p)) { deleted++; PrefabCustomAddon.LOGGER.info("[CREATOR-LD2] deleted {}", p); }
+            }
+            // 2) 元信息
+            Path txt = root.resolve(buildingId + ".txt");
+            if (Files.deleteIfExists(txt)) { deleted++; PrefabCustomAddon.LOGGER.info("[CREATOR-LD2] deleted {}", txt); }
+            // 3) 图标
+            for (String ext : java.util.Arrays.asList(".png", ".jpg", ".jpeg", ".gif", ".webp")) {
+                Path p = root.resolve(buildingId + ext);
+                if (Files.deleteIfExists(p)) { deleted++; PrefabCustomAddon.LOGGER.info("[CREATOR-LD2] deleted {}", p); }
+            }
+            // 4) 兼容老拓展包 prefab-work/<packId>/construction/<buildingId>.*
+            //    扫所有 construction/ 找同 id 删掉
+            Path workRoot = com.prefab.addon.extension.LocalBuildingScanner.getWorkRoot();
+            if (Files.exists(workRoot) && Files.isDirectory(workRoot)) {
+                try (java.util.stream.Stream<Path> packs = Files.list(workRoot)) {
+                    for (Path packDir : packs.filter(java.nio.file.Files::isDirectory)
+                                            .collect(java.util.stream.Collectors.toList())) {
+                        Path cstr = packDir.resolve("construction");
+                        if (!Files.exists(cstr) || !Files.isDirectory(cstr)) continue;
+                        for (String ext : java.util.Arrays.asList(".nbt", ".schem", ".schematic", ".litematic", ".txt",
+                                                                   ".png", ".jpg", ".jpeg", ".gif", ".webp")) {
+                            Path p = cstr.resolve(buildingId + ext);
+                            if (Files.deleteIfExists(p)) { deleted++; PrefabCustomAddon.LOGGER.info("[CREATOR-LD2] deleted (legacy) {}", p); }
+                        }
+                    }
+                } catch (java.io.IOException ioex) {
+                    PrefabCustomAddon.LOGGER.warn("[CREATOR-LD2] 扫老 work 失败: {}", ioex.getMessage());
+                }
+            }
+            PrefabCustomAddon.LOGGER.info("[CREATOR-LD2] deleted building {}, {} files removed", buildingId, deleted);
+
             // 关掉确认弹窗
             Minecraft.getInstance().setScreen(null);
-            // 走 parent.onChildClosed() 回到主界面并刷新
+            // 通知父 GUI 刷新
             if (parent != null) {
-                parent.onChildClosed();
+                parent.onBuildingDeleted(buildingId);
             } else {
                 Minecraft.getInstance().setScreen(null);
             }
         } catch (Throwable t) {
-            PrefabCustomAddon.LOGGER.error("[CREATOR-LD2] deleteBuilding failed", t);
+            PrefabCustomAddon.LOGGER.error("[CREATOR-LD2] doDelete failed", t);
             setStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.create_building.delete_fail", t.getMessage()), 0xFF5555);
-            // 弹窗还开着, 提示下让玩家看到
         }
     }
 }

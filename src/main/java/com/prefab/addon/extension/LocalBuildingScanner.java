@@ -1,6 +1,7 @@
 package com.prefab.addon.extension;
 
 import com.prefab.addon.PrefabCustomAddon;
+import com.prefab.addon.work.DependencyChecker;
 import net.minecraft.client.Minecraft;
 
 import java.io.IOException;
@@ -9,6 +10,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -37,6 +39,12 @@ public class LocalBuildingScanner {
     public static Path getDownloadRoot() {
         Path gameDir = Minecraft.getInstance().gameDirectory.toPath();
         return gameDir.resolve("prefab-download");
+    }
+
+    /** 获取老拓展包工作区根目录 (prefab-work/), 兼容旧版本. */
+    public static Path getWorkRoot() {
+        Path gameDir = Minecraft.getInstance().gameDirectory.toPath();
+        return gameDir.resolve("prefab-work");
     }
 
     /** 获取 prefab-extension/ 根目录. 优先 .minecraft/prefab-extension/, 找不到时回退到 versions/<ver>/prefab-extension/. */
@@ -139,10 +147,16 @@ public class LocalBuildingScanner {
                 Path imagePath = imageById.get(id);
 
                 // 解析 .txt
-                String name = id, author = "", description = "";
+                String name = id, author = "", description = "", category = "";
+                List<String> dependencies = Collections.emptyList();
                 if (infoPath != null) {
                     try {
                         String content = Files.readString(infoPath, StandardCharsets.UTF_8);
+                        // 剥 UTF-8 BOM: Windows 记事本保存的 UTF-8 默认带 BOM, Files.readString 不自动剥,
+                        // 会让第一行 key 变成 "\uFEFF建筑名", case 不匹配, 整个 name/author/description 解析全部回退到默认
+                        if (!content.isEmpty() && content.charAt(0) == '\uFEFF') {
+                            content = content.substring(1);
+                        }
                         for (String line : content.split("\\r?\\n")) {
                             String[] kv = splitKeyValue(line);
                             if (kv == null) continue;
@@ -151,6 +165,20 @@ public class LocalBuildingScanner {
                                 case "建筑名", "name" -> { if (!v.isEmpty()) name = v; }
                                 case "作者", "author" -> author = v;
                                 case "描述", "description", "desc", "说明" -> description = v;
+                                case "分类", "category", "类别" -> category = v;
+                                case "依赖", "依赖模组", "dependencies", "dependence", "deps" -> {
+                                    // 拆分: 逗号/分号/空白 → 数组
+                                    if (v.isEmpty()) break;
+                                    List<String> raw = new ArrayList<>();
+                                    for (String part : v.split("[,;\\s]+")) {
+                                        String t = part.trim();
+                                        if (!t.isEmpty()) raw.add(t);
+                                    }
+                                    // 用 DependencyChecker.cleanDepList 去重 + 清理
+                                    dependencies = DependencyChecker.cleanDepList(raw);
+                                    PrefabCustomAddon.LOGGER.info("[DIAG-LBS]   id={} 解析依赖 raw='{}' -> cleaned={}",
+                                        id, v, dependencies);
+                                }
                             }
                         }
                     } catch (IOException ex) {
@@ -159,11 +187,14 @@ public class LocalBuildingScanner {
                 }
 
                 result.add(new LocalBuilding(
-                    id, name, author, description,
+                    id, name, author, description, dependencies, category,
                     fileExtById.get(id), fileSizeById.getOrDefault(id, 0L),
                     imageExtById.get(id), source,
                     filePath, infoPath, imagePath
                 ));
+                // 诊断: 确认 PNG 是否被正确关联
+                PrefabCustomAddon.LOGGER.info("[DIAG-LBS]   id={} name={} author={} imagePath={} (exists={})",
+                    id, name, author, imagePath, imagePath != null ? Files.exists(imagePath) : "n/a");
             }
         } catch (IOException e) {
             PrefabCustomAddon.LOGGER.error("扫描 {} 失败: {}", dir, e.getMessage(), e);
@@ -175,16 +206,19 @@ public class LocalBuildingScanner {
     /**
      * 扫描并合并 prefab-extension/ + prefab-download/ (用于"建筑" tab).
      * 同 id 时优先用 prefab-extension/ 里的 (玩家本地副本优先).
+     *
+     * <p>兼容老版本: 也扫 prefab-work/&lt;packId&gt;/construction/ 下的旧拓展包建筑.</p>
      */
     public static List<LocalBuilding> scanAll() {
         Map<String, LocalBuilding> byId = new HashMap<>();
         // 先扫 prefab-extension/ (本地的优先, 后扫会被覆盖, 所以先扫)
         Path extRoot = getExtensionRoot();
         Path dlRoot = getDownloadRoot();
-        PrefabCustomAddon.LOGGER.info("[DIAG-LBS] 扫描 extension root = {}, download root = {}",
-            extRoot, dlRoot);
-        PrefabCustomAddon.LOGGER.info("[DIAG-LBS]   extRoot 存在? {}, dlRoot 存在? {}",
-            Files.exists(extRoot), Files.exists(dlRoot));
+        Path workRoot = getWorkRoot();
+        PrefabCustomAddon.LOGGER.info("[DIAG-LBS] 扫描 extension root = {}, download root = {}, work root = {}",
+            extRoot, dlRoot, workRoot);
+        PrefabCustomAddon.LOGGER.info("[DIAG-LBS]   extRoot 存在? {}, dlRoot 存在? {}, workRoot 存在? {}",
+            Files.exists(extRoot), Files.exists(dlRoot), Files.exists(workRoot));
         for (LocalBuilding lb : scanDir(extRoot, "extension")) {
             byId.put(lb.id, lb);
         }
@@ -194,8 +228,38 @@ public class LocalBuildingScanner {
                 byId.put(lb.id, lb);
             }
         }
+        // 兼容老拓展包 (prefab-work/<packId>/construction/)
+        for (LocalBuilding lb : scanOldWorkPacks(workRoot)) {
+            if (!byId.containsKey(lb.id)) {
+                byId.put(lb.id, lb);
+            }
+        }
         PrefabCustomAddon.LOGGER.info("[DIAG-LBS] scanAll 总共 {} 个 LocalBuilding", byId.size());
         return new ArrayList<>(byId.values());
+    }
+
+    /**
+     * 扫描老拓展包工作区: prefab-work/&lt;packId&gt;/construction/&lt;buildingId&gt;.{nbt,png,txt}
+     * 返回的 LocalBuilding.source 标记为 "legacy-pack".
+     */
+    public static List<LocalBuilding> scanOldWorkPacks(Path workRoot) {
+        List<LocalBuilding> result = new ArrayList<>();
+        if (workRoot == null || !Files.exists(workRoot) || !Files.isDirectory(workRoot)) {
+            return result;
+        }
+        try (Stream<Path> packs = Files.list(workRoot)) {
+            for (Path packDir : packs.filter(Files::isDirectory).collect(Collectors.toList())) {
+                Path construction = packDir.resolve("construction");
+                if (!Files.exists(construction) || !Files.isDirectory(construction)) continue;
+                String packId = packDir.getFileName().toString();
+                // 复用 scanDir 解析 (它只扫单层文件, 跟 construction/ 完全一致)
+                List<LocalBuilding> inPack = scanDir(construction, "legacy-pack:" + packId);
+                result.addAll(inPack);
+            }
+        } catch (IOException e) {
+            PrefabCustomAddon.LOGGER.warn("[DIAG-LBS] 扫描老拓展包失败: {}", e.getMessage());
+        }
+        return result;
     }
 
     /** 把一行 "key: value" / "key：value" 切成 [key, value], 失败返回 null. */

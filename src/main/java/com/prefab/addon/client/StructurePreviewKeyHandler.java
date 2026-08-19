@@ -203,16 +203,29 @@ public class StructurePreviewKeyHandler {
             BlockPos oldPos = cfg.pos;
             BlockPos newPos = oldPos.offset(dx * step, dy * step, dz * step);
             cfg.pos = newPos;
-            // **关键**: 同步更新每个 BuildBlock.blockPos, 否则 renderer 用的是旧位置
-            // (CustomStructurePreviewRenderer 读 buildBlock.blockPos, 不是 cfg.pos)
-            // 必须传 cfg.houseFacing: 用户已经旋转过, 移动后还要保持旋转, 不传会导致预览方块错位.
-            com.prefab.addon.structure.CustomStructureBuilder.offsetStructureBlocks(currentStructure, newPos, cfg.houseFacing);
-            // 我们的 CustomStructurePreviewRenderer 检测到 cfg.pos 变化时, 自动清 vertex buffer 重建.
-            // 不调 triggerPrefabRebuild: 我们的预览不走 prefab 渲染 (prefab 的 bakeBlockAndSubBlock
-            // 跳过非空气位置, 自定义建筑大部分方块会跟地面/墙重叠 → prefab 不画).
+            if (isAddonPreview) {
+                // === 我们 own 的预览: 同步更新每个 BuildBlock.blockPos, 否则我们的 renderer
+                //   读 blockPos 算出来的位置跟 cfg.pos 不一致, 预览"半移动".
+                //   必须传 cfg.houseFacing: 用户已经旋转过, 移动后还要保持旋转.
+                com.prefab.addon.structure.CustomStructureBuilder.offsetStructureBlocks(
+                    currentStructure, newPos, cfg.houseFacing);
+                // 我们的 CustomStructurePreviewRenderer 检测到 cfg.pos 变化时, 自动重建.
+            } else {
+                // === prefab 原版建筑预览 ===
+                // 不能调 CustomStructureBuilder.offsetStructureBlocks (那是给我们自定义建筑
+                //   设计的, prefab 原版建筑调它会破坏 prefab 自己的数据结构).
+                // 正确做法: 重新调 StructureRenderHandler.setStructure(structure, cfg) 触发
+                //   prefab 重新 bake 一次 vertex buffer (prefab 渲染靠 bake 出来的 buffer,
+                //   改 cfg.pos 不会自动重建).
+                // 关键: setStructure 内部会把 showedMessage 重置为 false → prefab 下次渲染会
+                //   重新发 "右键取消预览" 那 2 条聊天消息, 每移动一次刷一次屏.
+                //   修复: 调完之后立即把 showedMessage 改回 true, 阻止 prefab 重复发.
+                StructureRenderHandler.setStructure(currentStructure, cfg);
+                StructureRenderHandler.showedMessage = true;
+            }
             lastMoveTimeMs = now;
-            PrefabCustomAddon.LOGGER.info("[PREVIEW-MOVE] player={} dx={} dz={} dy={} step={}  {} -> {}",
-                playerFacing, dx, dz, dy, step, oldPos, newPos);
+            PrefabCustomAddon.LOGGER.info("[PREVIEW-MOVE] {} player={} dx={} dz={} dy={} step={}  {} -> {}",
+                isAddonPreview ? "addon" : "prefab", playerFacing, dx, dz, dy, step, oldPos, newPos);
             return;  // 一帧内 move 和 rotate 不能同时发生（避免冲突）
         }
 
@@ -221,13 +234,19 @@ public class StructurePreviewKeyHandler {
             Direction newFacing = rotateCounterClockwise(cfg.houseFacing);
             Direction oldFacing = cfg.houseFacing;
             cfg.houseFacing = newFacing;
-            // 关键: offsetStructureBlocks 第三个参数 houseFacing 控制旋转步数
-            // 之前只调 (structure, pos) 不传 houseFacing → blockPos 永远不旋转, 预览的"半旋转"
-            // 来自 Prefab 自己的 model rotation, 但我们的 renderer 读 blockPos 还是老位置 → 错位
-            com.prefab.addon.structure.CustomStructureBuilder.offsetStructureBlocks(currentStructure, cfg.pos, cfg.houseFacing);
-            // 我们的 CustomStructurePreviewRenderer 检测到 houseFacing 变化时, 自动清 vertex buffer 重建.
+            if (isAddonPreview) {
+                // === 我们 own 的预览: houseFacing 变化要同步 BuildBlock.blockPos ===
+                com.prefab.addon.structure.CustomStructureBuilder.offsetStructureBlocks(
+                    currentStructure, cfg.pos, cfg.houseFacing);
+            } else {
+                // === prefab 原版建筑预览: 调 setStructure 重新 bake, 不要调 offsetStructureBlocks ===
+                //    同样要把 showedMessage 改回 true 阻止 prefab 重发聊天消息
+                StructureRenderHandler.setStructure(currentStructure, cfg);
+                StructureRenderHandler.showedMessage = true;
+            }
             lastMoveTimeMs = now;
-            PrefabCustomAddon.LOGGER.info("[PREVIEW-ROTATE] houseFacing {} -> {}", oldFacing, newFacing);
+            PrefabCustomAddon.LOGGER.info("[PREVIEW-ROTATE] {} houseFacing {} -> {}",
+                isAddonPreview ? "addon" : "prefab", oldFacing, newFacing);
         }
 
         // === ALT 键 → 直接建造（节流：1 秒最多 1 次） ===
@@ -349,10 +368,12 @@ public class StructurePreviewKeyHandler {
         }
 
         // === 检查背包有蓝图 (没蓝图就直接走服务端消耗, 服务端会自己处理失败) ===
+        // 既认 mod 原生 CustomBlueprintItem, 也认 KubeJS 注册的带 player_blueprint tag 的物品.
         net.minecraft.world.item.ItemStack blueprint = net.minecraft.world.item.ItemStack.EMPTY;
         for (int i = 0; i < player.getInventory().getContainerSize(); i++) {
             net.minecraft.world.item.ItemStack s = player.getInventory().getItem(i);
-            if (s.getItem() instanceof com.prefab.addon.items.CustomBlueprintItem) {
+            if (s.getItem() instanceof com.prefab.addon.items.CustomBlueprintItem
+                || com.prefab.addon.client.CustomBlueprintClientHandler.isHandledBlueprint(s)) {
                 blueprint = s;
                 break;
             }
@@ -379,7 +400,8 @@ public class StructurePreviewKeyHandler {
 
         com.prefab.addon.network.NetworkHandler.sendToServer(
             new com.prefab.addon.network.BuildCustomStructurePayload(
-                cfg.pos, packName, constructionId, cfg.houseFacing));
+                cfg.pos, packName, constructionId, cfg.houseFacing,
+                com.prefab.addon.config.PlayerPreferences.get().getBuildAnimationMode()));
         // 清预览: prefab 的 currentStructure (no-op, 之前已 null) + 我们 own 的 ADDON_PREVIEW_*
         StructureRenderHandler.setStructure(null, null);
         com.prefab.addon.client.gui.CustomStructureGui.clearAddonPreviewFlag();

@@ -58,6 +58,20 @@ public class PlayerPreferences {
     //   - 全服共享, SettingsGui 改完发 UpdateBuildSpeedPayload 给服务端, OP 校验
     //   - 服务端写自己的 PlayerPreferences, 然后用 SyncBuildSpeedPayload 广播给所有客户端
     public int buildBatchPercent = 1;
+    // === 建造动画模式 (纯客户端视觉效果, 2026-08 改: 改用枚举支持 4 种) ===
+    // 默认 OFF, 玩家在设置里切到 FALL (竖直下落) / RAIN (方块雨) / THROW (四周抛过来) 三种之一.
+    // 服务端在 AsyncBuildManager 启动 task 时读取玩家偏好, 通过 BatchBlocksPlacedPayload 传给客户端,
+    // 客户端用 BuildAnimationRenderer 按 mode 计算每个方块的渲染轨迹.
+    // 老的 enableBuildAnimation 字段已删除, 字段重命名为 buildAnimationMode (枚举).
+    // 兼容迁移: load() 时检查老 JSON 有 enableBuildAnimation=true, 自动迁移到 buildAnimationMode=FALL.
+    public BuildAnimationMode buildAnimationMode = BuildAnimationMode.OFF;
+    /** 动画起始高度 (FALL/RAIN 用). 固定 8, 留字段以后扩展成 slider. */
+    public int buildAnimHeight = 8;
+
+    // === KubeJS 联动: 强制启用 "制作蓝图" tab (调试用) ===
+    // 默认 false (自动检测). 当自动检测死活过不了 (mod id 不一致 / 类加载器怪) 时,
+    // 玩家在设置里勾上这个, 直接绕过检测. 设置保存到 preferences.json, 重启后还在.
+    public boolean forceKubeJSTab = false;
 
     // === 收藏的建筑 (GUI "收藏" 标签页显示) ===
     // 存储键: "packageName/constructionId"
@@ -138,6 +152,17 @@ public class PlayerPreferences {
         try (Reader r = Files.newBufferedReader(file)) {
             PlayerPreferences p = GSON.fromJson(r, PlayerPreferences.class);
             if (p == null) p = new PlayerPreferences();
+
+            // === 2026-08 老字段迁移: enableBuildAnimation (boolean) → buildAnimationMode (enum) ===
+            // Gson 默认会忽略未知字段, 老存档里 "enableBuildAnimation": true 会被忽略, 导致
+            //   玩家之前开启的下落动画突然没了. 改用 rawJson 扫一遍, 一次性迁移.
+            if (p.buildAnimationMode == BuildAnimationMode.OFF && rawJson != null
+                    && rawJson.matches("(?is).*[\"']enableBuildAnimation[\"']\\s*:\\s*true.*")) {
+                PrefabCustomAddon.LOGGER.warn("[PREFS] 1.6.0 升级: 旧版 enableBuildAnimation=true 迁移到 buildAnimationMode=FALL");
+                p.buildAnimationMode = BuildAnimationMode.FALL;
+                p.save();
+            }
+
             // 老用户迁移: 1.2.0 之前默认是 consumeMaterials=true (挑战模式开启)
             // 1.2.0 改成默认 false (关闭), 但已存了 "consumeMaterials":true 的用户继续保留 true
             if (p.consumeMaterials && rawJson != null
@@ -250,6 +275,44 @@ public class PlayerPreferences {
         this.buildBatchPercent = clampPercent(percent, 1);
         PrefabCustomAddon.LOGGER.info("[PREFS] 建造批次百分比 = {} (从服务端同步, 仅供本地显示)", this.buildBatchPercent);
         // 不 save(): 客户端 JSON 只是缓存, 真正的权威在服务端
+    }
+
+    /**
+     * 建造下落动画开关 (wrapper, 兼容老调用方).
+     * 实际数据存的是 {@link #buildAnimationMode} 枚举, 这里只判断 != OFF.
+     * 老代码可以直接用, 新代码推荐直接调 {@link #getBuildAnimationMode()}.
+     */
+    public boolean isBuildAnimationEnabled() {
+        return this.buildAnimationMode != BuildAnimationMode.OFF;
+    }
+
+    /** @deprecated 1.6.0 起改用 {@link #setBuildAnimationMode(BuildAnimationMode)}. */
+    @Deprecated
+    public void setBuildAnimationEnabled(boolean value) {
+        setBuildAnimationMode(value ? BuildAnimationMode.FALL : BuildAnimationMode.OFF);
+    }
+
+    /**
+     * 读取当前建造动画模式. 默认 {@link BuildAnimationMode#OFF}.
+     */
+    public BuildAnimationMode getBuildAnimationMode() {
+        return this.buildAnimationMode != null ? this.buildAnimationMode : BuildAnimationMode.OFF;
+    }
+
+    /**
+     * 设置建造动画模式并持久化. 设为 {@code null} 等同于 OFF.
+     */
+    public void setBuildAnimationMode(BuildAnimationMode mode) {
+        BuildAnimationMode v = mode != null ? mode : BuildAnimationMode.OFF;
+        if (this.buildAnimationMode == v) return;
+        this.buildAnimationMode = v;
+        save();
+        PrefabCustomAddon.LOGGER.info("[PREFS] 建造动画模式 = {}", this.buildAnimationMode);
+    }
+
+    /** 动画起始高度, 默认 8. */
+    public int getBuildAnimHeight() {
+        return this.buildAnimHeight < 1 ? 1 : (this.buildAnimHeight > 32 ? 32 : this.buildAnimHeight);
     }
 
     private static int clampPercent(int v, int def) {
