@@ -69,6 +69,29 @@ public class ConstructionInfo {
     public List<String> getDependencies() { return dependencies; }
     public void setDependencies(List<String> dependencies) { this.dependencies = dependencies; }
 
+    /** 分类 (从 .txt 的 "分类: xxx" 解析). 空白 = 未分类 (走 CategoryManager.UNCATEGORIZED). */
+    private String category;
+
+    /** 分类. 空白统一视为"未分类". */
+    public String getCategory() {
+        if (category == null) return "";
+        return category;
+    }
+    public void setCategory(String category) {
+        if (category == null) {
+            this.category = "";
+        } else {
+            this.category = category.trim();
+        }
+    }
+
+    /** 给 GUI 显示用: 空白 → "未分类". */
+    public String getCategoryOrDefault() {
+        String c = getCategory();
+        if (c.isEmpty()) return com.prefab.addon.config.CategoryManager.UNCATEGORIZED;
+        return c;
+    }
+
     /** 蓝图显示图标: 物品 id, 如 "minecraft:stone". 空表示用默认. */
     public String getIcon() { return icon; }
     public void setIcon(String icon) { this.icon = icon; }

@@ -1,8 +1,10 @@
 package com.prefab.addon.structure;
 
 import com.prefab.addon.PrefabCustomAddon;
+import com.prefab.addon.config.BuildAnimationMode;
 import com.prefab.addon.config.PlayerPreferences;
 import com.prefab.addon.items.CustomBlueprintItem;
+import com.prefab.addon.network.BatchBlocksPlacedPayload;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.player.Inventory;
@@ -12,7 +14,9 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
+import net.neoforged.neoforge.network.PacketDistributor;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -62,6 +66,15 @@ public final class AsyncBuildManager {
         public final int totalBlocks;
         public final long startTickMs;
         public final int rotationSteps;     // 90° 旋转步数 (0/1/2/3), 预览时 houseFacing 决定
+        /**
+         * 建造动画模式 (枚举, 2026-08 改: 之前是 boolean enableAnimation).
+         *   - OFF  → 瞬建模式, 每 tick 全放完 (可能卡顿, 跟原版 prefab 一样)
+         *   - FALL → 每 tick 1 块, 客户端用"竖直下落"轨迹渲染
+         *   - RAIN → 每 tick 1 块, 客户端用"方块雨"轨迹渲染
+         *   - THROW→ 每 tick 1 块, 客户端用"四周抛过来"轨迹渲染
+         * 非 OFF 时强制 batchSize=1 (整除会丢精度, 直接写死 1 块/tick 最稳).
+         */
+        public final BuildAnimationMode animationMode;
         public int placedCount;          // 已放置数
         public int nextIndex;            // 下一个要放的方块索引
         public boolean completed;        // 是否全部完成
@@ -71,13 +84,21 @@ public final class AsyncBuildManager {
         public BuildTask(ServerPlayer p, Level l, BlockPos o,
                          String pack, String id,
                          List<CustomStructureBuilder.BlockData> blocks) {
-            this(p, l, o, pack, id, blocks, 0);
+            this(p, l, o, pack, id, blocks, 0, BuildAnimationMode.OFF);
         }
 
         public BuildTask(ServerPlayer p, Level l, BlockPos o,
                          String pack, String id,
                          List<CustomStructureBuilder.BlockData> blocks,
                          int rotationSteps) {
+            this(p, l, o, pack, id, blocks, rotationSteps, BuildAnimationMode.OFF);
+        }
+
+        public BuildTask(ServerPlayer p, Level l, BlockPos o,
+                         String pack, String id,
+                         List<CustomStructureBuilder.BlockData> blocks,
+                         int rotationSteps,
+                         BuildAnimationMode animationMode) {
             this.playerUuid = p.getUUID();
             this.player = p;
             this.level = l;
@@ -93,10 +114,25 @@ public final class AsyncBuildManager {
             this.cancelled = false;
             this.blueprintConsumed = false;
             this.rotationSteps = rotationSteps;
+            this.animationMode = animationMode != null ? animationMode : BuildAnimationMode.OFF;
+        }
+
+        /** 旧 API 兼容: enableAnimation=true 等价于 FALL 模式. */
+        public BuildTask(ServerPlayer p, Level l, BlockPos o,
+                         String pack, String id,
+                         List<CustomStructureBuilder.BlockData> blocks,
+                         int rotationSteps,
+                         boolean enableAnimation) {
+            this(p, l, o, pack, id, blocks, rotationSteps,
+                 enableAnimation ? BuildAnimationMode.FALL : BuildAnimationMode.OFF);
         }
 
         public int getPercent() {
             return totalBlocks > 0 ? (placedCount * 100 / totalBlocks) : 100;
+        }
+
+        public boolean isAnimationEnabled() {
+            return animationMode != BuildAnimationMode.OFF;
         }
     }
 
@@ -112,7 +148,7 @@ public final class AsyncBuildManager {
     public static void startTask(ServerPlayer player, Level level, BlockPos origin,
                                  String packName, String constructionId,
                                  List<CustomStructureBuilder.BlockData> blocks) {
-        startTask(player, level, origin, packName, constructionId, blocks, net.minecraft.core.Direction.SOUTH);
+        startTask(player, level, origin, packName, constructionId, blocks, net.minecraft.core.Direction.SOUTH, BuildAnimationMode.OFF);
     }
 
     /**
@@ -123,6 +159,20 @@ public final class AsyncBuildManager {
                                  String packName, String constructionId,
                                  List<CustomStructureBuilder.BlockData> blocks,
                                  net.minecraft.core.Direction houseFacing) {
+        startTask(player, level, origin, packName, constructionId, blocks, houseFacing, BuildAnimationMode.OFF);
+    }
+
+    /**
+     * 完整重载: 带 houseFacing + animationMode.
+     * <p>animationMode != OFF 时: 强制 batchSize=1, 每 tick 放完一批后通过
+     * {@link com.prefab.addon.network.BatchBlocksPlacedPayload} 把这一批方块 + mode
+     * 发给该玩家, 客户端用 BuildAnimationRenderer 按 mode 渲染动画轨迹.</p>
+     */
+    public static void startTask(ServerPlayer player, Level level, BlockPos origin,
+                                 String packName, String constructionId,
+                                 List<CustomStructureBuilder.BlockData> blocks,
+                                 net.minecraft.core.Direction houseFacing,
+                                 BuildAnimationMode animationMode) {
         if (player == null || level == null || blocks == null || blocks.isEmpty()) {
             PrefabCustomAddon.LOGGER.warn("[BUILD-ASYNC] 启动失败: 参数无效 (player={} blocks={})",
                 player != null, blocks != null ? blocks.size() : -1);
@@ -135,16 +185,48 @@ public final class AsyncBuildManager {
             PrefabCustomAddon.LOGGER.info("[BUILD-ASYNC] 玩家 {} 有未完成任务, 标记为 cancelled", player.getName().getString());
         }
 
-        BuildTask task = new BuildTask(player, level, origin, packName, constructionId, blocks, steps);
+        BuildAnimationMode mode = animationMode != null ? animationMode : BuildAnimationMode.OFF;
+        BuildTask task = new BuildTask(player, level, origin, packName, constructionId, blocks, steps, mode);
         ACTIVE_TASKS.put(player.getUUID(), task);
-        PrefabCustomAddon.LOGGER.info("[BUILD-ASYNC] 启动: player={} pack={} construction={} origin={} totalBlocks={} batchPercent={}% houseFacing={}({} steps)",
+
+        // 动画模式下强制每 tick 1 块, 玩家设的 buildBatchPercent 被覆盖. 不修改 PlayerPreferences
+        // (关掉动画开关后恢复玩家之前的设置, 不会"污染"玩家偏好).
+        // effectivePercentPerTick 仅用于日志输出, 实际逻辑在 processTick 里硬编码 1 块/tick.
+        String modeStr = switch (mode) {
+            case OFF   -> "OFF (瞬建, 100%/tick)";
+            case FALL  -> "FALL (竖直下落, 1 块/tick, ~50s/1000块)";
+            case RAIN  -> "RAIN (方块雨, 1 块/tick, 起点随机偏移)";
+            case THROW -> "THROW (四周抛过来, 1 块/tick, 抛物线轨迹)";
+        };
+
+        PrefabCustomAddon.LOGGER.info("[BUILD-ASYNC] 启动: player={} pack={} construction={} origin={} totalBlocks={} mode={} houseFacing={}({} steps)",
             player.getName().getString(), packName, constructionId, origin,
-            task.totalBlocks, PlayerPreferences.get().getBuildBatchPercent(), houseFacing, steps);
+            task.totalBlocks, mode, houseFacing, steps);
         if (player != null) {
-            player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
-                "§e开始建造: " + constructionId + ": " + task.totalBlocks + " 块 (异步, 每批 "
-                + PlayerPreferences.get().getBuildBatchPercent() + "%, 预计 <10s)"));
+            String speedDesc = mode == BuildAnimationMode.OFF
+                ? "100%/tick (单 tick 全放, 瞬建, 可能卡顿)"
+                : "1 块/tick (§d" + mode.name() + " 动画§e, 配合" + switch (mode) {
+                    case FALL  -> "竖直下落";
+                    case RAIN  -> "方块雨";
+                    case THROW -> "四周抛过来";
+                    default    -> "?";
+                } + "动画, ~50s/1000块)";
+            String msg = "§e开始建造: " + constructionId + ": " + task.totalBlocks + " 块 (异步, " + speedDesc + ")";
+            player.sendSystemMessage(net.minecraft.network.chat.Component.literal(msg));
         }
+    }
+
+    /**
+     * 旧 API 兼容重载: boolean enableAnimation → FALL/OFF 模式.
+     * 保留给老调用方 (BuildCustomStructurePayload 等) 不用改代码.
+     */
+    public static void startTask(ServerPlayer player, Level level, BlockPos origin,
+                                 String packName, String constructionId,
+                                 List<CustomStructureBuilder.BlockData> blocks,
+                                 net.minecraft.core.Direction houseFacing,
+                                 boolean enableAnimation) {
+        startTask(player, level, origin, packName, constructionId, blocks, houseFacing,
+                  enableAnimation ? BuildAnimationMode.FALL : BuildAnimationMode.OFF);
     }
 
     /**
@@ -208,14 +290,22 @@ public final class AsyncBuildManager {
         }
         ServerPlayer player = task.player;
 
-        int batchPercent = PlayerPreferences.get().getBuildBatchPercent();
-        // 批大小公式: totalBlocks * batchPercent / 1000 = 每 tick 处理的方块数.
-        //   batchPercent=10  → totalBlocks * 1% / tick, 1000 块建筑 1% 也要 10 tick (0.5s @ 20tps)
-        //   batchPercent=50  → 5%/tick, 1000 块建筑 5% = 50 块/tick, 0.25s 完成
-        //   batchPercent=100 → 10%/tick, 1000 块建筑 10% = 100 块/tick, 0.1s 完成
-        //   batchPercent=1000 → 100%/tick, 一次性放完 (同步模式, 可能卡顿)
-        // 总耗时 = tick 数 × 50ms, 由百分比决定 (跟建筑大小无关)
-        int batchSize = Math.max(1, task.totalBlocks * batchPercent / 1000);
+        // 建造速度策略 (2026-08 更新: 移除了 UI 滑条, 改成简单的二选一):
+        //   - 玩家开启 "建造下落动画" → 每 tick 固定放 1 块 (20 块/秒, 1000 块 ≈ 50s)
+        //     方块从 y_target+8 慢慢落到 y_target, 玩家能清楚看到每个方块从空中落下的过程
+        //   - 玩家关闭下落动画       → 100%/tick (单 tick 全放, 跟原版 prefab 一样快, 可能卡顿)
+        // 之前 1%/tick 太快 (10 块/tick = 200 块/秒, 5s/1000 块, 玩家看不清单个方块下落),
+        //   改成"每 tick 固定 1 块" (慢 10 倍) 后动画效果最明显.
+        // 公式: 动画模式 batchSize=1, 瞬建模式 batchSize=totalBlocks (单 tick 全放).
+        int batchSize;
+        if (task.isAnimationEnabled()) {
+            // 动画模式: 固定每 tick 放 1 块, 不再按 percentPerTick 算 (整除会丢精度)
+            batchSize = 1;
+        } else {
+            // 瞬建模式: 100%/tick = 一次 setBlock 全部方块
+            int percentPerTick = 1000;
+            batchSize = Math.max(1, task.totalBlocks * percentPerTick / 100);
+        }
 
         int endIdx = Math.min(task.totalBlocks, task.nextIndex + batchSize);
 
@@ -236,6 +326,12 @@ public final class AsyncBuildManager {
         int flags = net.minecraft.world.level.block.Block.UPDATE_MOVE_BY_PISTON
                   | net.minecraft.world.level.block.Block.UPDATE_SUPPRESS_DROPS
                   | net.minecraft.world.level.block.Block.UPDATE_CLIENTS;
+
+        // 动画模式下收集这一批放置的方块 (pos + state), 放完发 BatchBlocksPlacedPayload 给客户端做下落动画.
+        // 预分配容量避免 ArrayList 扩容, 实际 1%/tick 时大部分 task 一批就几个, list 很小.
+        List<BlockPos> animPositions = task.isAnimationEnabled() ? new ArrayList<>(batchSize) : null;
+        List<BlockState> animStates = task.isAnimationEnabled() ? new ArrayList<>(batchSize) : null;
+
         // Critical: wrap the whole setBlock loop in SilentBuild.runSilent so that the
         // LevelMixin addFreshEntity interceptor rejects any ItemEntity spawned by
         // modded container onRemove / popResource fallback paths (signs/ladders/plants).
@@ -268,12 +364,31 @@ public final class AsyncBuildManager {
                     BlockState rotatedState = BlockStateRotator.rotateY(data.state, task.rotationSteps);
                     task.level.setBlock(target, rotatedState, flags);
                     task.placedCount++;
+                    if (animPositions != null) {
+                        animPositions.add(target);
+                        animStates.add(rotatedState);
+                    }
                 } catch (Throwable t) {
                     PrefabCustomAddon.LOGGER.warn("[BUILD-ASYNC] setBlock failed at {}: {}", data.pos, t.getMessage());
                 }
             }
         });
         task.nextIndex = endIdx;
+
+        // 动画模式: 放完这一批后, 把刚放的方块 + mode 发给客户端, 客户端用 BuildAnimationRenderer
+        // 渲染它们从起点到目标位置的动画 (按 mode 走不同轨迹, maxTicks 8~14).
+        if (task.isAnimationEnabled() && !animPositions.isEmpty()) {
+            try {
+                PacketDistributor.sendToPlayer(
+                    player,
+                    new BatchBlocksPlacedPayload(animPositions, animStates, task.animationMode)
+                );
+                PrefabCustomAddon.LOGGER.debug("[BUILD-ANIM] sent BatchBlocksPlacedPayload: {} blocks, mode={}",
+                    animPositions.size(), task.animationMode);
+            } catch (Throwable t) {
+                PrefabCustomAddon.LOGGER.warn("[BUILD-ANIM] sendToPlayer failed: {}", t.getMessage());
+            }
+        }
 
         // 进度反馈 (每 10% 给玩家发一次消息)
         int currentPct = task.getPercent();

@@ -32,3 +32,16 @@ side="CLIENT"
 # Mixin 配置
 [[mixins]]
 config="prefab-custom-addon.mixins.json"
+
+# === 可选联动: 玩家没装也不影响核心功能 ===
+# 注意 1: 不在这里声明 Jade 依赖! Jade 是 client-only, 如果在 BOTH 声明了,
+#   NeoForge 在 dedicated server 启动时会把它当硬依赖, 找不到 Jade 就 fatal crash.
+#   我们的实现靠 compileOnly + @WailaPlugin 注解 + Jade 自己的 service loader 在
+#   client 端运行时发现 BuildingJadePlugin, 完全不用 NeoForge 介入依赖检查.
+#
+# 注意 2: Xaero's World Map / Minimap 也不在这里声明 dependency.
+#   原因: 即使 mandatory=false, NeoForge 仍会打印 "Mod requires xaeroworldmap 1.39.0 or above"
+#   这种红字警告, 让玩家误以为必须装. 实际上 XaeroWaypointBridge 全靠
+#   Class.forName("xaero.hud.minimap.BuiltInHudModules") 反射探测 + isAvailable() 守门,
+#   不声明依赖 → 没有警告 → 玩家没装 Xaero 时默默跳过航点联动, 装了就自动启用.
+#   build.gradle 里保留 compileOnly 是为了编译期能 import Xaero 类, 跟运行时探测无关.

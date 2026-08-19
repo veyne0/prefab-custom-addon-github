@@ -75,10 +75,22 @@ public class PackCreator {
         public final String description;
         /** 图标 - 物品 id (如 minecraft:stone) 或 "none" / null. 决定蓝图中显示的物品. */
         public final String icon;
+        /**
+         * 分类 (从 .txt 的 "分类:" 解析). 空 = 未分类.
+         * UI 显示统一走 {@link #getCategoryOrDefault()} 替换成 "未分类" 占位.
+         */
+        public final String category;
 
         public BuildingWorkInfo(String id, Path nbt, Path png, Path txt,
                                 String name, String author, String size,
                                 String dependencies, String description, String icon) {
+            this(id, nbt, png, txt, name, author, size, dependencies, description, icon, "");
+        }
+
+        public BuildingWorkInfo(String id, Path nbt, Path png, Path txt,
+                                String name, String author, String size,
+                                String dependencies, String description, String icon,
+                                String category) {
             this.id = id;
             this.nbt = nbt;
             this.png = png;
@@ -89,6 +101,13 @@ public class PackCreator {
             this.dependencies = dependencies;
             this.description = description;
             this.icon = icon;
+            this.category = (category == null) ? "" : category.trim();
+        }
+
+        /** 显示用: 空白 → "未分类". */
+        public String getCategoryOrDefault() {
+            if (category == null || category.isBlank()) return com.prefab.addon.config.CategoryManager.UNCATEGORIZED;
+            return category;
         }
     }
 
@@ -193,7 +212,8 @@ public class PackCreator {
             kv.getOrDefault("size", ""),
             kv.getOrDefault("dependencies", ""),
             kv.getOrDefault("description", ""),
-            kv.getOrDefault("icon", "")
+            kv.getOrDefault("icon", ""),
+            kv.getOrDefault("category", "")
         );
     }
 
@@ -474,6 +494,7 @@ public class PackCreator {
             else if (k.equals("建筑标识符") || k.equals("id")) result.put("id", v);
             else if (k.equals("依赖模组") || k.equals("dependencies") || k.equals("deps")) result.put("dependencies", v);
             else if (k.equals("图标") || k.equals("icon")) result.put("icon", v);
+            else if (k.equals("分类") || k.equals("category") || k.equals("类别")) result.put("category", v);
         }
         return result;
     }

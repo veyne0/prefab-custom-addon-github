@@ -114,39 +114,37 @@ public class ServerPackSyncServer {
         while (it.hasNext()) {
             String name = it.next();
             it.remove();
-            Path zipPath = ExtensionPackManager.getInstance().findPackZipPath(name);
-            if (zipPath == null || !Files.exists(zipPath)) {
-                PrefabCustomAddon.LOGGER.warn("[PACK-SYNC] Server pack '{}' missing on disk, skip", name);
+            // 按 packName 找源文件 (zip/nbt/litematic/schem 都支持)
+            Path srcPath = ExtensionPackManager.getInstance().findSourceFileByPackName(name);
+            if (srcPath == null || !Files.exists(srcPath)) {
+                PrefabCustomAddon.LOGGER.warn("[BUILD-SYNC] Source '{}' missing on disk, skip", name);
                 continue;
             }
             long size;
             try {
-                size = Files.size(zipPath);
+                size = Files.size(srcPath);
             } catch (IOException e) {
-                PrefabCustomAddon.LOGGER.warn("[PACK-SYNC] Cannot stat '{}': {}", name, e.getMessage());
+                PrefabCustomAddon.LOGGER.warn("[BUILD-SYNC] Cannot stat '{}': {}", name, e.getMessage());
                 continue;
             }
             s.currentName = name;
             s.currentTotal = size;
             s.currentOffset = 0;
-            PrefabCustomAddon.LOGGER.info("[PACK-SYNC] Start sending pack '{}' ({} bytes) to {}",
+            PrefabCustomAddon.LOGGER.info("[BUILD-SYNC] Start sending source '{}' ({} bytes) to {}",
                     name, size, player.getName().getString());
             sendNextChunk(player, s);
             return;  // 等 ACK 再继续
         }
         // 队列空
         s.currentName = null;
-        if (s.pendingQueue.isEmpty()) {
-            // 完全没东西要发了，保留 session 一会儿也没意义，删掉
-        }
     }
 
     /** 发当前包的一片给玩家。读完一片就发，让客户端 ACK 后再读下一片。 */
     private void sendNextChunk(ServerPlayer player, PlayerSession s) {
         if (s.currentName == null || s.awaitingAck) return;
-        Path zipPath = ExtensionPackManager.getInstance().findPackZipPath(s.currentName);
-        if (zipPath == null) {
-            PrefabCustomAddon.LOGGER.warn("[PACK-SYNC] Pack '{}' disappeared mid-transfer, abort", s.currentName);
+        Path srcPath = ExtensionPackManager.getInstance().findSourceFileByPackName(s.currentName);
+        if (srcPath == null) {
+            PrefabCustomAddon.LOGGER.warn("[BUILD-SYNC] Source '{}' disappeared mid-transfer, abort", s.currentName);
             s.currentName = null;
             advanceToNext(player, s);
             return;
@@ -158,11 +156,11 @@ public class ServerPackSyncServer {
         }
         int len = (int) Math.min(CHUNK_SIZE, remaining);
         byte[] buf = new byte[len];
-        try (RandomAccessFile raf = new RandomAccessFile(zipPath.toFile(), "r")) {
+        try (RandomAccessFile raf = new RandomAccessFile(srcPath.toFile(), "r")) {
             raf.seek(s.currentOffset);
             raf.readFully(buf);
         } catch (IOException e) {
-            PrefabCustomAddon.LOGGER.error("[PACK-SYNC] Failed to read chunk of '{}' at offset {}: {}",
+            PrefabCustomAddon.LOGGER.error("[BUILD-SYNC] Failed to read chunk of '{}' at offset {}: {}",
                     s.currentName, s.currentOffset, e.getMessage());
             s.currentName = null;
             advanceToNext(player, s);

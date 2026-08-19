@@ -48,6 +48,17 @@ public class RegionSelector {
             return pos1 != null && pos2 != null;
         }
 
+        /**
+         * 已选角点数: 0=没选, 1=只选了 pos1, 2=两个都选了.
+         * 供 HUD 显示用, 玩家能一眼看到当前选区进度.
+         */
+        public int getCornerCount() {
+            int n = 0;
+            if (pos1 != null) n++;
+            if (pos2 != null) n++;
+            return n;
+        }
+
         public BlockPos getMin() {
             if (pos1 == null || pos2 == null) return null;
             return new BlockPos(

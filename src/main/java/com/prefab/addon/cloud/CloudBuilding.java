@@ -60,6 +60,12 @@ public final class CloudBuilding {
     public BlockPos placedAt;          // 放出位置 (placed=true 时有效, 单机/联机都用世界坐标)
     public Direction facing;           // 建筑最初建造时的朝向
     public int sizeX, sizeY, sizeZ;    // 包围盒 (基于原始坐标, 用作校验 + 收回时定位)
+    /**
+     * 放出时的世界维度 ID (ResourceLocation 字符串形式, 例 "minecraft:overworld").
+     * 主要给 Jade / Xaero 联动用, 让玩家在 Overworld 也能看到 Nether 放出的建筑位置.
+     * 老存档没这个字段时, 反序列化默认 = "" (空), 视为当前玩家所在维度.
+     */
+    public String dimensionId = "";
     /** 内部版本号 (0=老格式, 1=新格式). 老存档加载时会自动迁移并 in-memory 升到 1. */
     public int version;
     public final List<BlockSnapshot> blocks = new ArrayList<>();  // 原始 (未旋转) 方块快照
@@ -96,6 +102,9 @@ public final class CloudBuilding {
         tag.putInt("sizeY", sizeY);
         tag.putInt("sizeZ", sizeZ);
         tag.putInt("version", version);
+        if (dimensionId != null && !dimensionId.isEmpty()) {
+            tag.putString("dimensionId", dimensionId);
+        }
 
         ListTag blocksList = new ListTag();
         for (BlockSnapshot bs : blocks) {
@@ -134,6 +143,7 @@ public final class CloudBuilding {
         b.sizeZ = tag.getInt("sizeZ");
         // version: 缺省 = 0 (老格式, 已旋转的 lx/ly/lz + 原始 state)
         b.version = tag.contains("version") ? tag.getInt("version") : 0;
+        b.dimensionId = tag.contains("dimensionId") ? tag.getString("dimensionId") : "";
 
         ListTag blocksList = tag.getList("blocks", Tag.TAG_COMPOUND);
         for (int i = 0; i < blocksList.size(); i++) {

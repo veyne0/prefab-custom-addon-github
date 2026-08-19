@@ -2,16 +2,21 @@ package com.prefab.addon.cloud;
 
 import com.prefab.addon.PrefabCustomAddon;
 import com.prefab.addon.extension.ExtensionPackManager;
+import com.prefab.addon.integration.BuildingDatabase;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.core.registries.Registries;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.NbtIo;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.Container;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.entity.BlockEntity;
@@ -93,7 +98,39 @@ public class CloudBuildingManager {
         List<CloudBuilding> list = loadFromDisk(uuid);
         store.put(uuid, list);
         PrefabCustomAddon.LOGGER.info("[CLOUD] 玩家 {} 加载 {} 个云端建筑", player.getName().getString(), list.size());
+
+        // === 联动: rebuild BuildingDatabase (Jade 源) ===
+        // 服务端拿不到当前 ServerLevel 的引用 (player 才刚 join, level 可能还在切),
+        // 所以维度用 CloudBuilding.dimensionId 字符串反解, 拿不到就 fallback 到 overworld.
+        // 这里清一次再 register, 避免热重载场景下同 id 重复 register.
+        for (CloudBuilding b : list) {
+            try {
+                if (!b.placed) continue;
+                BuildingDatabase.unregister(b.id);
+                ResourceLocation dimLoc = parseDimensionId(b.dimensionId);
+                ResourceKey<Level> dimKey = ResourceKey.create(
+                    net.minecraft.core.registries.Registries.DIMENSION, dimLoc);
+                int steps = CloudBuilding.facingToRotationSteps(b.facing);
+                BuildingDatabase.register(new BuildingDatabase.Record(
+                    b.id, b.name, player.getName().getString(), player.getUUID(),
+                    dimKey, b.placedAt, b.sizeX, b.sizeY, b.sizeZ, steps));
+            } catch (Throwable t) {
+                PrefabCustomAddon.LOGGER.warn("[CLOUD] rebuild BuildingDatabase for {} failed: {}",
+                    b.id, t.getMessage());
+            }
+        }
+
         syncToClient(player);
+    }
+
+    /** CloudBuilding.dimensionId (字符串) → ResourceLocation, 失败 fallback 到 overworld. */
+    private static ResourceLocation parseDimensionId(String s) {
+        if (s != null && !s.isEmpty()) {
+            try {
+                return ResourceLocation.parse(s);
+            } catch (Throwable ignored) {}
+        }
+        return ResourceLocation.withDefaultNamespace("overworld");
     }
 
     public void onPlayerLeave(UUID playerUuid) {
@@ -217,6 +254,15 @@ public class CloudBuildingManager {
         ServerLevel level = player.serverLevel();
         int restoredItems = clearBlocksAndCollectItems(level, b, player);
         b.placed = false;
+
+        // === 联动: 从 BuildingDatabase 注销 (Jade 不再提示) ===
+        // 客户端在收到下面的 syncToClient 后会自己 diff Xaero 航点
+        try {
+            BuildingDatabase.unregister(b.id);
+        } catch (Throwable t) {
+            PrefabCustomAddon.LOGGER.warn("[CLOUD] unregister BuildingDatabase failed: {}", t.getMessage());
+        }
+
         saveToDisk(player.getUUID());
         syncToClient(player);
         success(player, "已收回: " + b.name + (restoredItems > 0
@@ -244,6 +290,10 @@ public class CloudBuildingManager {
         }
         String name = b.name;
         remove(player, buildingId);
+        // === 联动: 删除时也清 BuildingDatabase (理论上 delete 要求 placed=false, 这里兜底) ===
+        try {
+            BuildingDatabase.unregister(buildingId);
+        } catch (Throwable ignored) {}
         success(player, "已从云端删除: " + name);
         return true;
     }
@@ -294,6 +344,20 @@ public class CloudBuildingManager {
         restoreTileEntities(level, origin, b, steps);
         b.placed = true;
         b.placedAt = origin;
+        b.dimensionId = level.dimension().location().toString();
+
+        // === 联动: 注册到 BuildingDatabase (Jade 查询源) ===
+        // 服务端权威, 写一次即可, 客户端收到 CloudBuildingSyncPayload 时会再写自己的那份
+        // Xaero 航点必须客户端调, 通过下面 saveToDisk + syncToClient 触发客户端处理
+        try {
+            BuildingDatabase.Record rec = new BuildingDatabase.Record(
+                b.id, b.name, player.getName().getString(), player.getUUID(),
+                level.dimension(), origin, b.sizeX, b.sizeY, b.sizeZ, steps);
+            BuildingDatabase.register(rec);
+        } catch (Throwable t) {
+            PrefabCustomAddon.LOGGER.warn("[CLOUD] register BuildingDatabase failed: {}", t.getMessage());
+        }
+
         saveToDisk(player.getUUID());
         syncToClient(player);
         success(player, "已放出: " + b.name + " @ " + origin.toShortString());

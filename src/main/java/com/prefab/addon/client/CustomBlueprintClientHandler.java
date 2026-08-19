@@ -10,8 +10,12 @@ import com.prefab.addon.extension.ExtensionPackManager;
 import com.prefab.addon.items.CustomBlueprintItem;
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.tags.TagKey;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
@@ -39,14 +43,66 @@ import net.neoforged.neoforge.event.entity.player.PlayerInteractEvent;
 @EventBusSubscriber(modid = PrefabCustomAddon.MOD_ID, value = Dist.CLIENT)
 public class CustomBlueprintClientHandler {
 
+    /**
+     * Tag: 玩家在 "制作蓝图" tab 通过 KubeJS 注册的蓝图物品.
+     * <p>认两种来源:
+     * <ul>
+     *   <li>{@link CustomBlueprintItem} (mod 原生, NBT 存 packName/constructionId/locked)</li>
+     *   <li>任意 Item 加上这个 tag (KubeJS 注册的, NBT 一样存 packName/constructionId/locked)</li>
+     * </ul>
+     * tag 文件: {@code data/prefab_custom_addon/tags/items/player_blueprint.json}
+     */
+    private static final TagKey<Item> PLAYER_BLUEPRINT_TAG = TagKey.create(
+        Registries.ITEM,
+        ResourceLocation.fromNamespaceAndPath(PrefabCustomAddon.MOD_ID, "player_blueprint"));
+
+    /** 玩家蓝图物品的 NBT key 集合 (跟 CustomBlueprintItem 完全一致). */
+    private static final String NBT_PACK_NAME   = "packName";
+    private static final String NBT_CONSTRUCTION = "constructionId";
+    private static final String NBT_LOCKED      = "locked";
+
+    /**
+     * 判断物品是否需要被本 handler 拦截: 原生 CustomBlueprintItem 或带 player_blueprint tag 的.
+     * <p>public: StructurePreviewKeyHandler 也要复用这个判断 (查找背包蓝图时, 不只认 CustomBlueprintItem,
+     * 也认 KubeJS 注册的带 tag 物品).</p>
+     */
+    public static boolean isHandledBlueprint(ItemStack stack) {
+        if (stack.isEmpty()) return false;
+        if (stack.getItem() instanceof CustomBlueprintItem) return true;
+        if (stack.is(PLAYER_BLUEPRINT_TAG)) return true;
+        return false;
+    }
+
+    /** 玩家蓝图 NBT 读取 (兼容 CustomBlueprintItem 和 tag 物品). */
+    private static boolean hasBound(ItemStack stack) {
+        net.minecraft.world.item.component.CustomData data =
+            stack.get(net.minecraft.core.component.DataComponents.CUSTOM_DATA);
+        if (data == null) return false;
+        net.minecraft.nbt.CompoundTag tag = data.copyTag();
+        return tag.contains(NBT_PACK_NAME) && tag.contains(NBT_CONSTRUCTION);
+    }
+
+    private static String getBoundPackName(ItemStack stack) {
+        net.minecraft.world.item.component.CustomData data =
+            stack.get(net.minecraft.core.component.DataComponents.CUSTOM_DATA);
+        if (data == null) return "";
+        return data.copyTag().getString(NBT_PACK_NAME);
+    }
+
+    private static String getBoundConstructionId(ItemStack stack) {
+        net.minecraft.world.item.component.CustomData data =
+            stack.get(net.minecraft.core.component.DataComponents.CUSTOM_DATA);
+        if (data == null) return "";
+        return data.copyTag().getString(NBT_CONSTRUCTION);
+    }
+
     @SubscribeEvent
     public static void onRightClickItem(PlayerInteractEvent.RightClickItem event) {
         Player player = event.getEntity();
         if (!player.level().isClientSide) return;
 
         ItemStack stack = event.getItemStack();
-        if (stack.isEmpty()) return;
-        if (!(stack.getItem() instanceof CustomBlueprintItem)) return;
+        if (!isHandledBlueprint(stack)) return;
 
         // 客户端拦截: 取消事件, 自己开 GUI
         event.setCanceled(true);
@@ -60,8 +116,7 @@ public class CustomBlueprintClientHandler {
         if (!player.level().isClientSide) return;
 
         ItemStack stack = event.getItemStack();
-        if (stack.isEmpty()) return;
-        if (!(stack.getItem() instanceof CustomBlueprintItem)) return;
+        if (!isHandledBlueprint(stack)) return;
 
         event.setCanceled(true);
         // 关键: 用点击面之上 1 格作为建筑原点 (避免该位置是草方块导致 Prefab 跳过 by=0 层)
@@ -100,16 +155,15 @@ public class CustomBlueprintClientHandler {
     }
 
     private static void openGuiForStack(ItemStack stack, Player player, BlockPos pos, InteractionHand hand) {
-        boolean bound = CustomBlueprintItem.hasConstructionBound(stack);
+        boolean bound = hasBound(stack);
         PrefabCustomAddon.LOGGER.info(
-            "[USE-DEBUG] ClientHandler: hand={} hasBound={} locked={} pack={} id={}",
-            hand, bound, CustomBlueprintItem.isLocked(stack),
-            CustomBlueprintItem.getBoundPackName(stack),
-            CustomBlueprintItem.getBoundConstructionId(stack));
+            "[USE-DEBUG] ClientHandler: hand={} hasBound={} item={} pack={} id={}",
+            hand, bound, stack.getItem(),
+            getBoundPackName(stack), getBoundConstructionId(stack));
 
         if (bound) {
-            String packName = CustomBlueprintItem.getBoundPackName(stack);
-            String constructionId = CustomBlueprintItem.getBoundConstructionId(stack);
+            String packName = getBoundPackName(stack);
+            String constructionId = getBoundConstructionId(stack);
             ConstructionInfo info = ExtensionPackManager.getInstance().findConstruction(packName, constructionId);
             if (info == null) {
                 // 向后兼容: 旧版本可能用 getPackageName() 绑定, 直接 lookup 失败.

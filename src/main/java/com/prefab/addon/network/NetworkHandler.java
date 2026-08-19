@@ -33,6 +33,12 @@ public class NetworkHandler {
                 BindConstructionPayload.STREAM_CODEC,
                 NetworkHandler::handleBind
         );
+        // 自定义推土机: 客户端 → 服务端执行清除
+        registrar.playToServer(
+                ExecuteCustomBulldozerPayload.TYPE,
+                ExecuteCustomBulldozerPayload.STREAM_CODEC,
+                ExecuteCustomBulldozerPayload::handle
+        );
 
         // ===== 客户端→服务端: 全局建造速度 (OP 校验) =====
         registrar.playToServer(
@@ -129,7 +135,20 @@ public class NetworkHandler {
                         }
                     }
                     com.prefab.addon.cloud.CloudBuildingClientCache.getInstance().replaceAll(list);
+
+                    // === Jade / Xaero 联动: 全量 diff ===
+                    // 1) BuildingDatabase 全量替换 (只对 placed=true 的)
+                    // 2) Xaero 航点: 新增/位置变了 → addWaypoint, 之前 placed 现在 not → removeWaypoint
+                    // 必须在 client thread 跑 (Xaero 内部状态不线程安全)
+                    ctx.enqueueWork(() -> ClientBuildingSyncHelper.onSyncReceived(list));
                 }
+        );
+
+        // ===== 服务端→客户端: 一批方块刚被放置 (用于"建造下落动画") =====
+        registrar.playToClient(
+                BatchBlocksPlacedPayload.TYPE,
+                BatchBlocksPlacedPayload.STREAM_CODEC,
+                (payload, ctx) -> com.prefab.addon.client.BuildAnimationRenderer.onBatchBlocksPlaced(payload)
         );
     }
 
@@ -239,7 +258,7 @@ public class NetworkHandler {
                 // 蓝图消耗在异步任务 onCompleted() 里完成 (失败/取消时**不消耗**).
                 boolean ok = com.prefab.addon.structure.CustomStructureBuilder.getInstance()
                         .placeStructure(player, level, payload.pos(), payload.packName(),
-                                payload.constructionId(), payload.houseFacing());
+                                payload.constructionId(), payload.houseFacing(), payload.animationMode());
                 if (!ok) {
                     PrefabCustomAddon.LOGGER.warn("[BUILD-DEBUG] 启动异步建造任务失败, 蓝图不消耗: pack={}/{}",
                         payload.packName(), payload.constructionId());

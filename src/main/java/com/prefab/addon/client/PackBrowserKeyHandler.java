@@ -3,8 +3,7 @@ package com.prefab.addon.client;
 import com.mojang.blaze3d.platform.InputConstants;
 import com.prefab.addon.PrefabCustomAddon;
 import com.prefab.addon.client.gui.GuiExtensionPackBrowser;
-import com.prefab.addon.client.gui.GuiExtensionPackCreator;
-import com.prefab.addon.client.gui.SettingsGui;
+import com.prefab.addon.client.gui.GuiExtensionPackEditor;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
 import net.neoforged.api.distmarker.Dist;
@@ -19,7 +18,6 @@ import net.neoforged.bus.api.EventPriority;
  * 键盘绑定:
  *   Z 键 → 打开拓展包管理界面 (浏览/下载)
  *   X 键 → 打开拓展包制作界面 (创建/编辑本地工作区)
- *   O 键 → 打开设置界面 (挑战模式 / 预览速度 / 建造速度)
  *
  * 用了 Minecraft 标准的 KeyMapping, 所以这些键会出现在
  * Options → Controls → Prefab Custom Addon 分组里, 玩家可以改键.
@@ -31,7 +29,6 @@ public class PackBrowserKeyHandler {
 
     public static KeyMapping OPEN_BROWSER;  // Z 默认
     public static KeyMapping OPEN_CREATOR;  // X 默认
-    public static KeyMapping OPEN_SETTINGS; // O 默认
 
     /** 构造, 在 mod 启动时调用 */
     public static void register() {
@@ -45,11 +42,6 @@ public class PackBrowserKeyHandler {
             InputConstants.Type.KEYSYM,
             GLFW.GLFW_KEY_X,
             KEY_CATEGORY);
-        OPEN_SETTINGS = new KeyMapping(
-            "key.prefab_custom_addon.open_settings",
-            InputConstants.Type.KEYSYM,
-            GLFW.GLFW_KEY_O,
-            KEY_CATEGORY);
     }
 
     /** NeoForge 会在合适时机调用这个把 key mapping 注册到 Controls 菜单 */
@@ -58,7 +50,6 @@ public class PackBrowserKeyHandler {
         if (OPEN_BROWSER == null) register();
         event.register(OPEN_BROWSER);
         event.register(OPEN_CREATOR);
-        event.register(OPEN_SETTINGS);
     }
 
     @SubscribeEvent
@@ -70,22 +61,16 @@ public class PackBrowserKeyHandler {
 
         if (OPEN_BROWSER == null) return;  // 还没注册
 
-        // Z 键 → 拓展包管理 (浏览/下载)
+        // Z 键 → 拓展包管理 (浏览/下载) - 现有 6 tab 浏览器
         while (OPEN_BROWSER.consumeClick()) {
             PrefabCustomAddon.LOGGER.info("[Z-KEY] Opening extension pack browser");
             Minecraft.getInstance().setScreen(new GuiExtensionPackBrowser());
         }
 
-        // X 键 → 拓展包制作
+        // X 键 → 独立编辑器 GUI (3 tab: 创建建筑 / 编辑建筑 / 设置)
         while (OPEN_CREATOR.consumeClick()) {
-            PrefabCustomAddon.LOGGER.info("[X-KEY] Opening extension pack creator");
-            GuiExtensionPackCreator.open();
-        }
-
-        // O 键 → 设置 (挑战模式 / 预览速度 / 建造速度)
-        while (OPEN_SETTINGS.consumeClick()) {
-            PrefabCustomAddon.LOGGER.info("[O-KEY] Opening settings GUI");
-            SettingsGui.open();
+            PrefabCustomAddon.LOGGER.info("[X-KEY] Opening extension pack editor (3-tab)");
+            Minecraft.getInstance().setScreen(new GuiExtensionPackEditor());
         }
     }
 }

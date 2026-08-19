@@ -142,6 +142,13 @@ public final class GuiConstructionDetail {
     /** Prev/Next 按钮引用 (新版 UI 已移除, 保留字段仅为避免编译错误) */
     private static Button btnPrev;
     private static Button btnNext;
+
+    /**
+     * "← 返回"按钮的自定义回调. null = 默认 (打开 GuiExtensionPackBrowser).
+     * 编辑建筑 → 查看 场景下, GuiExtensionPackEditor.openConstructionDetail() 会传
+     * 一个 reopenEditor() 回调, 让"返回"直接回到编辑建筑 tab, 不绕到云端浏览器.
+     */
+    private static Runnable onBackCallback = null;
     private static Label titleLabel;
 
     // === Pack 切换 (Selector) - 新版 UI 已移除 ===
@@ -228,6 +235,21 @@ public final class GuiConstructionDetail {
     }
 
     public static void open(ConstructionInfo construction) {
+        // 默认: 返回按钮走 GuiExtensionPackBrowser (旧路径, 兼容)
+        open(construction, null);
+    }
+
+    /**
+     * 带"返回回调"地打开建筑详情. 提供给"编辑建筑 → 查看"场景,
+     * 返回时直接回到 GuiExtensionPackEditor 的编辑建筑 tab,
+     * 而不是默认的 GuiExtensionPackBrowser (那个界面是给云端/下载/收藏用的, 编辑建筑场景用不到).
+     *
+     * @param construction 当前建筑
+     * @param onBack 返回按钮回调. null = 用默认行为 (打开 GuiExtensionPackBrowser).
+     */
+    public static void open(ConstructionInfo construction, Runnable onBack) {
+        // 保存回调. 静态字段, 简单可靠, 跟 currentConstruction/navList 一样的"会话级单例"模式.
+        GuiConstructionDetail.onBackCallback = onBack;
         resetState();
         currentConstruction = construction;
         // 新版 UI 不再用 navList (无翻页按钮), 但保留字段防止 null 引用
@@ -619,6 +641,12 @@ public final class GuiConstructionDetail {
         btnBackToBrowser.textStyle(t -> t.textAlignHorizontal(Horizontal.CENTER));
         btnBackToBrowser.layout(l -> l.width(56).height(20));
         btnBackToBrowser.setOnClick(e -> {
+            // 优先用 caller 提供的回调 (编辑建筑 → 查看 场景下回到编辑器),
+            // 没传回调才走默认的 GuiExtensionPackBrowser.
+            if (onBackCallback != null) {
+                onBackCallback.run();
+                return;
+            }
             // 关闭当前详情, 重新打开新版的 tabbed browser
             GuiExtensionPackBrowser.open();
         });
@@ -750,10 +778,11 @@ public final class GuiConstructionDetail {
             .justifyContent(AlignContent.CENTER)
         );
 
-        Button btnBack = new Button().setText("Back");
-        btnBack.setOnClick(e -> Minecraft.getInstance().setScreen(null));
-        btnBack.layout(l -> l.flexGrow(1).heightPercent(100));
-        buttonRow.addChild(btnBack);
+        // 「删除建筑」按钮: 点一下走二次确认 (LdLib 弹窗), 确认后删 .nbt/.txt/.png + 回到浏览器
+        Button btnDeleteBuilding = new Button().setText("§c🗑 删除建筑");
+        btnDeleteBuilding.setOnClick(e -> confirmDeleteBuilding(construction));
+        btnDeleteBuilding.layout(l -> l.flexGrow(1).heightPercent(100));
+        buttonRow.addChild(btnDeleteBuilding);
 
         Button btnCheckDeps = new Button().setText(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.check_deps_btn"));
         btnCheckDeps.setOnClick(e -> runDepCheck(construction));
@@ -1006,6 +1035,11 @@ public final class GuiConstructionDetail {
         );
         content.addChild(depListContainer);
         rebuildDepList(construction);
+
+        // 分类 - 来自 .txt 的 "分类:" 字段. 没有就显示"未分类"
+        addField(content,
+            com.prefab.addon.PrefabCustomAddon.tr("gui.detail.category"),
+            construction.getCategoryOrDefault());
 
         // 描述
         String desc = construction.getDescription();
@@ -1345,5 +1379,182 @@ public final class GuiConstructionDetail {
             PrefabCustomAddon.LOGGER.warn("[DETAIL] captureThumbnail failed: {}", t.getMessage(), t);
             showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.screenshot_fail", t.getMessage()), 0xFF5555, 60);
         }
+    }
+
+    // ====================================================================
+    // 删除建筑 (从详情页底部按钮)
+    //   - 仅支持单文件建筑 (.nbt + .txt + .png 三件套平铺在 prefab-extension/ 或 prefab-download/),
+    //     zip 拓展包内的建筑不支持 (要回 Editor 那边改 zip)
+    //   - 走二次确认: 先点按钮 → 弹 LdLib 确认窗口 → 真的点了「确认删除」才删
+    // ====================================================================
+
+    /**
+     * 二次确认弹窗: 玩家点底部「删除建筑」后, 弹出这个小窗.
+     * 确认后调 {@link #doDeleteBuilding(ConstructionInfo)} 实际删.
+     * 静态方法: 内部 lambda 从 createUI() 里调, createUI 是 static, 这边也必须 static.
+     */
+    private static void confirmDeleteBuilding(ConstructionInfo construction) {
+        String title = com.prefab.addon.PrefabCustomAddon.tr("gui.detail.delete_confirm_title",
+            construction.getName());
+
+        com.lowdragmc.lowdraglib2.gui.holder.ModularUIScreen screen =
+            new com.lowdragmc.lowdraglib2.gui.holder.ModularUIScreen(
+                com.lowdragmc.lowdraglib2.gui.ui.ModularUI.of(
+                    com.lowdragmc.lowdraglib2.gui.ui.UI.of(buildDeleteConfirmRoot(construction),
+                        com.lowdragmc.lowdraglib2.gui.ui.style.StylesheetManager.INSTANCE
+                            .getStylesheetSafe(com.lowdragmc.lowdraglib2.gui.ui.style.StylesheetManager.MC))),
+                net.minecraft.network.chat.Component.literal(title));
+
+        Minecraft.getInstance().setScreen(screen);
+    }
+
+    /** 构造二次确认弹窗的 root 节点. */
+    private static com.lowdragmc.lowdraglib2.gui.ui.UIElement buildDeleteConfirmRoot(ConstructionInfo construction) {
+        com.lowdragmc.lowdraglib2.gui.ui.UIElement root = new com.lowdragmc.lowdraglib2.gui.ui.UIElement();
+        root.layout(l -> l.width(280).height(140)
+            .flexDirection(dev.vfyjxf.taffy.style.FlexDirection.COLUMN));
+        root.style(s -> s.background(com.lowdragmc.lowdraglib2.gui.ui.styletemplate.Sprites.BORDER));
+
+        // 标题
+        com.lowdragmc.lowdraglib2.gui.ui.UIElement titleBar = new com.lowdragmc.lowdraglib2.gui.ui.UIElement();
+        titleBar.layout(l -> l.widthPercent(100).height(24)
+            .paddingHorizontal(8)
+            .justifyContent(dev.vfyjxf.taffy.style.AlignContent.CENTER));
+        titleBar.style(s -> s.background(com.lowdragmc.lowdraglib2.gui.ui.styletemplate.Sprites.RECT_DARK));
+        com.lowdragmc.lowdraglib2.gui.ui.elements.Label title = new com.lowdragmc.lowdraglib2.gui.ui.elements.Label();
+        title.setText(net.minecraft.network.chat.Component.literal(
+            "§c§l" + com.prefab.addon.PrefabCustomAddon.tr("gui.detail.delete_confirm_title",
+                construction.getName())));
+        title.textStyle(t -> t.textAlignHorizontal(com.lowdragmc.lowdraglib2.gui.ui.data.Horizontal.CENTER));
+        titleBar.addChild(title);
+        root.addChild(titleBar);
+
+        // 提示文字
+        com.lowdragmc.lowdraglib2.gui.ui.UIElement body = new com.lowdragmc.lowdraglib2.gui.ui.UIElement();
+        body.layout(l -> l.widthPercent(100).flex(1)
+            .paddingAll(10)
+            .flexDirection(dev.vfyjxf.taffy.style.FlexDirection.COLUMN)
+            .gapAll(4));
+        com.lowdragmc.lowdraglib2.gui.ui.elements.Label warn = new com.lowdragmc.lowdraglib2.gui.ui.elements.Label();
+        warn.setText(net.minecraft.network.chat.Component.literal(
+            "§7" + com.prefab.addon.PrefabCustomAddon.tr("gui.detail.delete_confirm_body",
+                construction.getName())));
+        warn.textStyle(t -> t.textWrap(com.lowdragmc.lowdraglib2.gui.ui.data.TextWrap.WRAP)
+            .adaptiveHeight(true));
+        warn.layout(l -> l.widthPercent(100));
+        body.addChild(warn);
+        root.addChild(body);
+
+        // 按钮行
+        com.lowdragmc.lowdraglib2.gui.ui.UIElement btnRow = new com.lowdragmc.lowdraglib2.gui.ui.UIElement();
+        btnRow.layout(l -> l.widthPercent(100).height(28)
+            .paddingHorizontal(20).paddingVertical(4)
+            .flexDirection(dev.vfyjxf.taffy.style.FlexDirection.ROW)
+            .justifyContent(dev.vfyjxf.taffy.style.AlignContent.SPACE_BETWEEN));
+
+        com.lowdragmc.lowdraglib2.gui.ui.elements.Button btnCancel = new com.lowdragmc.lowdraglib2.gui.ui.elements.Button();
+        btnCancel.setText(net.minecraft.network.chat.Component.literal(
+            "§7" + com.prefab.addon.PrefabCustomAddon.tr("gui.detail.delete_cancel")));
+        btnCancel.layout(l -> l.width(80).height(20));
+        btnCancel.setOnClick(e -> Minecraft.getInstance().setScreen(null));
+        btnRow.addChild(btnCancel);
+
+        com.lowdragmc.lowdraglib2.gui.ui.elements.Button btnOk = new com.lowdragmc.lowdraglib2.gui.ui.elements.Button();
+        btnOk.setText(net.minecraft.network.chat.Component.literal(
+            "§c§l" + com.prefab.addon.PrefabCustomAddon.tr("gui.detail.delete_ok")));
+        btnOk.layout(l -> l.width(100).height(20));
+        btnOk.setOnClick(e -> {
+            doDeleteBuilding(construction);
+        });
+        btnRow.addChild(btnOk);
+
+        root.addChild(btnRow);
+        return root;
+    }
+
+    /** 实际执行删除: 单文件建筑 (本地有 .nbt/.txt/.png 的情况) 一律放行; 真没本地文件且是 zip 包内才拒绝. */
+    private static void doDeleteBuilding(ConstructionInfo construction) {
+        // 关闭确认弹窗
+        Minecraft.getInstance().setScreen(null);
+        Minecraft mc = Minecraft.getInstance();
+
+        String cid = construction.getId();
+        ExtensionPack packRef = construction.getPack();
+        String packInfo = packRef == null ? "null" : packRef.getPackageName();
+        java.nio.file.Path nbt = construction.getLocalNbtPath();
+        String nbtInfo = nbt == null ? "null" : nbt.toString();
+        PrefabCustomAddon.LOGGER.info("[DELETE] 开始删除 id='{}' pack={} localNbtPath={}", cid, packInfo, nbtInfo);
+
+        // === 关键修复: 优先看本地文件, 不管 pack ===
+        // 之前逻辑: construction.getPack() != null 就直接 return, 不删.
+        // 但 GuiExtensionPackBrowser.getMergedConstructionsForBuildingsTab() 会把 LocalBuilding
+        // 的字段合并到 pack 的 ConstructionInfo 上, 留下 pack 引用. 玩家看到的是"本地建筑",
+        // 但代码把它当成"zip 内的", 拒绝删, 玩家还看不到错误 (setScreen(null) 在第一行就关了弹窗,
+        // showStatus 写静态字段也没人渲染) → "按钮啥也没干".
+        // 现在改成: 本地文件存在就以本地为准删 (不管 pack).
+        if (nbt != null && java.nio.file.Files.exists(nbt)) {
+            // === 本地文件存在, 删三件套 ===
+            try {
+                java.nio.file.Path dir = nbt.getParent();
+                String name = nbt.getFileName().toString();
+                int dot = name.lastIndexOf('.');
+                if (dot <= 0) {
+                    String msg = "§c[删除失败] 文件名无后缀: " + name;
+                    PrefabCustomAddon.LOGGER.warn("[DELETE] {}", msg);
+                    if (mc.player != null) mc.player.sendSystemMessage(Component.literal(msg));
+                    return;
+                }
+                String base = name.substring(0, dot);
+                int deleted = 0;
+                for (String ext : java.util.Arrays.asList(".nbt", ".schem", ".schematic", ".litematic",
+                                                           ".txt",
+                                                           ".png", ".jpg", ".jpeg", ".gif", ".webp")) {
+                    java.nio.file.Path p = dir.resolve(base + ext);
+                    try {
+                        if (java.nio.file.Files.deleteIfExists(p)) {
+                            deleted++;
+                            PrefabCustomAddon.LOGGER.info("[DELETE] 删除文件: {}", p);
+                        }
+                    } catch (Exception e) {
+                        PrefabCustomAddon.LOGGER.warn("[DELETE] 删 {} 失败: {}", p, e.getMessage());
+                    }
+                }
+                PrefabCustomAddon.LOGGER.info("[DELETE] 共删除 {} 个文件 (base={}, dir={})", deleted, base, dir);
+
+                // 关掉详情页
+                mc.setScreen(null);
+                // 重扫 (zip pack 缓存, 不影响单文件但保险)
+                try {
+                    ExtensionPackManager.getInstance().forceReload();
+                } catch (Throwable ignored) {}
+                // 打开浏览器
+                GuiExtensionPackBrowser.open();
+
+                if (mc.player != null) {
+                    mc.player.sendSystemMessage(Component.literal(
+                        "§a✓ 已删除建筑 §f'" + cid + "'§a (§e" + deleted + "§a 个文件)"));
+                }
+            } catch (Exception ex) {
+                PrefabCustomAddon.LOGGER.warn("[DELETE] 删除失败: {}", ex.getMessage(), ex);
+                if (mc.player != null) {
+                    mc.player.sendSystemMessage(Component.literal(
+                        "§c[删除失败] " + (ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage())));
+                }
+            }
+            return;
+        }
+
+        // === 没本地文件, 看看 pack ===
+        if (packRef != null) {
+            String msg = "§c[删除失败] 该建筑在 zip 拓展包内, 没法从这里删 (包: " + packInfo + ")";
+            PrefabCustomAddon.LOGGER.warn("[DELETE] {}", msg);
+            if (mc.player != null) mc.player.sendSystemMessage(Component.literal(msg));
+            return;
+        }
+
+        // 既没本地也没 pack, 异常状态
+        String msg = "§c[删除失败] 建筑文件不存在, 也找不到包引用: " + cid;
+        PrefabCustomAddon.LOGGER.warn("[DELETE] {}", msg);
+        if (mc.player != null) mc.player.sendSystemMessage(Component.literal(msg));
     }
 }
