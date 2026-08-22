@@ -1,66 +1,31 @@
 # Prefab Custom Addon
 
-Prefab ships with a handful of buildings. After a while you get bored of them.
+Prefab 模组的扩展。
 
-This addon adds an extension pack system: press **Z** in-game to browse and download community-made packs, or press **X** to make your own.
+> **关于开发**
+> 本模组的代码由 AI 编程工具（TRAE）生成，作者本人 Java 学习时间不长，没有能力自己写模组。如果遇到 bug 或有功能建议，欢迎在 Issue 反馈。
 
-**Downloader** — browse community packs, pick one, drops into `prefab-extension/`, ready to use next time you load a world.
+## 功能
 
-**Creator** — local workspace mode. Fill in a form, pick an NBT, pick a cover image, a few clicks and you have a standard extension pack (with ZIP). Everything lives in `prefab-work/` at your game root. Export NBT files using the vanilla Structure Block.
+- 游戏内建筑包浏览器（Z）
+- 游戏内建筑包制作器（X）
+- 支持社区建筑包格式
+- 兼容原版 Prefab 模组
 
-Requires: Prefab 1.0.7+, LDLib2 2.2+. Tested on NeoForge 21.1.233 / MC 1.21.1 / Java 21+.
+## 运行环境
 
-## Keybindings
+- Minecraft 1.21.1（NeoForge）或 1.20.1（Forge）
+- 需要安装 Prefab 原版模组
+- 需要安装 LDLib2
 
-| Key | Action |
-|---|---|
-| Z | Open extension pack downloader |
-| X | Open extension pack creator |
+## 安装
 
-## Folder Layout
+放入 `mods` 文件夹即可。。
 
-The workspace folder mirrors the published pack format:
+## 反馈
 
-```
-prefab-work/
-├── <pack_id>/
-│   ├── information/
-│   │   ├── <pack_id>.txt
-│   │   └── cover.png
-│   └── construction/
-│       ├── <building_id>.nbt
-│       ├── <building_id>.png
-│       └── <building_id>.txt
-└── <pack_id>.zip          ← auto-generated
-```
+遇到问题或想提建议，去 MC 百科的讨论区，或者 Issues。
 
-Any change under `prefab-work/<id>/` triggers an automatic repack into `prefab-work/<id>.zip`. To install a pack manually, unzip the file into `prefab-extension/<id>/`.
+## 许可
 
-## Building from Source
-
-Java 21+ required.
-
-1. Grab the Prefab jar from [CurseForge](https://www.curseforge.com/minecraft/mc-mods/prefab) or [Modrinth](https://modrinth.com/mod/prefab) and put it at `libs/prefab-neoforge-1.0.8.jar`
-2. Grab the LDLib2 jar from [Modrinth](https://modrinth.com/mod/ldlib2) and put it at `libs/ldlib2-2.2.18.jar`
-3. Run `gradlew build`. Output goes to `build/libs/`
-
-If the build complains about missing Prefab classes, double-check the two jar paths above.
-
-## Dependencies
-
-| Mod | Version | Required | Purpose |
-|---|---|---|---|
-| Prefab | 1.0.7+ | yes | core — provides `GuiStructure`, `BuildBlock`, etc. |
-| LDLib2 | 2.2+ | yes | UI utilities |
-
-NeoForge 21.1.233 on Minecraft 1.21.1.
-
-## License
-
-MIT. See [LICENSE](LICENSE).
-
-## Links
-
-- [Prefab on CurseForge](https://www.curseforge.com/minecraft/mc-mods/prefab)
-- [NeoForge](https://neoforged.net/)
-- [LDLib2 on Modrinth](https://modrinth.com/mod/ldlib2)
+MIT
