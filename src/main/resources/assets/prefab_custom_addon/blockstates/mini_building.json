@@ -1,0 +1,5 @@
+{
+  "variants": {
+    "": { "model": "prefab_custom_addon:block/mini_building" }
+  }
+}

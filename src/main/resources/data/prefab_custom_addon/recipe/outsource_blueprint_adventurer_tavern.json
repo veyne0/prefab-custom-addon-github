@@ -1,0 +1,30 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "group": "Outsource Blueprint - Adventurer Tavern",
+  "pattern": [
+    "SLS",
+    "FBF",
+    "SCS"
+  ],
+  "key": {
+    "S": {
+      "tag": "c:double_compressed_stone"
+    },
+    "L": {
+      "item": "minecraft:lantern"
+    },
+    "F": {
+      "item": "minecraft:oak_fence"
+    },
+    "B": {
+      "item": "minecraft:barrel"
+    },
+    "C": {
+      "item": "prefab:item_coil_of_lanterns"
+    }
+  },
+  "result": {
+    "id": "prefab_custom_addon:outsource_blueprint_adventurer_tavern",
+    "count": 1
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "parent": "block/cube_all",
+  "textures": {
+    "all": "prefab_custom_addon:block/mini_building"
+  }
+}

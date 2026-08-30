@@ -1,0 +1,30 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "group": "Outsource Blueprint - Forge Workshop",
+  "pattern": [
+    "DBD",
+    "FAF",
+    "DPD"
+  ],
+  "key": {
+    "D": {
+      "tag": "c:double_compressed_stone"
+    },
+    "B": {
+      "item": "minecraft:brick"
+    },
+    "F": {
+      "item": "minecraft:furnace"
+    },
+    "A": {
+      "item": "minecraft:anvil"
+    },
+    "P": {
+      "item": "prefab:item_pallet_of_bricks"
+    }
+  },
+  "result": {
+    "id": "prefab_custom_addon:outsource_blueprint_forge_workshop",
+    "count": 1
+  }
+}

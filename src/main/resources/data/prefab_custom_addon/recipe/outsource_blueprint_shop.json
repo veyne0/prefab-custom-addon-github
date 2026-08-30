@@ -1,0 +1,27 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "group": "Outsource Blueprint - Shop",
+  "pattern": [
+    "CSC",
+    "GOG",
+    "CSC"
+  ],
+  "key": {
+    "C": {
+      "item": "prefab:item_compressed_chest"
+    },
+    "S": {
+      "tag": "c:compressed_stone"
+    },
+    "G": {
+      "tag": "c:storage_blocks/iron"
+    },
+    "O": {
+      "item": "minecraft:emerald"
+    }
+  },
+  "result": {
+    "id": "prefab_custom_addon:outsource_blueprint_shop",
+    "count": 1
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "group": "Outsource Blueprint - Small Building",
+  "pattern": [
+    "CSC",
+    "GLG",
+    "COC"
+  ],
+  "key": {
+    "C": {
+      "tag": "c:compressed_stone"
+    },
+    "S": {
+      "item": "minecraft:glass"
+    },
+    "G": {
+      "item": "minecraft:oak_planks"
+    },
+    "L": {
+      "item": "minecraft:ladder"
+    },
+    "O": {
+      "item": "minecraft:oak_slab"
+    }
+  },
+  "result": {
+    "id": "prefab_custom_addon:outsource_blueprint_small_building",
+    "count": 1
+  }
+}

@@ -2,10 +2,12 @@ package com.prefab.addon.client;
 
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.prefab.addon.PrefabCustomAddon;
+import com.prefab.addon.items.MiniBuildingConverterItem;
 import com.prefab.addon.work.RegionSelector;
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.ItemStack;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
@@ -175,6 +177,26 @@ public class RegionSelectorEventHandler {
                         net.minecraft.network.chat.Component.literal(
                             com.prefab.addon.PrefabCustomAddon.tr("sel.pack_rescanned")), true);
                 }
+            }
+        }
+
+        // ---- 迷你建筑转换器: 自动进入选区模式 ----
+        // 玩家手持转换器时, 自动启动 MINI_BUILDING_CAPTURE 模式 → 显示黄/绿/红框
+        // 玩家放下转换器时, 自动取消迷你模式 (BLUEPRINT_EXPORT 模式不受影响, 由 GUI 控制)
+        ItemStack mainHand = mc.player.getMainHandItem();
+        ItemStack offHand = mc.player.getOffhandItem();
+        boolean holdingConverter = mainHand.getItem() instanceof MiniBuildingConverterItem
+                                || offHand.getItem() instanceof MiniBuildingConverterItem;
+        RegionSelector.SelectionState curSt = RegionSelector.getState(mc.player);
+        if (holdingConverter) {
+            if (curSt == null || curSt.mode != RegionSelector.Mode.MINI_BUILDING_CAPTURE) {
+                // 还没进入迷你模式, 或当前是 BLUEPRINT 模式 (不应该在持有转换器时)
+                RegionSelector.startMiniBuilding(mc.player);
+            }
+        } else {
+            if (curSt != null && curSt.mode == RegionSelector.Mode.MINI_BUILDING_CAPTURE) {
+                // 放下转换器 → 退出迷你模式
+                RegionSelector.cancel(mc.player);
             }
         }
 

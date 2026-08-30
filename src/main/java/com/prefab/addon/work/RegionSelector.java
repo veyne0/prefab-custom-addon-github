@@ -1,6 +1,7 @@
 package com.prefab.addon.work;
 
 import com.prefab.addon.PrefabCustomAddon;
+import com.prefab.addon.items.mini.MiniBuildingSelector;
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
@@ -17,11 +18,14 @@ import java.util.UUID;
  * 工作流:
  *   1) 玩家在创建建筑界面点"选择建筑" → 关闭 GUI, 进入选择模式
  *   2) 左键 = 选角点 1, 右键 = 选角点 2 (左键右键各一次)
- *   3) 两个角点都选好后, 客户端调用 StructureBlockExporter 导出 NBT
- *   4) NBT 写好后, 重新打开创建建筑界面, 字段自动填充
+ *   3) 两个角点都选好后, 按 ALT 确认, 由 mode 决定后续动作
+ *   4) BLUEPRINT_EXPORT 模式: 导出 NBT, 重新打开创建建筑界面
+ *      MINI_BUILDING_CAPTURE 模式: 扫描区域生成迷你建筑方块
  *
  * 用法:
- *   - RegionSelector.start(player, callback) - 启动选择模式
+ *   - RegionSelector.start(player, callback) - 启动 BLUEPRINT 模式 (旧接口)
+ *   - RegionSelector.start(player, mode, callback) - 启动指定模式
+ *   - RegionSelector.startMiniBuilding(player) - 启动 MINI_BUILDING 模式
  *   - RegionSelector.onLeftClick(pos) / onRightClick(pos) - 处理点击
  *   - RegionSelector.isActive(player) - 玩家当前是否在选择模式
  *   - RegionSelector.cancel() - 取消选择
@@ -29,11 +33,27 @@ import java.util.UUID;
 public class RegionSelector {
     private static final java.util.Map<UUID, SelectionState> ACTIVE = new java.util.HashMap<>();
 
+    /**
+     * 选区用途: 决定 confirm() 后做什么.
+     *
+     *   - BLUEPRINT_EXPORT: 导出 NBT (创建建筑/编辑拓展包时使用)
+     *   - MINI_BUILDING_CAPTURE: 捕获区域为迷你建筑方块 (迷你建筑转换器使用)
+     *   - OPERATION_WAND: 操作手杖选区 (移动/复制模式). confirm 后扫描方块进
+     *       {@link com.prefab.addon.items.OperationWandState.cachedBlocks}
+     */
+    public enum Mode {
+        BLUEPRINT_EXPORT,
+        MINI_BUILDING_CAPTURE,
+        OPERATION_WAND
+    }
+
     public static class SelectionState {
         public final UUID playerId;
         public BlockPos pos1 = null;  // 左键
         public BlockPos pos2 = null;  // 右键
         public OnCompleted callback;
+        /** 选区用途. 决定 confirm() 后 dispatch 到哪. */
+        public Mode mode = Mode.BLUEPRINT_EXPORT;
         public long startTick;
         /** 按住 SHIFT 时为 true, 临时解锁挖方块/用物品. */
         public boolean tempUnlocked = false;
@@ -42,6 +62,11 @@ public class RegionSelector {
             this.playerId = id;
             this.callback = cb;
             this.startTick = System.currentTimeMillis();
+        }
+
+        public SelectionState(UUID id, Mode mode, OnCompleted cb) {
+            this(id, cb);
+            this.mode = mode;
         }
 
         public boolean bothSelected() {
@@ -82,13 +107,61 @@ public class RegionSelector {
         void onCancelled();
     }
 
+    /**
+     * 旧接口, 默认走 BLUEPRINT_EXPORT 模式. 保留以兼容现有 GUI 流程
+     * (GuiCreateBuildingInfo / GuiExtensionPackEditor).
+     */
     public static void start(Player player, OnCompleted callback) {
-        ACTIVE.put(player.getUUID(), new SelectionState(player.getUUID(), callback));
+        start(player, Mode.BLUEPRINT_EXPORT, callback);
+    }
+
+    public static void start(Player player, Mode mode, OnCompleted callback) {
+        ACTIVE.put(player.getUUID(), new SelectionState(player.getUUID(), mode, callback));
         if (player instanceof net.minecraft.client.player.LocalPlayer) {
             player.sendSystemMessage(Component.literal(
                 "§a[选择模式] §7左键=角点1, 右键=角点2, ALT=确认, CTRL=取消 §a(按住 §eSHIFT§a 临时解锁挖方块)"));
         }
-        PrefabCustomAddon.LOGGER.info("[REGION-SELECT] Started selection for {}", player.getName().getString());
+        PrefabCustomAddon.LOGGER.info("[REGION-SELECT] Started selection for {} (mode={})",
+            player.getName().getString(), mode);
+    }
+
+    /**
+     * 启动迷你建筑捕获模式. 由 RegionSelectorEventHandler 在玩家手持
+     * 迷你建筑转换器时自动调用.
+     */
+    public static void startMiniBuilding(Player player) {
+        SelectionState st = ACTIVE.get(player.getUUID());
+        if (st != null && st.mode == Mode.MINI_BUILDING_CAPTURE) {
+            return;  // 已经在迷你模式, 啥也不做
+        }
+        // 占用同一个 slot, 覆盖现有选区 (理论上不会发生, 互斥)
+        ACTIVE.put(player.getUUID(), new SelectionState(player.getUUID(),
+            Mode.MINI_BUILDING_CAPTURE, null));
+        if (player instanceof net.minecraft.client.player.LocalPlayer) {
+            player.sendSystemMessage(Component.literal(
+                "§a[迷你建筑转换器] §7左键=角点1, 右键=角点2, ALT=转换, CTRL=取消"));
+        }
+        PrefabCustomAddon.LOGGER.info("[REGION-SELECT] Started mini building selection for {}",
+            player.getName().getString());
+    }
+
+    /**
+     * 启动操作手杖选区模式. 由 OperationWandClientHandler 在玩家手持
+     * 手杖右键方块时调用. confirm 后服务端扫描方块进 OperationWandState.
+     */
+    public static void startWand(Player player) {
+        SelectionState st = ACTIVE.get(player.getUUID());
+        if (st != null && st.mode == Mode.OPERATION_WAND) {
+            return;  // 已经在操作手杖模式, 啥也不做
+        }
+        ACTIVE.put(player.getUUID(), new SelectionState(player.getUUID(),
+            Mode.OPERATION_WAND, null));
+        if (player instanceof net.minecraft.client.player.LocalPlayer) {
+            player.sendSystemMessage(Component.literal(
+                "§a[操作手杖] §7左键=角点1, 右键=角点2, §aALT=捕获区域§7, §cCTRL=取消"));
+        }
+        PrefabCustomAddon.LOGGER.info("[REGION-SELECT] Started operation wand selection for {}",
+            player.getName().getString());
     }
 
     public static boolean isActive(Player player) {
@@ -148,7 +221,7 @@ public class RegionSelector {
     }
 
     /**
-     * ALT 键确认: 两个角点都选好后由 RegionSelectorEventHandler 触发, 开始导出 NBT.
+     * ALT 键确认: 两个角点都选好后由 RegionSelectorEventHandler 触发, 按 mode 分派.
      */
     public static void confirm(Player player) {
         SelectionState st = ACTIVE.get(player.getUUID());
@@ -157,8 +230,21 @@ public class RegionSelector {
             player.sendSystemMessage(Component.literal(PrefabCustomAddon.tr("sel.need_both")));
             return;
         }
-        player.sendSystemMessage(Component.literal(PrefabCustomAddon.tr("sel.ready_export")));
-        doExport(player, st);
+
+        // 先从 ACTIVE 移除, 避免递归 / 重复触发
+        ACTIVE.remove(player.getUUID());
+
+        switch (st.mode) {
+            case BLUEPRINT_EXPORT:
+                doExport(player, st);
+                break;
+            case MINI_BUILDING_CAPTURE:
+                MiniBuildingSelector.onConfirm(player, st);
+                break;
+            case OPERATION_WAND:
+                com.prefab.addon.items.OperationWandSelectionHandler.onConfirm(player, st);
+                break;
+        }
     }
 
     private static String formatPos(BlockPos p) {
@@ -166,7 +252,7 @@ public class RegionSelector {
     }
 
     private static void doExport(Player player, SelectionState st) {
-        ACTIVE.remove(player.getUUID());
+        // 注意: confirm() 已经把 st 从 ACTIVE 移除, 这里直接用 st
         try {
             java.nio.file.Path nbtFile = StructureBlockExporter.exportToTempNbt(
                 player.level(), st.getMin(), st.getMax());

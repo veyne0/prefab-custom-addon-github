@@ -6,8 +6,12 @@ import com.prefab.addon.config.PlayerPreferences;
 import com.prefab.addon.items.CustomBlueprintItem;
 import com.prefab.addon.network.BatchBlocksPlacedPayload;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.tags.TagKey;
 import net.minecraft.world.entity.player.Inventory;
+import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
@@ -80,18 +84,25 @@ public final class AsyncBuildManager {
         public boolean completed;        // 是否全部完成
         public boolean cancelled;        // 玩家退出/重置
         public boolean blueprintConsumed; // 蓝图是否已消耗 (完成时消耗)
+        /**
+         * 静默模式: KubeJS 联动蓝图建造时 = true.
+         *   - 不发 "开始建造" / "建造完成" / "已存入云端" 等聊天栏消息
+         *   - 完成后不存云端 (云端 tab 只放 CustomBlueprintItem 出的建筑)
+         * 普通 mod 原生 CustomBlueprintItem 走的还是带消息 + 存云端的老路径.
+         */
+        public final boolean silent;
 
         public BuildTask(ServerPlayer p, Level l, BlockPos o,
                          String pack, String id,
                          List<CustomStructureBuilder.BlockData> blocks) {
-            this(p, l, o, pack, id, blocks, 0, BuildAnimationMode.OFF);
+            this(p, l, o, pack, id, blocks, 0, BuildAnimationMode.OFF, false);
         }
 
         public BuildTask(ServerPlayer p, Level l, BlockPos o,
                          String pack, String id,
                          List<CustomStructureBuilder.BlockData> blocks,
                          int rotationSteps) {
-            this(p, l, o, pack, id, blocks, rotationSteps, BuildAnimationMode.OFF);
+            this(p, l, o, pack, id, blocks, rotationSteps, BuildAnimationMode.OFF, false);
         }
 
         public BuildTask(ServerPlayer p, Level l, BlockPos o,
@@ -99,6 +110,15 @@ public final class AsyncBuildManager {
                          List<CustomStructureBuilder.BlockData> blocks,
                          int rotationSteps,
                          BuildAnimationMode animationMode) {
+            this(p, l, o, pack, id, blocks, rotationSteps, animationMode, false);
+        }
+
+        public BuildTask(ServerPlayer p, Level l, BlockPos o,
+                         String pack, String id,
+                         List<CustomStructureBuilder.BlockData> blocks,
+                         int rotationSteps,
+                         BuildAnimationMode animationMode,
+                         boolean silent) {
             this.playerUuid = p.getUUID();
             this.player = p;
             this.level = l;
@@ -115,6 +135,7 @@ public final class AsyncBuildManager {
             this.blueprintConsumed = false;
             this.rotationSteps = rotationSteps;
             this.animationMode = animationMode != null ? animationMode : BuildAnimationMode.OFF;
+            this.silent = silent;
         }
 
         /** 旧 API 兼容: enableAnimation=true 等价于 FALL 模式. */
@@ -124,7 +145,7 @@ public final class AsyncBuildManager {
                          int rotationSteps,
                          boolean enableAnimation) {
             this(p, l, o, pack, id, blocks, rotationSteps,
-                 enableAnimation ? BuildAnimationMode.FALL : BuildAnimationMode.OFF);
+                 enableAnimation ? BuildAnimationMode.FALL : BuildAnimationMode.OFF, false);
         }
 
         public int getPercent() {
@@ -159,7 +180,7 @@ public final class AsyncBuildManager {
                                  String packName, String constructionId,
                                  List<CustomStructureBuilder.BlockData> blocks,
                                  net.minecraft.core.Direction houseFacing) {
-        startTask(player, level, origin, packName, constructionId, blocks, houseFacing, BuildAnimationMode.OFF);
+        startTask(player, level, origin, packName, constructionId, blocks, houseFacing, BuildAnimationMode.OFF, false);
     }
 
     /**
@@ -167,12 +188,27 @@ public final class AsyncBuildManager {
      * <p>animationMode != OFF 时: 强制 batchSize=1, 每 tick 放完一批后通过
      * {@link com.prefab.addon.network.BatchBlocksPlacedPayload} 把这一批方块 + mode
      * 发给该玩家, 客户端用 BuildAnimationRenderer 按 mode 渲染动画轨迹.</p>
+     *
+     * <p>{@code silent} = true 时: KubeJS 联动蓝图建造, 不发任何聊天栏消息,
+     * 完成后不存云端. 默认为 false (普通 CustomBlueprintItem 走的还是带消息的老路径).</p>
      */
     public static void startTask(ServerPlayer player, Level level, BlockPos origin,
                                  String packName, String constructionId,
                                  List<CustomStructureBuilder.BlockData> blocks,
                                  net.minecraft.core.Direction houseFacing,
                                  BuildAnimationMode animationMode) {
+        startTask(player, level, origin, packName, constructionId, blocks, houseFacing, animationMode, false);
+    }
+
+    /**
+     * 完整重载: houseFacing + animationMode + silent.
+     */
+    public static void startTask(ServerPlayer player, Level level, BlockPos origin,
+                                 String packName, String constructionId,
+                                 List<CustomStructureBuilder.BlockData> blocks,
+                                 net.minecraft.core.Direction houseFacing,
+                                 BuildAnimationMode animationMode,
+                                 boolean silent) {
         if (player == null || level == null || blocks == null || blocks.isEmpty()) {
             PrefabCustomAddon.LOGGER.warn("[BUILD-ASYNC] 启动失败: 参数无效 (player={} blocks={})",
                 player != null, blocks != null ? blocks.size() : -1);
@@ -186,7 +222,7 @@ public final class AsyncBuildManager {
         }
 
         BuildAnimationMode mode = animationMode != null ? animationMode : BuildAnimationMode.OFF;
-        BuildTask task = new BuildTask(player, level, origin, packName, constructionId, blocks, steps, mode);
+        BuildTask task = new BuildTask(player, level, origin, packName, constructionId, blocks, steps, mode, silent);
         ACTIVE_TASKS.put(player.getUUID(), task);
 
         // 动画模式下强制每 tick 1 块, 玩家设的 buildBatchPercent 被覆盖. 不修改 PlayerPreferences
@@ -199,10 +235,11 @@ public final class AsyncBuildManager {
             case THROW -> "THROW (四周抛过来, 1 块/tick, 抛物线轨迹)";
         };
 
-        PrefabCustomAddon.LOGGER.info("[BUILD-ASYNC] 启动: player={} pack={} construction={} origin={} totalBlocks={} mode={} houseFacing={}({} steps)",
+        PrefabCustomAddon.LOGGER.info("[BUILD-ASYNC] 启动: player={} pack={} construction={} origin={} totalBlocks={} mode={} houseFacing={}({} steps) silent={}",
             player.getName().getString(), packName, constructionId, origin,
-            task.totalBlocks, mode, houseFacing, steps);
-        if (player != null) {
+            task.totalBlocks, mode, houseFacing, steps, silent);
+        // KubeJS 联动蓝图走 silent 模式, 不发 "开始建造" 聊天消息 (玩家视角是右键就放完了, 不需要被提醒)
+        if (player != null && !silent) {
             String speedDesc = mode == BuildAnimationMode.OFF
                 ? "100%/tick (单 tick 全放, 瞬建, 可能卡顿)"
                 : "1 块/tick (§d" + mode.name() + " 动画§e, 配合" + switch (mode) {
@@ -390,13 +427,17 @@ public final class AsyncBuildManager {
             }
         }
 
-        // 进度反馈 (每 10% 给玩家发一次消息)
-        int currentPct = task.getPercent();
-        int lastReportedPct = (task.placedCount - batchSize <= 0) ? 0 :
-                              ((task.placedCount - batchSize) * 100 / task.totalBlocks);
-        if (currentPct / 10 > lastReportedPct / 10 && currentPct < 100) {
-            player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
-                "§7建造中: " + currentPct + "% (" + task.placedCount + "/" + task.totalBlocks + ")"));
+        // 进度反馈 (每 10% 给玩家发一次消息). KubeJS 联动蓝图 silent 模式跳过.
+        if (task.silent) {
+            // do nothing
+        } else {
+            int currentPct = task.getPercent();
+            int lastReportedPct = (task.placedCount - batchSize <= 0) ? 0 :
+                                  ((task.placedCount - batchSize) * 100 / task.totalBlocks);
+            if (currentPct / 10 > lastReportedPct / 10 && currentPct < 100) {
+                player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
+                    "§7建造中: " + currentPct + "% (" + task.placedCount + "/" + task.totalBlocks + ")"));
+            }
         }
 
         if (task.nextIndex >= task.totalBlocks) {
@@ -450,9 +491,9 @@ public final class AsyncBuildManager {
 
     private static void onCompleted(BuildTask task) {
         long elapsedMs = System.currentTimeMillis() - task.startTickMs;
-        PrefabCustomAddon.LOGGER.info("[BUILD-ASYNC] 完成: player={} pack={} construction={} placed={}/{} elapsed={}ms",
+        PrefabCustomAddon.LOGGER.info("[BUILD-ASYNC] 完成: player={} pack={} construction={} placed={}/{} elapsed={}ms silent={}",
             task.player.getName().getString(), task.packName, task.constructionId,
-            task.placedCount, task.totalBlocks, elapsedMs);
+            task.placedCount, task.totalBlocks, elapsedMs, task.silent);
 
         // 全部放完了, 对整栋建筑的包围盒做一次全量邻居更新 (Sable barriers 替代法
         // 已经包含了关键的"barrier 替 → 还原"清理, 这里只做最终通知.
@@ -467,12 +508,19 @@ public final class AsyncBuildManager {
             task.blueprintConsumed = true;
         }
 
-        if (task.player != null && !task.player.isRemoved()) {
+        // KubeJS 联动蓝图走 silent 模式, 不发 "建造完成" 聊天消息
+        if (task.player != null && !task.player.isRemoved() && !task.silent) {
             task.player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
                 PrefabCustomAddon.tr("build.done", task.constructionId, task.placedCount, (int) elapsedMs))
                 .withStyle(net.minecraft.ChatFormatting.GREEN));
         }
 
+        // === 云端自动备份 ===
+        // KubeJS 联动蓝图走 silent 模式, 完成后不存云端 (云端 tab 只放原生 CustomBlueprintItem 出的建筑)
+        if (task.silent) {
+            PrefabCustomAddon.LOGGER.info("[BUILD-ASYNC] silent 模式, 跳过云端备份 (KubeJS 联动蓝图不入云端)");
+            return;
+        }
         // === 云端自动备份 (新版: 直接调 CloudBuildingManager, 不再走反射) ===
         // 每次自定义蓝图建造完成, 把整栋建筑存到玩家云端, 默认 placed=true.
         // 关键: 快照存的是**原始 (未旋转) pos + state**, 旋转在使用 (preview/summon) 时按 overrideFacing
@@ -653,6 +701,20 @@ public final class AsyncBuildManager {
         ServerPlayer player = task.player;
         if (player == null) return;
         Inventory inv = player.getInventory();
+
+        // === 外包建筑: 走专用路径, 用 buildingId 匹配 OutsourceBlueprintItem ===
+        // packName 是 OutsourceBuildManager.OUTSOURCE_PACK_NAME 时跳过 ExtensionPackManager
+        // 查找 (那个包里根本没有 outsource 的 construction, 找也找不到), 直接按
+        // buildingId 匹配背包里硬编码的 OutsourceBlueprintItem.
+        if (com.prefab.addon.structure.OutsourceBuildManager.OUTSOURCE_PACK_NAME.equals(task.packName)) {
+            String buildingId = com.prefab.addon.structure.OutsourceBuildManager
+                .parseBuildingIdFromConstructionId(task.constructionId);
+            PrefabCustomAddon.LOGGER.info(
+                "[BUILD-ASYNC] consumeBlueprint: outsource path, buildingId={}", buildingId);
+            com.prefab.addon.structure.OutsourceBuildManager.consumeOutsourceBlueprint(player, buildingId);
+            return;
+        }
+
         // 用 ConstructionInfo 找蓝图 (但 task 没有 info, 用 packName+constructionId 反查)
         com.prefab.addon.extension.ConstructionInfo info =
             com.prefab.addon.extension.ExtensionPackManager.getInstance()
@@ -666,18 +728,22 @@ public final class AsyncBuildManager {
             return;
         }
 
-        // 优先消耗主手选中格, 其次其他 (用严格的 isBoundTo)
+        // 优先消耗主手选中格, 其次其他 (用 isBoundToBlueprint, 兼容 mod 原生 + KubeJS 联动)
+        // 之前用 CustomBlueprintItem.isBoundTo 只能识别原生 CustomBlueprintItem, 玩家主手拿 KubeJS
+        // 蓝图时会被跳过, 然后退到 inventory 扫描找到第一个 CustomBlueprintItem (在 KubeJS 蓝图
+        // 之前的 slot), 错误消耗自定义蓝图. 改用 isBoundToBlueprint (从 CUSTOM_DATA 读
+        // packName+constructionId, 对原生和 KubeJS 都通用) 修这个 bug.
         int selected = inv.selected;
         ItemStack hotbarStack = inv.getItem(selected);
         int foundSlot = -1;
         ItemStack foundStack = ItemStack.EMPTY;
-        if (CustomBlueprintItem.isBoundTo(hotbarStack, info)) {
+        if (isBoundToBlueprint(hotbarStack, info)) {
             foundSlot = selected;
             foundStack = hotbarStack;
         } else {
             for (int i = 0; i < inv.getContainerSize(); i++) {
                 ItemStack stack = inv.getItem(i);
-                if (CustomBlueprintItem.isBoundTo(stack, info)) {
+                if (isBoundToBlueprint(stack, info)) {
                     foundSlot = i;
                     foundStack = stack;
                     break;
@@ -686,17 +752,19 @@ public final class AsyncBuildManager {
         }
         if (foundStack.isEmpty()) {
             // 严格匹配失败 - 兜底按 constructionId 查找 (兼容老蓝图)
-            // 详细打印每个槽位的实际绑定值, 便于诊断 isBoundTo 为何失败
+            // 详细打印每个槽位的实际绑定值, 便于诊断 isBoundTo 为何失败.
+            // 用 isPlayerBlueprint (兼容 mod 原生 + KubeJS 联动), 跟严格匹配路径保持一致.
             StringBuilder dump = new StringBuilder();
             for (int i = 0; i < inv.getContainerSize(); i++) {
                 ItemStack s = inv.getItem(i);
-                if (s.isEmpty() || !(s.getItem() instanceof CustomBlueprintItem)) continue;
-                String bPack = CustomBlueprintItem.getBoundPackName(s);
-                String bCid  = CustomBlueprintItem.getBoundConstructionId(s);
-                dump.append(String.format("  slot=%d bound=[%s/%s] count=%d; ", i, bPack, bCid, s.getCount()));
+                if (!isPlayerBlueprint(s)) continue;
+                String bPack = readBoundPackName(s);
+                String bCid  = readBoundConstructionId(s);
+                dump.append(String.format("  slot=%d item=%s bound=[%s/%s] count=%d; ",
+                    i, s.getItem(), bPack, bCid, s.getCount()));
             }
             PrefabCustomAddon.LOGGER.warn(
-                "[BUILD-ASYNC] consumeBlueprint: isBoundTo 失败 for {}/{}, 实际蓝图绑定: [{}], 尝试按id 兜底",
+                "[BUILD-ASYNC] consumeBlueprint: isBoundToBlueprint 失败 for {}/{}, 实际蓝图绑定: [{}], 尝试按id 兜底",
                 task.packName, task.constructionId, dump);
             consumeBlueprintByIdOnly(player, inv, task.constructionId);
             return;
@@ -742,16 +810,16 @@ public final class AsyncBuildManager {
         ItemStack hotbarStack = inv.getItem(selected);
         int foundSlot = -1;
         ItemStack foundStack = ItemStack.EMPTY;
-        // 优先主手
-        if (hotbarStack.getItem() instanceof com.prefab.addon.items.CustomBlueprintItem
-            && com.prefab.addon.items.CustomBlueprintItem.getBoundConstructionId(hotbarStack).equals(constructionId)) {
+        // 优先主手. 兼容 mod 原生 + KubeJS 注册的带 tag 物品.
+        if (isPlayerBlueprint(hotbarStack)
+            && readBoundConstructionId(hotbarStack).equals(constructionId)) {
             foundSlot = selected;
             foundStack = hotbarStack;
         } else {
             for (int i = 0; i < inv.getContainerSize(); i++) {
                 ItemStack stack = inv.getItem(i);
-                if (stack.getItem() instanceof com.prefab.addon.items.CustomBlueprintItem
-                    && com.prefab.addon.items.CustomBlueprintItem.getBoundConstructionId(stack).equals(constructionId)) {
+                if (isPlayerBlueprint(stack)
+                    && readBoundConstructionId(stack).equals(constructionId)) {
                     foundSlot = i;
                     foundStack = stack;
                     break;
@@ -778,5 +846,74 @@ public final class AsyncBuildManager {
      */
     public static int activeCount() {
         return ACTIVE_TASKS.size();
+    }
+
+    // ============== KubeJS 蓝图兼容 ==============
+
+    /**
+     * 玩家蓝图 tag: KubeJS 在 startup_scripts 里 {@code add('kubejs:my_blueprint')} 加进这个 tag.
+     * 服务端 + 客户端共用同一个 tag definition ({@code data/.../tags/items/player_blueprint.json}).
+     */
+    private static final TagKey<Item> PLAYER_BLUEPRINT_TAG = TagKey.create(
+        Registries.ITEM,
+        ResourceLocation.fromNamespaceAndPath(PrefabCustomAddon.MOD_ID, "player_blueprint"));
+
+    /** NBT 字段名 (跟 CustomBlueprintItem 完全一致, KubeJS 注册时也是这套字段). */
+    private static final String NBT_PACK_NAME    = "packName";
+    private static final String NBT_CONSTRUCTION = "constructionId";
+
+    /**
+     * 判断 ItemStack 是否是"玩家蓝图" (兼容 mod 原生 + KubeJS 注册).
+     * mod 原生: 物品类型是 {@link CustomBlueprintItem}.
+     * KubeJS: 任意物品, 但带 {@code prefab_custom_addon:player_blueprint} tag.
+     */
+    public static boolean isPlayerBlueprint(ItemStack stack) {
+        if (stack.isEmpty()) return false;
+        if (stack.getItem() instanceof CustomBlueprintItem) return true;
+        return stack.is(PLAYER_BLUEPRINT_TAG);
+    }
+
+    /**
+     * 判断 ItemStack 是否是"KubeJS 联动蓝图" (排除 mod 原生 CustomBlueprintItem).
+     * <p>判断逻辑: 带 {@code prefab_custom_addon:player_blueprint} tag <b>且</b> 不是
+     * {@link CustomBlueprintItem} 实例. KubeJS 在 startup_scripts 里
+     * {@code add('kubejs:my_blueprint')} 加进这个 tag, 这些蓝图建造时应该走 silent
+     * 模式 (不刷聊天消息 / 不入云端 / 悬浮显示本 mod 名).</p>
+     */
+    public static boolean isKubeJSPlayerBlueprint(ItemStack stack) {
+        if (stack.isEmpty()) return false;
+        if (stack.getItem() instanceof CustomBlueprintItem) return false;
+        return stack.is(PLAYER_BLUEPRINT_TAG);
+    }
+
+    /** 读绑定的 packName (兼容 mod 原生 + KubeJS). */
+    public static String readBoundPackName(ItemStack stack) {
+        net.minecraft.world.item.component.CustomData data =
+            stack.get(net.minecraft.core.component.DataComponents.CUSTOM_DATA);
+        if (data == null) return "";
+        return data.copyTag().getString(NBT_PACK_NAME);
+    }
+
+    /** 读绑定的 constructionId (兼容 mod 原生 + KubeJS). */
+    public static String readBoundConstructionId(ItemStack stack) {
+        net.minecraft.world.item.component.CustomData data =
+            stack.get(net.minecraft.core.component.DataComponents.CUSTOM_DATA);
+        if (data == null) return "";
+        return data.copyTag().getString(NBT_CONSTRUCTION);
+    }
+
+    /** 是否绑了 packName+constructionId (兼容 mod 原生 + KubeJS). */
+    public static boolean isBlueprintBound(ItemStack stack) {
+        return !readBoundPackName(stack).isEmpty() && !readBoundConstructionId(stack).isEmpty();
+    }
+
+    /** 蓝图是否绑到 info (兼容 mod 原生 + KubeJS). */
+    public static boolean isBoundToBlueprint(ItemStack stack, com.prefab.addon.extension.ConstructionInfo info) {
+        if (info == null) return false;
+        String infoPack = (info.getPack() != null)
+            ? info.getPack().getName()
+            : com.prefab.addon.extension.ExtensionPackManager.STANDALONE_PACKAGE;
+        return readBoundPackName(stack).equals(infoPack)
+            && readBoundConstructionId(stack).equals(info.getId());
     }
 }

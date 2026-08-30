@@ -1,0 +1,27 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "group": "Outsource Blueprint - Windmill Building",
+  "pattern": [
+    "DWD",
+    "IHI",
+    "DWD"
+  ],
+  "key": {
+    "D": {
+      "tag": "c:double_compressed_stone"
+    },
+    "W": {
+      "item": "minecraft:white_wool"
+    },
+    "I": {
+      "tag": "c:storage_blocks/iron"
+    },
+    "H": {
+      "item": "minecraft:hay_block"
+    }
+  },
+  "result": {
+    "id": "prefab_custom_addon:outsource_blueprint_windmill_building",
+    "count": 1
+  }
+}

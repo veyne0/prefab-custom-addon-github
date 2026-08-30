@@ -57,6 +57,15 @@ public final class GuiItemSearchPopup {
     private static GuiExtensionPackEditor pendingParent = null;
     private static int pendingCellIdx = -1;
     private static Consumer<String> pendingCallback = null;
+    /**
+     * 跨 open() 调用的搜索关键字缓存 — 玩家反复打开弹窗选不同物品 (比如先选 A, 关掉,
+     * 再开弹窗选 B) 时, 上次输入的搜索关键字保留下来, 不用每次重新打字.
+     * <p>跟 {@link GuiExtensionPackEditor#SAVED_BLUEPRINT_NAME} 一样的套路: static
+     * 作用域, 关闭弹窗后值还在, 下次 open() 用 {@code search.setText(SAVED_SEARCH_QUERY)}
+     * + 手动 {@code rebuildList(...)} 恢复. 玩家主动清空时 (responder 收到空串) 也同步清掉,
+     * 不会"复活".</p>
+     */
+    private static String SAVED_SEARCH_QUERY = "";
 
     private GuiItemSearchPopup() {}
 
@@ -100,7 +109,11 @@ public final class GuiItemSearchPopup {
 
         TextField search = new TextField();
         search.setAnyString();  // 允许任意字符输入
-        search.setTextResponder(word -> rebuildList(allItems, listContainer, word));
+        search.setTextResponder(word -> {
+            // 同步更新持久缓存, 关掉弹窗再开还能恢复 (见 SAVED_SEARCH_QUERY 注释)
+            SAVED_SEARCH_QUERY = word == null ? "" : word;
+            rebuildList(allItems, listContainer, word);
+        });
         search.layout(l -> l.widthPercent(100).height(16));
         root.addChild(search);
 
@@ -155,8 +168,15 @@ public final class GuiItemSearchPopup {
         ModularUIScreen screen = new ModularUIScreen(ui, Component.literal(
             PrefabCustomAddon.tr("gui.make_blueprint.search.window_title")));
 
-        // 初始填充 (空关键字 = 前 200 个)
-        rebuildList(allItems, listContainer, "");
+        // 恢复上次搜索关键字 (见 SAVED_SEARCH_QUERY 注释). setText 之后 TextField 会触发
+        // setTextResponder, 但 responder 内部又把 word 写回 SAVED_SEARCH_QUERY, 双重保险.
+        // 保险起见仍然手动 rebuildList 一次: TextField 内部的"首帧是否立即触发 responder"
+        // 行为依赖 LDLib2 版本, 自己调一次避免空列表闪一帧.
+        if (!SAVED_SEARCH_QUERY.isEmpty()) {
+            search.setText(SAVED_SEARCH_QUERY);
+        }
+        // 初始填充 (空关键字 = 前 200 个; 有关键字 = 按上次搜索结果)
+        rebuildList(allItems, listContainer, SAVED_SEARCH_QUERY);
         Minecraft.getInstance().setScreen(screen);
     }
 
@@ -181,10 +201,15 @@ public final class GuiItemSearchPopup {
             for (int i = 0; i < n; i++) prefix.add(allItems.get(i));
         } else {
             for (Item it : allItems) {
-                String id = BuiltInRegistries.ITEM.getKey(it).toString().toLowerCase(Locale.ROOT);
-                if (id.startsWith(q)) {
+                // 搜索同时匹配原始 id (英文, e.g. "prefab:house1") 和翻译后的显示名
+                // (中文, e.g. "房子"), 玩家用任一语言搜都能找到.
+                String id = BuiltInRegistries.ITEM.getKey(it).toString();
+                String idLower = id.toLowerCase(Locale.ROOT);
+                String nameLower = new ItemStack(it).getHoverName().getString()
+                    .toLowerCase(Locale.ROOT);
+                if (idLower.startsWith(q) || nameLower.startsWith(q)) {
                     prefix.add(it);
-                } else if (id.contains(q)) {
+                } else if (idLower.contains(q) || nameLower.contains(q)) {
                     contains.add(it);
                 }
                 if (prefix.size() + contains.size() >= MAX_RESULTS) break;
@@ -222,8 +247,11 @@ public final class GuiItemSearchPopup {
         row.addChild(icon);
 
         // 整行用 Button 包, 点击即选中 (覆盖 icon/label 的点击区域)
+        // 用 ItemStack.getHoverName() 走 vanilla 的翻译系统 (item.getDescriptionId() 比如
+        // "block.minecraft.stone" 已经被 vanilla 的 zh_cn.json / en_us.json 翻译好了),
+        // 不要再画 "minecraft:stone" 这种 raw id — 玩家看不明白.
         TextElement label = new TextElement();
-        label.setText(BuiltInRegistries.ITEM.getKey(it).toString());
+        label.setText(new ItemStack(it).getHoverName().getString());
         label.textStyle(t -> t.textColor(0xFFFFFFFF));
         label.layout(l -> l.flexGrow(1).height(14));
         row.addChild(label);
