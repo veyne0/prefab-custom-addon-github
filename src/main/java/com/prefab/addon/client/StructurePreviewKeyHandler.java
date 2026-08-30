@@ -264,6 +264,13 @@ public class StructurePreviewKeyHandler {
                 if (com.prefab.addon.cloud.CloudPreview.isActive()) {
                     // === 云端建筑预览: 走 cloud_summon, 不消耗蓝图, 不走原版 build ===
                     triggerCloudSummon(cfg);
+                } else if (com.prefab.addon.client.gui.CustomStructureGui.isCurrentOutsource()) {
+                    // === 外包建筑预览: 走专用 BuildOutsourceStructurePayload ===
+                    //   不走 BuildCustomStructurePayload (服务端 ExtensionPackManager
+                    //   找不到 outsource construction, 会拒绝), 不消耗 CustomBlueprintItem
+                    //   (OutsourceBlueprintItem 走 OutsourceBuildManager.consumeOutsourceBlueprint
+                    //   按 buildingId 匹配消耗)
+                    triggerOutsourceBuildAtPreview(cfg);
                 } else if (!isAddonPreview) {
                     // === prefab 原版建筑预览 ===
                     // 复用 prefab 自己 GameClientEvents.KeyInput 用的同一条路径:
@@ -384,11 +391,36 @@ public class StructurePreviewKeyHandler {
             return;
         }
 
+        // === KubeJS 联动蓝图 (带 tag 但不是 mod 原生 CustomBlueprintItem) → silent 模式 ===
+        // 服务端不会发任何聊天消息, 完成后不存云端 (云端 tab 只放原生 CustomBlueprintItem 的建筑)
+        //
+        // 关键: 不能用上面循环里找到的"第一个蓝图"判断 silent! 之前用 `blueprint` (= 第一个匹配的 stack),
+        // 在 KubeJS 蓝图 slot 5 + 自定义蓝图 slot 3 共存时, blueprint 是 slot 3 的 CustomBlueprint,
+        // isKubeJSPlayerBlueprint 返回 false → silent=false → 走 CustomBlueprintItem 路径 (发"开始建造"
+        // / "已存入云端"). 修复: 优先用 CustomStructureGui.currentBlueprint (= 真正打开预览的那个 stack)
+        // 判断 silent, 没拿到才退到"背包第一个"兜底. 这样 silent 状态跟玩家右键预览的蓝图一致.
+        boolean silent;
+        net.minecraft.world.item.ItemStack previewSource =
+            com.prefab.addon.client.gui.CustomStructureGui.currentBlueprint;
+        if (previewSource != null && !previewSource.isEmpty()) {
+            silent = com.prefab.addon.structure.AsyncBuildManager.isKubeJSPlayerBlueprint(previewSource);
+            PrefabCustomAddon.LOGGER.info(
+                "[PREVIEW-BUILD] using previewSource (currentBlueprint) for silent check: item={} silent={}",
+                previewSource.getItem(), silent);
+        } else {
+            silent = com.prefab.addon.structure.AsyncBuildManager.isKubeJSPlayerBlueprint(blueprint);
+            PrefabCustomAddon.LOGGER.info(
+                "[PREVIEW-BUILD] no currentBlueprint tracked, fallback to first-in-inventory: item={} silent={}",
+                blueprint.getItem(), silent);
+        }
+        PrefabCustomAddon.LOGGER.info("[PREVIEW-BUILD] held blueprint (consumption check): item={} (KubeJS联动模式判定: silent={})",
+            blueprint.getItem(), silent);
+
         // 建造完后清空该建筑的提交进度 (挑战模式)
         com.prefab.addon.work.ChallengeSessionManager.reset(player.getUUID(), constructionId);
 
-        PrefabCustomAddon.LOGGER.info("[PREVIEW-BUILD] ALT pressed, sending BuildCustomStructurePayload for {}/{} at {}",
-            packName, constructionId, cfg.pos);
+        PrefabCustomAddon.LOGGER.info("[PREVIEW-BUILD] ALT pressed, sending BuildCustomStructurePayload for {}/{} at {} silent={}",
+            packName, constructionId, cfg.pos, silent);
 
         // **关键**: 先发 BindConstructionPayload 让服务端把当前 Construction 绑到玩家背包里
         // 第一张未锁定的蓝图 (CustomStructureGui.performBuildClick 也加了同样逻辑).
@@ -401,8 +433,69 @@ public class StructurePreviewKeyHandler {
         com.prefab.addon.network.NetworkHandler.sendToServer(
             new com.prefab.addon.network.BuildCustomStructurePayload(
                 cfg.pos, packName, constructionId, cfg.houseFacing,
-                com.prefab.addon.config.PlayerPreferences.get().getBuildAnimationMode()));
+                com.prefab.addon.config.PlayerPreferences.get().getBuildAnimationMode(), silent));
         // 清预览: prefab 的 currentStructure (no-op, 之前已 null) + 我们 own 的 ADDON_PREVIEW_*
+        StructureRenderHandler.setStructure(null, null);
+        com.prefab.addon.client.gui.CustomStructureGui.clearAddonPreviewFlag();
+    }
+
+    /**
+     * ALT 在外包建筑预览中按下时, 走 {@link com.prefab.addon.network.BuildOutsourceStructurePayload}.
+     *
+     * <p>关键: 不走普通自定义建筑的 build 路径 (服务端 ExtensionPackManager 里没有
+     * outsource construction, 走那个会 "找不到建筑"). 也不消耗 CustomBlueprintItem
+     * (玩家手里拿的是 OutsourceBlueprintItem, 按 buildingId 匹配消耗).</p>
+     */
+    private static void triggerOutsourceBuildAtPreview(StructureConfiguration cfg) {
+        Player player = Minecraft.getInstance().player;
+        if (player == null) return;
+        lastAction = GLFW.GLFW_KEY_LEFT_ALT;
+
+        String buildingId = com.prefab.addon.client.gui.CustomStructureGui.getCurrentOutsourceBuildingId();
+        int styleIndex = com.prefab.addon.client.gui.CustomStructureGui.getCurrentOutsourceStyleIndex();
+        if (buildingId == null || buildingId.isEmpty()) {
+            player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
+                "⚠ 外包建筑上下文丢失, 请重新打开蓝图右键")
+                .withStyle(net.minecraft.ChatFormatting.RED));
+            PrefabCustomAddon.LOGGER.warn("[OUTSOURCE-BUILD] ALT 触发时 buildingId 为空 (setOutsourceContext 没被调?)");
+            return;
+        }
+
+        // === 检查背包里有没有匹配的外包建筑蓝图 ===
+        // 跟 triggerBuildAtPreview 一样, 客户端只做"有没有" 校验, 不消耗 (服务端异步任务
+        // 完成时才调 OutsourceBuildManager.consumeOutsourceBlueprint 消耗).
+        // 8 个硬编码 OutsourceBlueprintItem 各自绑一个 buildingId, 用 getEffectiveBuildingId
+        // 兼容 NBT 模式 (老存档的 OutsourceBlueprintItem NBT 里有 buildingId).
+        net.minecraft.world.item.ItemStack blueprint = net.minecraft.world.item.ItemStack.EMPTY;
+        for (int i = 0; i < player.getInventory().getContainerSize(); i++) {
+            net.minecraft.world.item.ItemStack s = player.getInventory().getItem(i);
+            if (s.isEmpty()) continue;
+            if (s.getItem() instanceof com.prefab.addon.items.OutsourceBlueprintItem) {
+                String effId = com.prefab.addon.items.OutsourceBlueprintItem.getEffectiveBuildingId(s);
+                if (buildingId.equals(effId)) {
+                    blueprint = s;
+                    break;
+                }
+            }
+        }
+        if (blueprint.isEmpty()) {
+            player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
+                "⚠ 背包里没有对应的外包建筑蓝图 (buildingId=" + buildingId + ")")
+                .withStyle(net.minecraft.ChatFormatting.RED));
+            return;
+        }
+
+        PrefabCustomAddon.LOGGER.info(
+            "[OUTSOURCE-BUILD] ALT pressed, sending BuildOutsourceStructurePayload for buildingId={} style={}/{} at {} facing {}",
+            buildingId, styleIndex, blueprint, cfg.pos, cfg.houseFacing);
+
+        com.prefab.addon.network.NetworkHandler.sendToServer(
+            new com.prefab.addon.network.BuildOutsourceStructurePayload(
+                buildingId, styleIndex, cfg.pos, cfg.houseFacing,
+                com.prefab.addon.config.PlayerPreferences.get().getBuildAnimationMode()));
+
+        // 清预览: prefab 的 currentStructure (no-op, 之前已 null) + 我们 own 的 ADDON_PREVIEW_*
+        //   + clearAddonPreviewFlag 也会顺手清掉 outsource 上下文 (currentIsOutsource 等)
         StructureRenderHandler.setStructure(null, null);
         com.prefab.addon.client.gui.CustomStructureGui.clearAddonPreviewFlag();
     }

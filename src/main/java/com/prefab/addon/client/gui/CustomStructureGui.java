@@ -80,7 +80,15 @@ public class CustomStructureGui {
 
     // === 异步解析状态 (独立于 GuiConstructionDetail, 避免冲突) ===
     private static ConstructionInfo currentConstruction;
-    private static ItemStack currentBlueprint;
+    /**
+     * 玩家右键打开预览的蓝图 ItemStack (= 真正触发预览的 stack). 公开访问是为了让
+     * {@link com.prefab.addon.client.StructurePreviewKeyHandler#triggerBuildAtPreview} 在
+     * ALT 建造时能拿到"正确的" stack 来判断 silent 模式 (KubeJS 联动蓝图), 而不是从背包里
+     * 扫描"第一个"蓝图 (那个是错的: 在 KubeJS 蓝图 slot 5 + 自定义蓝图 slot 3 共存时,
+     * 第一个永远是 slot 3 的 CustomBlueprintItem, 会被错认成自定义蓝图路径, 走 silent=false
+     * 走"开始建造/已存入云端"等错误消息).
+     */
+    public static ItemStack currentBlueprint;
     private static BlockPos currentOpenPos;
     private static CompletableFuture<List<BlockData>> parseFuture;
     private static volatile List<BlockData> parseResult;
@@ -112,6 +120,16 @@ public class CustomStructureGui {
     //   ALT 建造时, 我们再 setStructure(null, null) 一次 (清掉我们的) + close GUI 完成.
     private static volatile com.prefab.structures.base.Structure ADDON_PREVIEW_STRUCTURE = null;
     private static volatile com.prefab.structures.config.StructureConfiguration ADDON_PREVIEW_CONFIG = null;
+
+    // === 外包建筑预览上下文 (2026-08 加) ===
+    // GuiOutsourceBuildingDetail.onPreview 启动预览时把 buildingId/styleIndex 存这里,
+    // ALT 建造时 StructurePreviewKeyHandler 读 isCurrentOutsource() 决定走哪条 build 路径.
+    // 跟 currentConstruction (普通自定义建筑) 互斥: 不会同时 setCurrentConstruction + setOutsourceContext.
+    // 之前: GuiOutsourceBuildingDetail.onPreview 只设了 ADDON_PREVIEW_*,  ALT 触发 triggerBuildAtPreview
+    //   → getPackNameForBuild() 返回 "" → "找不到当前预览的建筑信息" 提示 + 退出, 永远建不了.
+    private static volatile boolean currentIsOutsource = false;
+    private static volatile String currentOutsourceBuildingId = null;
+    private static volatile int currentOutsourceStyleIndex = 0;
 
     // === 增量渲染状态 ===
     private static Scene renderScene;
@@ -183,6 +201,11 @@ public class CustomStructureGui {
             finalCompileRequested = false;
             materialList = null;
             nbtInfo = null;
+            // 外包建筑上下文也清 (open() 进来意味着玩家开的是普通自定义建筑 GUI,
+            // 不是外包建筑预览的延续 → 清掉之前的 outsource 状态, 防止混淆)
+            currentIsOutsource = false;
+            currentOutsourceBuildingId = null;
+            currentOutsourceStyleIndex = 0;
         }
         statusTick = 0;
         statusMsg = null;
@@ -791,6 +814,10 @@ public class CustomStructureGui {
         LAST_ADDON_STRUCTURE_REF.set(null);
         ADDON_PREVIEW_STRUCTURE = null;
         ADDON_PREVIEW_CONFIG = null;
+        // 外包建筑上下文也清 (预览结束, 两条路径都不再活跃)
+        currentIsOutsource = false;
+        currentOutsourceBuildingId = null;
+        currentOutsourceStyleIndex = 0;
     }
 
     /**
@@ -811,6 +838,40 @@ public class CustomStructureGui {
             LAST_ADDON_STRUCTURE_REF.set(ADDON_PREVIEW_STRUCTURE);
             LAST_ADDON_PREVIEW.set(true);
         }
+    }
+
+    // ============== 外包建筑预览上下文 (2026-08 加) ==============
+
+    /**
+     * 当前预览是不是来自 {@link com.prefab.addon.client.gui.GuiOutsourceBuildingDetail}.
+     * ALT 建造时, {@link com.prefab.addon.client.StructurePreviewKeyHandler} 用这个
+     * 决定走 {@code triggerOutsourceBuildAtPreview} 还是 {@code triggerBuildAtPreview}.
+     */
+    public static boolean isCurrentOutsource() {
+        return currentIsOutsource;
+    }
+
+    /** 当前预览对应的 buildingId (例如 {@code 投影_中式茶楼}). */
+    public static String getCurrentOutsourceBuildingId() {
+        return currentOutsourceBuildingId;
+    }
+
+    /** 当前预览对应的风格索引 (0-based). */
+    public static int getCurrentOutsourceStyleIndex() {
+        return currentOutsourceStyleIndex;
+    }
+
+    /**
+     * 由 {@link com.prefab.addon.client.gui.GuiOutsourceBuildingDetail#onPreview} 在启动
+     * 预览时调用. 跟 {@link #setCurrentConstruction} 互斥 (不要同时调).
+     */
+    public static void setOutsourceContext(String buildingId, int styleIndex) {
+        currentIsOutsource = true;
+        currentOutsourceBuildingId = buildingId;
+        currentOutsourceStyleIndex = styleIndex;
+        // 同时把普通 custom 的 currentConstruction 显式置 null, 防止 ALT 分支误判
+        // "上一个 custom 建筑还在", 走错 build 路径
+        currentConstruction = null;
     }
 
     private static boolean hasBlueprintInInventory() {

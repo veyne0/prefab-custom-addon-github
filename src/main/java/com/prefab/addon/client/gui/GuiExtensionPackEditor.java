@@ -70,12 +70,13 @@ public class GuiExtensionPackEditor extends GuiBase {
     private static final int CARD_BORDER = 0xFFAAAAAA;    // 卡片边框
     private static final int CARD_HOVER = 0xFFC8D8E8;      // 卡片 hover
 
-    // === 4 个 Tab ===
+    // === 5 个 Tab (制作蓝图 / 蓝图管理 都依赖 KubeJS, 未装时一起隐藏) ===
     public enum Tab {
         CREATE("创建建筑"),
         EDIT("编辑建筑"),
         SETTINGS("设置"),
-        MAKE_BLUEPRINT("制作蓝图");
+        MAKE_BLUEPRINT("制作蓝图"),
+        MANAGE_BLUEPRINT("蓝图管理");
         final String label;
         Tab(String label) { this.label = label; }
     }
@@ -150,6 +151,20 @@ public class GuiExtensionPackEditor extends GuiBase {
 
     // === "制作蓝图" tab 的字段 ===
     private EditBox edBlueprintName;       // 显示名 (玩家填的)
+    /**
+     * 制作蓝图名字输入框的"跨 init 持久缓存" — 玩家在 {@code GuiItemSearchPopup} 选完物品
+     * 关闭时, 弹窗会 {@code Minecraft.setScreen(parent)} 切回本 GUI. Minecraft 的 setScreen
+     * 流程会**重新调用**目标屏幕的 {@code init()}, 这会走 GuiBase.init -> Initialize ->
+     * initMakeBlueprintWidgets, 重新 new 一个空的 EditBox 覆盖掉老 edBlueprintName, 玩家
+     * 已填的显示名就这样被悄悄清空.
+     * <p>把 value 缓存到 static 字段, 重建 EditBox 时用 setValue 恢复. 选 "清空" 时 (玩家手动
+     * 删字) 也同步更新, 不会在重新 init 时"复活". 切到其他 tab 再切回来走 setVisible, 不会
+     * 触发 init, 不走这条路径, 但同样能保证一致性.</p>
+     * <p>static 作用域是整个 JVM, 即使玩家关掉 GUI 重新打开 (new 一个新的
+     * GuiExtensionPackEditor 实例), 缓存依然在, 名字也能恢复 — 玩家"重新打开制作蓝图
+     * 这个标签页也会被重置"的抱怨一并解决.</p>
+     */
+    private static String SAVED_BLUEPRINT_NAME = "";
     // 命名空间 / 物品 id 都不再让玩家填 — 简化:
     //   - 命名空间固定 player_pack
     //   - 物品 id 固定 player_blueprint, 已存在则自动加序号 (_2, _3, ...)
@@ -162,7 +177,8 @@ public class GuiExtensionPackEditor extends GuiBase {
     private java.nio.file.Path selectedTextureSource;
     /** 9 槽配方: 9 个 null-or-itemId. */
     private final java.util.List<String> recipeItems = new java.util.ArrayList<>(java.util.Arrays.asList(null, null, null, null, null, null, null, null, null));
-    /** 锁定 (默认 true, 蓝图一旦生成不可 rebind). */
+    /** 锁定字段已废弃 (UI 上去掉了 checkbox, 默认 true), 保留仅为不破坏反射访问的旧代码. */
+    @Deprecated
     private boolean blueprintLocked = true;
     /** 控件矩形缓存. */
     private int[] mbSelectBuildingFileRect = new int[]{0,0,0,0};  // 选外部 NBT 文件
@@ -190,6 +206,56 @@ public class GuiExtensionPackEditor extends GuiBase {
     private String mbStatus = null;
     private int mbStatusTick = 0;
     private int mbStatusColor = 0x55FF55;
+
+    // === "蓝图管理" tab 的字段 ===
+    /**
+     * 玩家本局点过 "删除" 的蓝图 (ns:itemId 形式). 用来在 {@link #rebuildManagedBlueprints}
+     * 里过滤掉 — 物品注册还在 registry 里 (startup_scripts 只在启动时跑),
+     * 但文件已经被删了, 显示出来会变成 "⚠ 部分文件已丢失", 玩家看到容易困惑.
+     * <p>本局只在本 session 有效, 重启游戏自然清空, 跟 KubeJS 自己的注册状态对齐.</p>
+     */
+    private static final java.util.Set<String> DELETED_THIS_SESSION = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    /** 缓存: 当前列出的蓝图条目 (Item + 对应文件路径). 进入 tab 时 / 刷新时重建. */
+    private java.util.List<ManagedBlueprint> managedBlueprints = new java.util.ArrayList<>();
+    /** 每张卡片的矩形 (x,y,w,h), 与 managedBlueprints 索引对应. */
+    private final java.util.List<int[]> mbManageCardRects = new java.util.ArrayList<>();
+    /** "删除" 按钮矩形 (索引对齐 managedBlueprints). */
+    private final java.util.List<int[]> mbManageDeleteBtnRects = new java.util.ArrayList<>();
+    /** 顶部 "刷新" 按钮矩形. */
+    private int[] mbManageRefreshRect = new int[]{0,0,0,0};
+    /** 状态消息 (本 tab 独立). */
+    private String mgmtStatus = null;
+    private int mgmtStatusTick = 0;
+    private int mgmtStatusColor = 0x55FF55;
+    /** 进入 tab 的次数 — 第一次进入 / 切回来都重建列表 (避免陈旧). */
+    private boolean mgmtInited = false;
+
+    /** 一条 "KubeJS 联动蓝图" 的渲染数据: 物品 + 它对应的 KubeJS 文件. */
+    private static class ManagedBlueprint {
+        final net.minecraft.world.item.Item item;
+        final String displayName;
+        final String namespace;
+        final String itemId;
+        /** startup script 路径 (可能不存在, 比如手写脚本不在这台机器). */
+        final java.nio.file.Path jsFile;
+        /** recipe script 路径. */
+        final java.nio.file.Path recipeFile;
+        /** 贴图路径. */
+        final java.nio.file.Path textureFile;
+        ManagedBlueprint(net.minecraft.world.item.Item item, String displayName,
+                         String namespace, String itemId,
+                         java.nio.file.Path jsFile, java.nio.file.Path recipeFile,
+                         java.nio.file.Path textureFile) {
+            this.item = item;
+            this.displayName = displayName;
+            this.namespace = namespace;
+            this.itemId = itemId;
+            this.jsFile = jsFile;
+            this.recipeFile = recipeFile;
+            this.textureFile = textureFile;
+        }
+        String nsItem() { return namespace + ":" + itemId; }
+    }
 
     /** 状态消息 (底部状态栏). */
     private String statusMessage = null;
@@ -255,6 +321,8 @@ public class GuiExtensionPackEditor extends GuiBase {
         setCreateTabVisible(this.currentTab == Tab.CREATE);
         setEditTabVisible(this.currentTab == Tab.EDIT);
         setMakeBlueprintTabVisible(this.currentTab == Tab.MAKE_BLUEPRINT);
+        // 蓝图管理 tab 用 GuiGraphics 自绘, 唯一要管的是编辑 tab 的搜索框要在非 EDIT tab 时隐藏
+        // (setEditTabVisible 已经做完了, 不用再加)
     }
 
     /** 制作蓝图 tab 的 EditBox (始终在 widget 列表, 通过 setVisible 切). */
@@ -263,7 +331,23 @@ public class GuiExtensionPackEditor extends GuiBase {
         // 这里只创建 EditBox, 设默认可见性 false (切到 tab 时再显示).
         edBlueprintName = new EditBox(this.font, 0, 0, 120, 14, Component.literal(""));
         edBlueprintName.setMaxLength(64);
-        edBlueprintName.setValue("我的蓝图");
+        // 默认值留空 — 用 setHint 提示玩家填什么. 之前 setValue("我的蓝图") 看起来像 placeholder,
+        // 玩家经常没意识到这是个值 (尤其中文环境下), 导致以为填了新名字但实际还是默认.
+        edBlueprintName.setValue("");
+        edBlueprintName.setHint(Component.literal(PrefabCustomAddon.tr("gui.make_blueprint.name_hint")));
+        // 调试: 每次 EditBox 内容变化都打日志 + 同步更新持久缓存 SAVED_BLUEPRINT_NAME.
+        // 缓存让 Minecraft.setScreen(parent) 触发的 init 重建 EditBox 时, 玩家已填的名字不丢.
+        edBlueprintName.setResponder(s -> {
+            SAVED_BLUEPRINT_NAME = s == null ? "" : s;
+            PrefabCustomAddon.LOGGER.info("[MAKE-BLUEPRINT][EditBox responder] value changed: '{}' (len={}, focused={})",
+                s, s == null ? 0 : s.length(), edBlueprintName.isFocused());
+        });
+        // 恢复持久缓存的名字 (见 SAVED_BLUEPRINT_NAME 注释). 必须在 addRenderableWidget 之后,
+        // 这样 Minecraft 把 EditBox 接管前 value 就对了 — 否则首帧渲染会闪一下空, 然后下一帧
+        // 才显示恢复的值, 看起来很怪.
+        if (!SAVED_BLUEPRINT_NAME.isEmpty()) {
+            edBlueprintName.setValue(SAVED_BLUEPRINT_NAME);
+        }
         addRenderableWidget(edBlueprintName);
         edBlueprintName.setVisible(false);
         // 命名空间 / 物品 id 不再让玩家填 (固定 player_pack + player_blueprint + 序号)
@@ -689,12 +773,23 @@ public class GuiExtensionPackEditor extends GuiBase {
         if (tab == Tab.EDIT) {
             refreshEditTab();
         }
+        // 切到 / 离开 蓝图管理 tab 时, 重置 inited 标志, 下次进入重新枚举
+        // (玩家可能在另一端 /reload / 生成新蓝图 / 删文件, 列表要刷新)
+        if (tab == Tab.MANAGE_BLUEPRINT || this.currentTab == Tab.MANAGE_BLUEPRINT) {
+            this.mgmtInited = false;
+        }
         applyTabVisibility();
     }
 
     /** 设置"制作蓝图" tab 的 EditBox 可见性. */
     private void setMakeBlueprintTabVisible(boolean visible) {
-        if (edBlueprintName != null) edBlueprintName.setVisible(visible);
+        if (edBlueprintName != null) {
+            edBlueprintName.setVisible(visible);
+            // 切到"制作蓝图" tab 时主动给 EditBox 焦点, 玩家进来就能直接打字, 不用先点一下
+            if (visible && this.getFocused() != edBlueprintName) {
+                this.setInitialFocus(edBlueprintName);
+            }
+        }
         // edBlueprintNamespace / edBlueprintItemId 已移除 (玩家只填显示名, ns+id 后台自动生成)
     }
 
@@ -986,13 +1081,18 @@ public class GuiExtensionPackEditor extends GuiBase {
         int th = TAB_H;
         Tab[] tabs = Tab.values();
         for (int i = 0; i < tabs.length; i++) {
-            // 联动: KubeJS 没装就不渲染"制作蓝图" tab
-            if (tabs[i] == Tab.MAKE_BLUEPRINT && !KubeJSIntegration.isLoaded()) continue;
+            // 联动: KubeJS 没装也要渲染 "制作蓝图" / "蓝图管理" 两个 tab,
+            // 但用灰色文字提示玩家装 KubeJS 才能用 — 之前直接 skip 会让玩家找不到入口.
             String label = tabs[i].label;
+            int color = TAB_FG;
+            if ((tabs[i] == Tab.MAKE_BLUEPRINT || tabs[i] == Tab.MANAGE_BLUEPRINT)
+                && !KubeJSIntegration.isLoaded()) {
+                color = 0xFF888888; // 灰色
+            }
             int textW = this.font.width(label);
             int textX = tx + (tw - textW) / 2;
             int textY = ty + i * th + (th - 8) / 2;
-            guiGraphics.drawString(this.font, label, textX, textY, TAB_FG, true);
+            guiGraphics.drawString(this.font, label, textX, textY, color, true);
         }
 
         // 2) 当前 tab 的内容
@@ -1003,6 +1103,8 @@ public class GuiExtensionPackEditor extends GuiBase {
             drawEditTab(guiGraphics, cr, mouseX, mouseY);
         } else if (currentTab == Tab.MAKE_BLUEPRINT) {
             drawMakeBlueprintTab(guiGraphics, cr, mouseX, mouseY);
+        } else if (currentTab == Tab.MANAGE_BLUEPRINT) {
+            drawManageBlueprintTab(guiGraphics, cr, mouseX, mouseY);
         } else {
             drawSettingsTab(guiGraphics, cr, mouseX, mouseY);
         }
@@ -1217,6 +1319,12 @@ public class GuiExtensionPackEditor extends GuiBase {
         int rx = cr[0], ry = cr[1], rw = cr[2], rh = cr[3];
         Minecraft mc = Minecraft.getInstance();
 
+        // 联动: KubeJS 没装时显示居中提示, 不画表单/网格/按钮 — 让玩家一眼看到为什么这 tab 不能用.
+        if (!KubeJSIntegration.isLoaded()) {
+            drawKubeJSNotInstalledPanel(guiGraphics, cr);
+            return;
+        }
+
         // ===== 1) 底部固定区 (生成/打开文件夹按钮 + 状态) — 不参与滚动 =====
         int bottomY = ry + rh - 32;     // 生成 + 打开 kubejs 按钮 Y
         int statusY = bottomY - 14;     // 状态消息 Y
@@ -1350,21 +1458,15 @@ public class GuiExtensionPackEditor extends GuiBase {
         }
         ly += cellSize * 3 + cellGap * 2 + 6;
 
-        // ---- 锁定 toggle ----
-        int lkBox = 12;
-        int lkY = ly - mbScroll;
-        mbLockedRect = new int[]{formX, lkY, rw - 24, 18};
-        guiGraphics.fill(formX, lkY, formX + lkBox, lkY + lkBox, 0xFFFFFFFF);
-        guiGraphics.fill(formX, lkY, formX + lkBox, lkY + 1, 0xFF666666);
-        guiGraphics.fill(formX, lkY + lkBox - 1, formX + lkBox, lkY + lkBox, 0xFF666666);
-        guiGraphics.fill(formX, lkY, formX + 1, lkY + lkBox, 0xFF666666);
-        guiGraphics.fill(formX + lkBox - 1, lkY, formX + lkBox, lkY + lkBox, 0xFF666666);
-        if (blueprintLocked) {
-            guiGraphics.fill(formX + 2, lkY + 2, formX + lkBox - 2, lkY + lkBox - 2, 0xFF3366AA);
-        }
-        guiGraphics.drawString(this.font, PrefabCustomAddon.tr("gui.make_blueprint.locked_label"),
-            formX + lkBox + 6, lkY + 2, 0xFF333333, false);
-        ly += 24;
+        // 配方操作提示: 玩家要求在 9 宫格下面加一行说明
+        // "鼠标左键选择配方物品，右键删除"
+        guiGraphics.drawString(this.font,
+            PrefabCustomAddon.tr("gui.make_blueprint.recipe_hint"),
+            formX, ly - mbScroll, 0xFF666666, false);
+        ly += 12;
+
+        // 锁定 toggle 已移除 — 玩家要求: 生成的蓝图永远不可 rebind (服务端蓝图 NBT 锁住, 改 client 没意义).
+        // mbLockedRect 字段保留但不再赋值, 鼠标点击逻辑也已删除.
 
         // 关闭 scissor (但 super.render 在外层, EditBox 渲染会绕过 scissor, 见 render() 重写)
         guiGraphics.disableScissor();
@@ -1401,6 +1503,251 @@ public class GuiExtensionPackEditor extends GuiBase {
             String waitMsg = (mbPollSource == 1) ? "§e等待选 NBT 文件..." : "§e等待游戏内选区...";
             guiGraphics.drawString(this.font, waitMsg, rx + 8, statusY, 0xFFAA5500, false);
         }
+    }
+
+    // ============================================================
+    // 蓝图管理 tab
+    // ============================================================
+
+    /**
+     * "KubeJS 未安装" 居中提示面板 — "制作蓝图" / "蓝图管理" 两个 tab 在 KubeJS 没装时
+     * 共用这个提示, 让玩家知道是 mod 依赖问题, 不是 tab 坏了.
+     */
+    private void drawKubeJSNotInstalledPanel(GuiGraphics guiGraphics, int[] cr) {
+        int rx = cr[0], ry = cr[1], rw = cr[2], rh = cr[3];
+        int cx = rx + rw / 2;
+        int cy = ry + rh / 2;
+
+        // 多行提示: 标题 / 原因 / 安装方式 / 设置里的"强制启用"提示
+        String[] lines = new String[]{
+            "§c§l" + PrefabCustomAddon.tr("gui.kubejs_required.title"),
+            "",
+            "§7" + PrefabCustomAddon.tr("gui.kubejs_required.desc"),
+            "",
+            "§e" + PrefabCustomAddon.tr("gui.kubejs_required.install_hint"),
+            "§7" + PrefabCustomAddon.tr("gui.kubejs_required.force_hint")
+        };
+        int lineH = 12;
+        int totalH = lines.length * lineH;
+        int startY = cy - totalH / 2;
+        for (int i = 0; i < lines.length; i++) {
+            String line = lines[i];
+            if (line.isEmpty()) continue;
+            int textW = this.font.width(line);
+            guiGraphics.drawString(this.font, line, cx - textW / 2,
+                startY + i * lineH, 0xFFFFFFFF, true);
+        }
+    }
+
+    /** "蓝图管理" tab 内容: 列出所有 KubeJS 联动蓝图 (带 player_blueprint tag 的物品), 每条可删除. */
+    private void drawManageBlueprintTab(GuiGraphics guiGraphics, int[] cr, int mouseX, int mouseY) {
+        int rx = cr[0], ry = cr[1], rw = cr[2], rh = cr[3];
+
+        // 联动: KubeJS 没装时显示居中提示
+        if (!KubeJSIntegration.isLoaded()) {
+            drawKubeJSNotInstalledPanel(guiGraphics, cr);
+            return;
+        }
+
+        // 每次进入 tab 都重建一次 (玩家可能 /reload, 列表会变; 也避免标签页之间漏刷新)
+        if (!this.mgmtInited) {
+            rebuildManagedBlueprints();
+            this.mgmtInited = true;
+        }
+
+        // 顶部: 标题 + 刷新按钮
+        int titleY = ry + 4;
+        guiGraphics.drawString(this.font, "§l📋 蓝图管理 ("
+            + this.managedBlueprints.size() + ")", rx + 4, titleY, TITLE_COLOR, false);
+        int rfshW = 60, rfshH = 14;
+        mbManageRefreshRect = new int[]{rx + rw - rfshW - 6, titleY - 1, rfshW, rfshH};
+        drawButton(guiGraphics, mbManageRefreshRect, "§7↻ 刷新", BTN_BG, mouseX, mouseY);
+
+        // 副标题 (说明)
+        guiGraphics.drawString(this.font, "§7列出所有 KubeJS 联动创建的蓝图，可一键删除对应 KubeJS 文件",
+            rx + 4, titleY + 12, HINT_COLOR, false);
+
+        // 状态消息
+        if (this.mgmtStatus != null && this.mgmtStatusTick > 0) {
+            int sy = ry + rh - 16;
+            guiGraphics.drawString(this.font, this.mgmtStatus, rx + 8, sy,
+                this.mgmtStatusColor | 0xFF000000, false);
+        }
+
+        // 空列表提示
+        this.mbManageCardRects.clear();
+        this.mbManageDeleteBtnRects.clear();
+        if (this.managedBlueprints.isEmpty()) {
+            int ey = ry + 36;
+            guiGraphics.drawString(this.font, "§7暂无 KubeJS 联动蓝图",
+                rx + 12, ey, HINT_COLOR, false);
+            guiGraphics.drawString(this.font, "§7去 \"" + Tab.MAKE_BLUEPRINT.label + "\" tab 生成一个, 或在 KubeJS startup_scripts/ 里加带",
+                rx + 12, ey + 12, HINT_COLOR, false);
+            guiGraphics.drawString(this.font, "§7" + net.minecraft.resources.ResourceLocation.fromNamespaceAndPath(
+                com.prefab.addon.PrefabCustomAddon.MOD_ID, "player_blueprint").toString()
+                + " §7tag 的物品",
+                rx + 12, ey + 24, HINT_COLOR, false);
+            return;
+        }
+
+        // 卡片列表 (从 ry+32 开始往下)
+        int cardY = ry + 34;
+        int cardH = 36;
+        int cardGap = 4;
+        int cardX = rx + 6;
+        int cardW = rw - 12;
+        // 状态消息占的底部 16px 留给消息, 卡片不要覆盖
+        int bottomLimit = ry + rh - 18;
+
+        // 滚动: 不加滚动条, 用列表上限即可 (一般 10 个以内, 玩家能看完)
+        int n = this.managedBlueprints.size();
+        int maxCards = Math.max(1, (bottomLimit - cardY + cardGap) / (cardH + cardGap));
+        for (int i = 0; i < n && i < maxCards; i++) {
+            ManagedBlueprint bp = this.managedBlueprints.get(i);
+            int y = cardY + i * (cardH + cardGap);
+            if (y + cardH > bottomLimit) break;
+            int[] cr2 = new int[]{cardX, y, cardW, cardH};
+            this.mbManageCardRects.add(cr2);
+
+            // 卡片底色
+            int bg = (mouseX >= cardX && mouseX < cardX + cardW
+                && mouseY >= y && mouseY < y + cardH) ? CARD_HOVER : CARD_BG;
+            guiGraphics.fill(cardX, y, cardX + cardW, y + cardH, bg);
+            guiGraphics.fill(cardX, y, cardX + cardW, y + 1, CARD_BORDER);
+            guiGraphics.fill(cardX, y + cardH - 1, cardX + cardW, y + cardH, CARD_BORDER);
+            guiGraphics.fill(cardX, y, cardX + 1, y + cardH, CARD_BORDER);
+            guiGraphics.fill(cardX + cardW - 1, y, cardX + cardW, y + cardH, CARD_BORDER);
+
+            // 图标 (左上角 16x16)
+            int iconSize = 16;
+            int iconX = cardX + 4, iconY = y + (cardH - iconSize) / 2;
+            net.minecraft.world.item.ItemStack iconStack = new net.minecraft.world.item.ItemStack(bp.item);
+            guiGraphics.renderItem(iconStack, iconX, iconY);
+            guiGraphics.renderItemDecorations(this.font, iconStack, iconX, iconY);
+
+            // 文字
+            int textX = iconX + iconSize + 6;
+            guiGraphics.drawString(this.font, "§f" + bp.displayName, textX, y + 4, 0xFF333333, false);
+            guiGraphics.drawString(this.font, "§7" + bp.nsItem(), textX, y + 14, 0xFF666666, false);
+            // 标记文件是否都还在
+            int allExist = java.nio.file.Files.exists(bp.jsFile)
+                && java.nio.file.Files.exists(bp.recipeFile)
+                && java.nio.file.Files.exists(bp.textureFile) ? 1 : 0;
+            String stateText = allExist == 1
+                ? "§a✓ KubeJS 文件齐全"
+                : "§e⚠ 部分文件已丢失";
+            guiGraphics.drawString(this.font, stateText, textX, y + 24, 0xFF888888, false);
+
+            // 只剩 "删除" 按钮 (右侧, 16x16 高度). 玩家要求去掉 "打开脚本".
+            int btnH = 16;
+            int btnW = 60;
+            int btnY = y + (cardH - btnH) / 2;
+            int btnX = cardX + cardW - btnW - 6;
+            int[] delRect = new int[]{btnX, btnY, btnW, btnH};
+            drawButton(guiGraphics, delRect, "§c✗ 删除", BTN_BG_DANGER, mouseX, mouseY);
+            this.mbManageDeleteBtnRects.add(delRect);
+        }
+    }
+
+    /**
+     * 枚举所有 KubeJS 联动蓝图 (= prefab_custom_addon:player_blueprint tag 里的 Item).
+     * <p>每个 Item 拼出对应的 KubeJS 文件路径 (按 {@link CustomBlueprintCodeGenerator} 的命名约定),
+     * 文件不在本地时路径照样填, 渲染时按 "文件已丢失" 标记.</p>
+     */
+    private void rebuildManagedBlueprints() {
+        this.managedBlueprints.clear();
+        try {
+            net.minecraft.resources.ResourceLocation tagLoc = net.minecraft.resources.ResourceLocation.fromNamespaceAndPath(
+                com.prefab.addon.PrefabCustomAddon.MOD_ID, "player_blueprint");
+            net.minecraft.tags.TagKey<net.minecraft.world.item.Item> tagKey =
+                net.minecraft.tags.TagKey.create(
+                    net.minecraft.core.registries.Registries.ITEM, tagLoc);
+            var holders = net.minecraft.core.registries.BuiltInRegistries.ITEM.getTagOrEmpty(tagKey);
+            java.nio.file.Path mcDir = minecraftDir();
+            java.nio.file.Path kubejsDir = mcDir.resolve("kubejs");
+            java.nio.file.Path startupScripts = kubejsDir.resolve("startup_scripts");
+            java.nio.file.Path serverScripts = kubejsDir.resolve("server_scripts");
+            for (var holder : holders) {
+                net.minecraft.world.item.Item item = holder.value();
+                if (item == null) continue;
+                // 排除 mod 原生 CustomBlueprintItem: 它是 mod 自家物品, 没有对应的 KubeJS 文件可删
+                if (item instanceof com.prefab.addon.items.CustomBlueprintItem) continue;
+                // Holder 没有 key() 方法, 用 getKey() 拿 ResourceKey
+                net.minecraft.resources.ResourceKey<net.minecraft.world.item.Item> rkey = holder.getKey();
+                if (rkey == null) continue;
+                net.minecraft.resources.ResourceLocation key = rkey.location();
+                String namespace = key.getNamespace();
+                String itemId = key.getPath();
+                // 黑名单过滤: 玩家本局点过 "删除" 的蓝图, 列表里不再显示
+                // (KubeJS 物品注册还在 registry 里, 但文件已经删了, 显示出来是 "已丢失" 没意义)
+                String nsItem = namespace + ":" + itemId;
+                if (DELETED_THIS_SESSION.contains(nsItem)) {
+                    PrefabCustomAddon.LOGGER.debug("[MANAGE-BLUEPRINT] 跳过本局已删蓝图: {}", nsItem);
+                    continue;
+                }
+                // 文件名约定: <ns>_<id>_blueprint.js / _recipes.js, 贴图 <id>.png
+                String jsName = namespace + "_" + itemId + "_blueprint.js";
+                String recipeName = namespace + "_" + itemId + "_blueprint_recipes.js";
+                java.nio.file.Path jsFile = startupScripts.resolve(jsName);
+                java.nio.file.Path recipeFile = serverScripts.resolve(recipeName);
+                java.nio.file.Path textureFile = kubejsDir.resolve("assets")
+                    .resolve(namespace).resolve("textures").resolve("item").resolve(itemId + ".png");
+                // 显示名: 优先用 ItemStack.getHoverName, 没有就用 itemId
+                net.minecraft.world.item.ItemStack tmp = new net.minecraft.world.item.ItemStack(item);
+                String displayName = tmp.getHoverName().getString();
+                this.managedBlueprints.add(new ManagedBlueprint(item, displayName, namespace, itemId,
+                    jsFile, recipeFile, textureFile));
+            }
+            // 排序: 按显示名, 让 UI 稳定 (重新进入 tab 顺序不变)
+            this.managedBlueprints.sort((a, b) -> a.displayName.compareToIgnoreCase(b.displayName));
+            PrefabCustomAddon.LOGGER.info("[MANAGE-BLUEPRINT] 枚举完成: {} 条", this.managedBlueprints.size());
+        } catch (Throwable t) {
+            PrefabCustomAddon.LOGGER.warn("[MANAGE-BLUEPRINT] 枚举失败: {}", t.toString());
+        }
+    }
+
+    /**
+     * 删除指定 blueprint 对应的 KubeJS 文件 (startup script + recipe + texture).
+     * 物品本身是 startup 时注册的, 运行时无法撤销, 必须在玩家 /reload 之后才彻底消失.
+     * 所以删完发聊天栏 + 状态消息都提示玩家 /reload.
+     * <p>同时把 ns:itemId 加到 {@link #DELETED_THIS_SESSION} 黑名单, 列表里立即消失
+     * (否则 tag 枚举还会返回这个 item, 玩家看到 "⚠ 部分文件已丢失" 会困惑为啥没删干净).</p>
+     */
+    private void deleteManagedBlueprint(ManagedBlueprint bp) {
+        // 先把 ns:itemId 加黑名单, 下面的 rebuildManagedBlueprints() 就不会再列出来
+        DELETED_THIS_SESSION.add(bp.nsItem());
+        int deleted = 0;
+        int missing = 0;
+        StringBuilder log = new StringBuilder();
+        for (java.nio.file.Path p : new java.nio.file.Path[]{bp.jsFile, bp.recipeFile, bp.textureFile}) {
+            try {
+                boolean ok = java.nio.file.Files.deleteIfExists(p);
+                if (ok) {
+                    deleted++;
+                    log.append("§a✓").append(p.getFileName()).append(" ");
+                } else {
+                    missing++;
+                    log.append("§7✗").append(p.getFileName()).append("(已无) ");
+                }
+            } catch (Exception e) {
+                missing++;
+                log.append("§c✗").append(p.getFileName()).append("(失败) ");
+                PrefabCustomAddon.LOGGER.warn("[MANAGE-BLUEPRINT] 删除失败: {} ({})", p, e.getMessage());
+            }
+        }
+        String msg = "§7已删 " + bp.nsItem() + ": " + log
+            + "§e请 /reload 生效 (startup script 删了要重启)";
+        this.mgmtStatus = msg;
+        this.mgmtStatusColor = 0x55FF55;
+        this.mgmtStatusTick = 200;
+        if (Minecraft.getInstance().player != null) {
+            Minecraft.getInstance().player.sendSystemMessage(
+                net.minecraft.network.chat.Component.literal(
+                    "§7[蓝图管理] 已删 " + bp.nsItem() + " 的 KubeJS 文件 (删 " + deleted + " 个, 缺 " + missing + " 个).\n"
+                    + "§e请 /reload 让配方 / 物品注册生效 (startup script 必须重启游戏)."));
+        }
+        // 立即重建 (黑名单生效后这条会消失, 其他不受影响)
+        rebuildManagedBlueprints();
     }
 
     /** 简化按钮绘制 (不依赖 makeButton, 不进 widget 列表). */
@@ -1761,10 +2108,8 @@ public class GuiExtensionPackEditor extends GuiBase {
             int idx = (my - ty) / th;
             if (idx >= 0 && idx < Tab.values().length) {
                 Tab t = Tab.values()[idx];
-                // 联动: KubeJS 没装不能切到"制作蓝图"
-                if (t == Tab.MAKE_BLUEPRINT && !KubeJSIntegration.isLoaded()) {
-                    return true;
-                }
+                // 联动: KubeJS 没装也能切到 "制作蓝图" / "蓝图管理" — 切进去后会画一个
+                // "需要安装 KubeJS" 的提示界面, 比直接静默吞掉点击反馈更好.
                 switchTab(t);
                 return true;
             }
@@ -1811,6 +2156,30 @@ public class GuiExtensionPackEditor extends GuiBase {
                     int realIdx = startIdx + i;
                     if (realIdx >= 0 && realIdx < this.editFiltered.size()) {
                         openEditBuilding(this.editFiltered.get(realIdx));
+                    }
+                    return true;
+                }
+            }
+        }
+        // 2.5) 蓝图管理 tab 交互
+        if (this.currentTab == Tab.MANAGE_BLUEPRINT) {
+            // 刷新按钮
+            int[] rr = this.mbManageRefreshRect;
+            if (rr[2] > 0 && mx >= rr[0] && mx < rr[0] + rr[2]
+                && my >= rr[1] && my < rr[1] + rr[3]) {
+                rebuildManagedBlueprints();
+                this.mgmtStatus = "§7已刷新 (" + this.managedBlueprints.size() + " 条)";
+                this.mgmtStatusColor = 0x55FF55;
+                this.mgmtStatusTick = 60;
+                return true;
+            }
+            // "删除" 按钮 (玩家要求: 去掉 "打开脚本" 按钮, 只保留删除)
+            for (int i = 0; i < this.mbManageDeleteBtnRects.size(); i++) {
+                int[] r = this.mbManageDeleteBtnRects.get(i);
+                if (r[2] > 0 && mx >= r[0] && mx < r[0] + r[2]
+                    && my >= r[1] && my < r[1] + r[3]) {
+                    if (i < this.managedBlueprints.size()) {
+                        deleteManagedBlueprint(this.managedBlueprints.get(i));
                     }
                     return true;
                 }
@@ -2005,18 +2374,7 @@ public class GuiExtensionPackEditor extends GuiBase {
                 openTextureFileDialog();
                 return true;
             }
-            // 4c) 锁定 toggle
-            int[] lr = this.mbLockedRect;
-            if (lr[2] > 0 && mx >= lr[0] && mx < lr[0] + lr[2]
-                && my >= lr[1] && my < lr[1] + lr[3]) {
-                this.blueprintLocked = !this.blueprintLocked;
-                this.mbStatus = this.blueprintLocked
-                    ? PrefabCustomAddon.tr("gui.make_blueprint.status.locked_on")
-                    : PrefabCustomAddon.tr("gui.make_blueprint.status.locked_off");
-                this.mbStatusColor = 0x55FF55;
-                this.mbStatusTick = 80;
-                return true;
-            }
+            // 4c) 锁定 toggle — 已移除
             // 4d) 9 宫格点击: 左键 = 弹小搜索框选物品, 右键 = 清空
             int[] gr = this.mbRecipeGridRect;
             if (gr[2] > 0 && gr[3] > 0
@@ -2281,19 +2639,26 @@ public class GuiExtensionPackEditor extends GuiBase {
 
             // 3) 构造 Spec (validate() 会自动加 player_ 前缀)
             CustomBlueprintCodeGenerator.Spec spec = new CustomBlueprintCodeGenerator.Spec();
-            spec.displayName = displayName.isEmpty() ? itemId : displayName;
+            // 留空时用建筑名当 fallback, 比用 itemId ("player_blueprint") 有意义
+            String displayNameFallback = (selectedBuilding != null && selectedBuilding.getDisplayName() != null
+                && !selectedBuilding.getDisplayName().isBlank())
+                    ? selectedBuilding.getDisplayName()
+                    : (itemId);
+            spec.displayName = displayName.isEmpty() ? displayNameFallback : displayName;
+            PrefabCustomAddon.LOGGER.info("[MAKE-BLUEPRINT] 最终 displayName='{}' (input='{}', fallback='{}')",
+                spec.displayName, displayName, displayNameFallback);
             spec.namespace = subNamespace;
             spec.itemId = itemId;
             spec.packName = selectedBuilding.source == null ? "local" : selectedBuilding.source;
             spec.constructionId = selectedBuilding.id;
             spec.locked = this.blueprintLocked;
             spec.sourceTexture = selectedTextureSource;
-            // 只塞非空格子, 9 个上限
-            java.util.List<String> ri = new java.util.ArrayList<>();
-            for (String s : recipeItems) {
-                if (s != null && !s.isBlank()) ri.add(s.trim());
-            }
-            spec.recipeItems = ri;
+            // 直接传 9 槽位 (row-major 0..8), null/空字符串表示该位置无物品.
+            // 之前错误的版本是 "过滤掉 null/空" 后压成紧凑 list, 但
+            // {@link CustomBlueprintCodeGenerator#buildRecipeJs} 按 i=0..8 索引位置构造 pattern,
+            // 压缩后所有 item 整体前移, 玩家放在 idx=8 (右下) 的物品会被写到 idx=0 (左上),
+            // 看起来像"配方位置被打乱". 这里直接传原列表, 由生成器处理 null.
+            spec.recipeItems = new java.util.ArrayList<>(recipeItems);
 
             // 3.5) 自动加序号: 检查 itemId 对应的 startup script / recipe js / texture 是否已存在.
             // 存在就把 itemId 改成 "<原id>_2", 已存在再 "_3"... 避免 "我建了 3 次, 全是 blueprint_1, KubeJS 只看得到 1 个"
@@ -2367,6 +2732,18 @@ public class GuiExtensionPackEditor extends GuiBase {
             mbStatusTick = 150;
             PrefabCustomAddon.LOGGER.error("[MAKE-BLUEPRINT] 打开 kubejs 文件夹失败", t);
         }
+    }
+
+    /**
+     * 取当前 Minecraft 客户端 .minecraft/ 根目录 (用于解析 kubejs/, 截图等).
+     * 跟 {@link CustomBlueprintCodeGenerator#minecraftDir()} 同一份实现, 复制过来避免改包级 private.
+     */
+    private static java.nio.file.Path minecraftDir() {
+        net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
+        if (mc == null) {
+            throw new IllegalStateException("GuiExtensionPackEditor 必须在 client 端调用");
+        }
+        return mc.gameDirectory.toPath();
     }
 
     /** 把 LocalBuilding 的字段填到 GuiCreateBuildingInfo static 字段, 包括 NBT 字节. */

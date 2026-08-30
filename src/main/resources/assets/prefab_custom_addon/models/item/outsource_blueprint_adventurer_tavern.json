@@ -1,0 +1,6 @@
+{
+  "parent": "minecraft:item/generated",
+  "textures": {
+    "layer0": "prefab_custom_addon:item/outsource_blueprint_adventurer_tavern"
+  }
+}

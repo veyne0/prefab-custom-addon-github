@@ -46,9 +46,24 @@ public class LitematicaParser {
     }
 
     /**
-     * 把 litematica NBT root 转换为标准结构 NBT（返回压缩后字节）
+     * 把 litematica NBT root 转换为标准结构 NBT（返回压缩后字节）。
+     *
+     * <p>默认不强制 Y 翻转。{@code Y} 轴翻转只在 litematic 文件的 {@code Size.y}
+     * 为负数时启用（原本就是负 size 协议约定的"从 min corner 反向到 max corner"）。</p>
      */
     public static byte[] convertToStandardStructure(CompoundTag root) throws IOException {
+        return convertToStandardStructure(root, false);
+    }
+
+    /**
+     * 把 litematica NBT root 转换为标准结构 NBT（返回压缩后字节）。
+     *
+     * @param root          litematica 顶层 NBT
+     * @param forceFlipY    <b>true</b> 时强制 Y 轴翻转（{@code y → yMax - y}），
+     *                      无论 {@code Size.y} 是不是负数。用于 冒险者酒馆 这种
+     *                      "Y=0 在顶部" 的反向约定文件：直接渲染会整栋楼倒过来。
+     */
+    public static byte[] convertToStandardStructure(CompoundTag root, boolean forceFlipY) throws IOException {
         if (!root.contains("Regions", 10)) {
             throw new IOException("Not a litematic file: missing Regions tag");
         }
@@ -92,16 +107,38 @@ public class LitematicaParser {
             posZ = pos.getInt("z");
         }
         int sizeX, sizeY, sizeZ;
+        boolean flipX, flipY, flipZ;
         if (region.contains("Size", 10)) {
             CompoundTag size = region.getCompound("Size");
-            sizeX = size.getInt("x");
-            sizeY = size.getInt("y");
-            sizeZ = size.getInt("z");
+            int rawX = size.getInt("x");
+            int rawY = size.getInt("y");
+            int rawZ = size.getInt("z");
+            // Litematica mod 自己写 size 总是 Math.abs() 出来正数, 但有些第三方工具
+            // (mcedit / 某些 litematic 编辑器) 写出来带符号. 负 size 意味着"从 min corner 反向到 max corner",
+            // 我们做两件事: (a) 把 size 翻成正数给后续 totalBlocks / bit width 计算用,
+            // (b) 在坐标解包后把对应轴翻转 —— 不然 冒险者酒馆.litematic (Size=34,-22,-44) 的 Y/Z 会被算成负的
+            // 渲染时整个建筑就"倒过来"了.
+            sizeX = Math.abs(rawX);
+            sizeY = Math.abs(rawY);
+            sizeZ = Math.abs(rawZ);
+            flipX = rawX < 0;
+            flipY = rawY < 0;
+            flipZ = rawZ < 0;
         } else {
             throw new IOException("Region missing Size");
         }
-        PrefabCustomAddon.LOGGER.info("[LITEMATICA] Region size: {}x{}x{} pos=({},{},{}) palette={} longArrayLen={}",
-            sizeX, sizeY, sizeZ, posX, posY, posZ, paletteSize, blockStateArr.length);
+        // 强制 Y 翻转（用于 冒险者酒馆 这种 "Y=0 在顶部" 的反向约定文件）：
+        //   关键: 这里用 **toggle** 而不是 set, 因为上面基于 raw size 符号的逻辑
+        //   已经把 flipY 设成 true 了 (rawY < 0 时自动翻). 冒险者酒馆.litematic
+        //   的 Size.y = -22, 上面已经基于这个负号把 Y 翻了一次 (翻向**反了** —— 翻完
+        //   整栋楼上下颠倒), 所以 forceFlipY 这里的语义是 "把那次错误的翻 toggle 回来".
+        //   toggle 后 flipY = false, 不再翻, NBT 回到原始的"屋顶朝上"方向.
+        //   预览 + 实际建造走同一份 NBT, 永远一致.
+        if (forceFlipY) {
+            flipY = !flipY;
+        }
+        PrefabCustomAddon.LOGGER.info("[LITEMATICA] Region size: {}x{}x{} pos=({},{},{}) palette={} longArrayLen={} forceFlipY={} rawYFlip={}",
+            sizeX, sizeY, sizeZ, posX, posY, posZ, paletteSize, blockStateArr.length, forceFlipY, flipY);
 
         // bit 宽度
         int bits = Math.max(2, Integer.SIZE - Integer.numberOfLeadingZeros(paletteSize - 1));
@@ -151,6 +188,11 @@ public class LitematicaParser {
             long rem = blockIndex % ((long) sizeX * sizeZ);
             int z = (int) (rem / sizeX);
             int x = (int) (rem % sizeX);
+            // 负 size 文件需要把轴翻过来: 0 -> size-1, size-1 -> 0
+            // (只对 raw size < 0 的轴翻转, 不会影响正常 litematica)
+            if (flipX) x = sizeX - 1 - x;
+            if (flipY) y = sizeY - 1 - y;
+            if (flipZ) z = sizeZ - 1 - z;
 
             // 跳过 air (litematica 通常把 air 放在 palette[0])
             CompoundTag paletteEntry = palette.getCompound(stateIndex);

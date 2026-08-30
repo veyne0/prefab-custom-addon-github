@@ -34,15 +34,26 @@ public record BuildCustomStructurePayload(
         String packName,
         String constructionId,
         Direction houseFacing,
-        BuildAnimationMode animationMode
+        BuildAnimationMode animationMode,
+        /**
+         * 静默模式: KubeJS 联动蓝图 (带 player_blueprint tag, 但非 mod 原生 CustomBlueprintItem)
+         * 建造时 = true. 服务端不会发任何聊天栏消息, 完成后不存云端. 普通 CustomBlueprintItem
+         * 走的是 false (带消息 + 存云端的老路径).
+         */
+        boolean silent
 ) implements CustomPacketPayload {
 
     public BuildCustomStructurePayload(BlockPos pos, String packName, String constructionId) {
-        this(pos, packName, constructionId, Direction.SOUTH, BuildAnimationMode.OFF);
+        this(pos, packName, constructionId, Direction.SOUTH, BuildAnimationMode.OFF, false);
     }
 
     public BuildCustomStructurePayload(BlockPos pos, String packName, String constructionId, Direction houseFacing) {
-        this(pos, packName, constructionId, houseFacing, BuildAnimationMode.OFF);
+        this(pos, packName, constructionId, houseFacing, BuildAnimationMode.OFF, false);
+    }
+
+    public BuildCustomStructurePayload(BlockPos pos, String packName, String constructionId,
+                                       Direction houseFacing, BuildAnimationMode animationMode) {
+        this(pos, packName, constructionId, houseFacing, animationMode, false);
     }
 
     public static final CustomPacketPayload.Type<BuildCustomStructurePayload> TYPE =
@@ -60,6 +71,10 @@ public record BuildCustomStructurePayload(
                 return BuildAnimationMode.OFF;
             });
 
+    /**
+     * 第 6 个字段 silent 用 1 字节, 1=true, 0=false. StreamCodec.composite 公开重载到
+     * 6 字段为止, 这里直接套 6-arg overload.
+     */
     public static final StreamCodec<FriendlyByteBuf, BuildCustomStructurePayload> STREAM_CODEC =
             StreamCodec.composite(
                     BlockPos.STREAM_CODEC, BuildCustomStructurePayload::pos,
@@ -67,6 +82,7 @@ public record BuildCustomStructurePayload(
                     net.minecraft.network.codec.ByteBufCodecs.STRING_UTF8, BuildCustomStructurePayload::constructionId,
                     Direction.STREAM_CODEC, BuildCustomStructurePayload::houseFacing,
                     MODE_STREAM_CODEC, BuildCustomStructurePayload::animationMode,
+                    net.minecraft.network.codec.ByteBufCodecs.BOOL, BuildCustomStructurePayload::silent,
                     BuildCustomStructurePayload::new
             );
 

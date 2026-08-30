@@ -467,10 +467,28 @@ public class CustomStructureBuilder {
                                String packName, String constructionId,
                                net.minecraft.core.Direction houseFacing,
                                com.prefab.addon.config.BuildAnimationMode animationMode) {
+        return placeStructure(player, level, origin, packName, constructionId, houseFacing, animationMode, false);
+    }
+
+    /**
+     * 完整重载: silent 模式 — KubeJS 联动蓝图建造用.
+     * <p>{@code silent = true} 时:
+     * <ul>
+     *   <li>{@link AsyncBuildManager#startTask} 不会发 "开始建造" 消息</li>
+     *   <li>本方法末尾的 "⏳ 开始建造 ..." 提示也跳过</li>
+     *   <li>完成后 AsyncBuildManager.onCompleted 不会发 "建造完成" 消息 + 不会存云端</li>
+     * </ul>
+     * 普通 CustomBlueprintItem 走的是 silent=false 的老路径, 行为不变.</p>
+     */
+    public boolean placeStructure(ServerPlayer player, net.minecraft.server.level.ServerLevel level, BlockPos origin,
+                               String packName, String constructionId,
+                               net.minecraft.core.Direction houseFacing,
+                               com.prefab.addon.config.BuildAnimationMode animationMode,
+                               boolean silent) {
         com.prefab.addon.config.BuildAnimationMode mode = animationMode != null
                 ? animationMode : com.prefab.addon.config.BuildAnimationMode.OFF;
-        PrefabCustomAddon.LOGGER.info("[PLACE-ASYNC] === placeStructure called: pack={} construction={} pos={} player={} houseFacing={} animationMode={}",
-            packName, constructionId, origin, player != null ? player.getName().getString() : "null", houseFacing, mode);
+        PrefabCustomAddon.LOGGER.info("[PLACE-ASYNC] === placeStructure called: pack={} construction={} pos={} player={} houseFacing={} animationMode={} silent={}",
+            packName, constructionId, origin, player != null ? player.getName().getString() : "null", houseFacing, mode, silent);
         ConstructionInfo info = ExtensionPackManager.getInstance().findConstruction(packName, constructionId);
         if (info == null) {
             PrefabCustomAddon.LOGGER.error("[PLACE-ASYNC] 找不到建筑: {}/{}", packName, constructionId);
@@ -523,11 +541,12 @@ public class CustomStructureBuilder {
         //    - 后续 server tick 里分批放置, 玩家不卡
         //    - 旋转在 AsyncBuildManager.processTick 里**逐方块**进行 (绕 (0,0,0), 跟客户端 offsetStructureBlocks 一致)
         //    - 完成后自动消耗蓝图 + 红石重算
-        PrefabCustomAddon.LOGGER.info("[PLACE-ASYNC] 启动异步任务: {} blocks, batchPercent={}%, houseFacing={}",
-            blockDataList.size(), com.prefab.addon.config.PlayerPreferences.get().getBuildBatchPercent(), houseFacing);
-        AsyncBuildManager.startTask(player, level, origin, packName, constructionId, blockDataList, houseFacing, mode);
+        PrefabCustomAddon.LOGGER.info("[PLACE-ASYNC] 启动异步任务: {} blocks, batchPercent={}%, houseFacing={} silent={}",
+            blockDataList.size(), com.prefab.addon.config.PlayerPreferences.get().getBuildBatchPercent(), houseFacing, silent);
+        AsyncBuildManager.startTask(player, level, origin, packName, constructionId, blockDataList, houseFacing, mode, silent);
 
-        if (player != null) {
+        // silent 模式 (KubeJS 联动蓝图) 不发这条提示 — 玩家右键就放完, 跟原版一样安静
+        if (player != null && !silent) {
             player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
                 "§e⏳ 开始建造 " + constructionId + ": " + blockDataList.size() + " 块 (异步分批, "
                 + com.prefab.addon.config.PlayerPreferences.get().getBuildBatchPercent() + "%, 进度在聊天栏)")

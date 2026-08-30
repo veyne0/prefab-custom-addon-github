@@ -65,18 +65,21 @@ public final class BlockStateRotator {
             state = state.setValue(BlockStateProperties.AXIS, rotateAxis(a));
         }
 
-        // 4. 栅栏/墙的 4 个连接属性 (NORTH/EAST/SOUTH/WEST)
+        // 4. 栅栏/墙/玻璃板 的 4 个连接属性 (NORTH/EAST/SOUTH/WEST)
+        //    90° CCW 位置公式 (x,z)→(z,-x) 下, 一个原本连 N 方向的栅栏, 旋转后
+        //    它的"连接臂"应该指向 W 方向. 也就是:
+        //      N→W, E→N, S→E, W→S (跟 HORIZONTAL_FACING 同方向)
+        //    之前 v2.0.0 的版本这里写反了 (新 N = 老 W), 导致 90°/270° 旋转后
+        //    玻璃板/石墙/栅栏的连接方向错乱 (用户报的问题). 修成下面 4 行:
         if (state.hasProperty(BlockStateProperties.NORTH)) {
             boolean n = state.getValue(BlockStateProperties.NORTH);
             boolean e = state.getValue(BlockStateProperties.EAST);
             boolean s = state.getValue(BlockStateProperties.SOUTH);
             boolean w = state.getValue(BlockStateProperties.WEST);
-            // 90° CCW: (x,z)→(z,-x), 4 个方向跟着转
-            //   新 N = 老 W, 新 W = 老 S, 新 S = 老 E, 新 E = 老 N
-            state = state.setValue(BlockStateProperties.NORTH, w);
-            state = state.setValue(BlockStateProperties.WEST, s);
-            state = state.setValue(BlockStateProperties.SOUTH, e);
-            state = state.setValue(BlockStateProperties.EAST, n);
+            state = state.setValue(BlockStateProperties.NORTH, e);  // 新 N = 老 E
+            state = state.setValue(BlockStateProperties.EAST,  s);  // 新 E = 老 S
+            state = state.setValue(BlockStateProperties.SOUTH, w);  // 新 S = 老 W
+            state = state.setValue(BlockStateProperties.WEST,  n);  // 新 W = 老 N
         }
 
         // 5. 楼梯 STAIRS_SHAPE

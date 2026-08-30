@@ -1,0 +1,30 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "group": "Outsource Blueprint - Medieval House",
+  "pattern": [
+    "SDS",
+    "PTP",
+    "SBS"
+  ],
+  "key": {
+    "S": {
+      "tag": "c:compressed_stone"
+    },
+    "D": {
+      "item": "minecraft:oak_door"
+    },
+    "P": {
+      "item": "minecraft:oak_planks"
+    },
+    "T": {
+      "item": "minecraft:crafting_table"
+    },
+    "B": {
+      "item": "prefab:item_bundle_of_timber"
+    }
+  },
+  "result": {
+    "id": "prefab_custom_addon:outsource_blueprint_medieval_house",
+    "count": 1
+  }
+}

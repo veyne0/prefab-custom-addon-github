@@ -33,11 +33,52 @@ public class NetworkHandler {
                 BindConstructionPayload.STREAM_CODEC,
                 NetworkHandler::handleBind
         );
+        // ===== 外包建筑 ALT 建造: 客户端→服务端 (独立于普通 BuildCustomStructurePayload) =====
+        // 走的是 OutsourceBuildManager.placeStructure, 跟 OutsourceBuildingLoader 配合,
+        // 不查 ExtensionPackManager, 蓝图消耗按 buildingId 匹配 OutsourceBlueprintItem.
+        registrar.playToServer(
+                BuildOutsourceStructurePayload.TYPE,
+                BuildOutsourceStructurePayload.STREAM_CODEC,
+                NetworkHandler::handleBuildOutsource
+        );
         // 自定义推土机: 客户端 → 服务端执行清除
         registrar.playToServer(
                 ExecuteCustomBulldozerPayload.TYPE,
                 ExecuteCustomBulldozerPayload.STREAM_CODEC,
                 ExecuteCustomBulldozerPayload::handle
+        );
+
+        // 迷你建筑转换器: 客户端 → 服务端执行 capture (避免 ClientLevel 缓存不全)
+        registrar.playToServer(
+            MiniBuildingCapturePayload.TYPE,
+            MiniBuildingCapturePayload.STREAM_CODEC,
+            MiniBuildingCapturePayload::handle
+        );
+
+        // 迷你建筑完整 NBT 同步: 客户端 BE 只有 ref, 主动向服务端请求,
+        // 服务端从外部文件读出来走 byte[] 推回 (绕过 2MB NbtAccounter).
+        registrar.playToServer(
+            RequestMiniBuildingDataPayload.TYPE,
+            RequestMiniBuildingDataPayload.STREAM_CODEC,
+            RequestMiniBuildingDataPayload::handle
+        );
+        registrar.playToClient(
+            MiniBuildingFullDataPayload.TYPE,
+            MiniBuildingFullDataPayload.STREAM_CODEC,
+            MiniBuildingFullDataPayload::handle
+        );
+
+        // 迷你建筑物品栏渲染: 物品只存引用, 客户端按 ref_id 请求完整 NBT,
+        // 服务端从外部文件读出后走 byte[] 推回 (同样绕过 2MB NbtAccounter).
+        registrar.playToServer(
+            MiniBuildingItemDataRequestPayload.TYPE,
+            MiniBuildingItemDataRequestPayload.STREAM_CODEC,
+            MiniBuildingItemDataRequestPayload::handle
+        );
+        registrar.playToClient(
+            MiniBuildingItemDataResponsePayload.TYPE,
+            MiniBuildingItemDataResponsePayload.STREAM_CODEC,
+            MiniBuildingItemDataResponsePayload::handle
         );
 
         // ===== 客户端→服务端: 全局建造速度 (OP 校验) =====
@@ -150,6 +191,23 @@ public class NetworkHandler {
                 BatchBlocksPlacedPayload.STREAM_CODEC,
                 (payload, ctx) -> com.prefab.addon.client.BuildAnimationRenderer.onBatchBlocksPlaced(payload)
         );
+
+        // ===== 操作手杖: 客户端→服务端扫描, 服务端→客户端结果, 客户端→服务端建造 =====
+        registrar.playToServer(
+                OperationWandScanPayload.TYPE,
+                OperationWandScanPayload.STREAM_CODEC,
+                OperationWandScanPayload::handle
+        );
+        registrar.playToClient(
+                OperationWandScanResultPayload.TYPE,
+                OperationWandScanResultPayload.STREAM_CODEC,
+                OperationWandScanResultPayload::handle
+        );
+        registrar.playToServer(
+                OperationWandBuildPayload.TYPE,
+                OperationWandBuildPayload.STREAM_CODEC,
+                OperationWandBuildPayload::handle
+        );
     }
 
     /**
@@ -246,8 +304,8 @@ public class NetworkHandler {
         context.player().getServer().execute(() -> {
             ServerPlayer player = (ServerPlayer) context.player();
             net.minecraft.server.level.ServerLevel level = (net.minecraft.server.level.ServerLevel) player.level();
-            PrefabCustomAddon.LOGGER.info("Building custom structure '{}' from pack '{}' at {}",
-                    payload.constructionId(), payload.packName(), payload.pos());
+            PrefabCustomAddon.LOGGER.info("Building custom structure '{}' from pack '{}' at {} (silent={})",
+                    payload.constructionId(), payload.packName(), payload.pos(), payload.silent());
             try {
                 // 关键: 服务端 build 路径必须强制从磁盘重扫, 防止管理员中途删除 zip 后
                 //   内存里 packs 列表还是旧的 → 看似还能 build, 实际 build 用了"已删除"的数据.
@@ -258,7 +316,8 @@ public class NetworkHandler {
                 // 蓝图消耗在异步任务 onCompleted() 里完成 (失败/取消时**不消耗**).
                 boolean ok = com.prefab.addon.structure.CustomStructureBuilder.getInstance()
                         .placeStructure(player, level, payload.pos(), payload.packName(),
-                                payload.constructionId(), payload.houseFacing(), payload.animationMode());
+                                payload.constructionId(), payload.houseFacing(), payload.animationMode(),
+                                payload.silent());
                 if (!ok) {
                     PrefabCustomAddon.LOGGER.warn("[BUILD-DEBUG] 启动异步建造任务失败, 蓝图不消耗: pack={}/{}",
                         payload.packName(), payload.constructionId());
@@ -297,6 +356,48 @@ public class NetworkHandler {
     }
 
     /**
+     * 服务端处理 {@link BuildOutsourceStructurePayload}.
+     *
+     * <p>跟 {@link #handleBuild} 走完全独立的路径:
+     * <ul>
+     *   <li>不查 ExtensionPackManager (外包建筑不在那里)</li>
+     *   <li>不调 CustomStructureBuilder.placeStructure (它会去 findConstruction, 找不到就退出)</li>
+     *   <li>直接调 OutsourceBuildManager.placeStructure → 强制重扫 OutsourceBuildingLoader
+     *       → 解析 NBT → AsyncBuildManager.startTask(packName="outsource")</li>
+     *   <li>任务完成时 AsyncBuildManager.consumeBlueprint 检测 packName=="outsource" →
+     *       OutsourceBuildManager.consumeOutsourceBlueprint 按 buildingId 匹配消耗</li>
+     * </ul>
+     */
+    private static void handleBuildOutsource(BuildOutsourceStructurePayload payload, IPayloadContext context) {
+        context.player().getServer().execute(() -> {
+            ServerPlayer player = (ServerPlayer) context.player();
+            net.minecraft.server.level.ServerLevel level = (net.minecraft.server.level.ServerLevel) player.level();
+            PrefabCustomAddon.LOGGER.info(
+                "[OUTSOURCE-BUILD] Server received build request: buildingId='{}' style={} pos={} facing={} mode={}",
+                payload.buildingId(), payload.styleIndex(), payload.pos(),
+                payload.houseFacing(), payload.animationMode());
+            try {
+                boolean ok = com.prefab.addon.structure.OutsourceBuildManager.placeStructure(
+                    player, level, payload.buildingId(), payload.styleIndex(),
+                    payload.pos(), payload.houseFacing(), payload.animationMode());
+                if (!ok) {
+                    PrefabCustomAddon.LOGGER.warn(
+                        "[OUTSOURCE-BUILD] 启动失败: buildingId={} style={}, 蓝图不消耗",
+                        payload.buildingId(), payload.styleIndex());
+                }
+            } catch (Exception e) {
+                PrefabCustomAddon.LOGGER.error("[OUTSOURCE-BUILD] Build failed for {}",
+                    payload.buildingId(), e);
+                if (player != null) {
+                    player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
+                            "✗ 外包建筑建造失败: " + e.getMessage())
+                            .withStyle(net.minecraft.ChatFormatting.RED));
+                }
+            }
+        });
+    }
+
+    /**
      * 服务端处理：找到玩家背包里的 Custom Blueprint，写入 packName/constructionId，
      * 并把变化广播到客户端。
      *
@@ -312,22 +413,61 @@ public class NetworkHandler {
             Inventory inv = player.getInventory();
             int boundSlot = -1;
             int scanned = 0;
+            // === 第 1 轮: 扫"已经匹配 payload 的 stack", 命中就直接跳过, 不写 NBT.
+            // 这是修 KubeJS 联动蓝图 + 自定义蓝图共存的关键: 玩家用 KubeJS 蓝图右键预览
+            // → ALT 建造时, KubeJS 蓝图自己的 NBT (packName/constructionId) 已经跟 payload
+            // 完全一致, 命中后 no-op. **不会**像之前那样把 KubeJS 的 packName/constructionId
+            // 写到 slot 3 的自定义蓝图 NBT 里, 避免后续 consumeBlueprint 严格匹配时找到
+            // slot 3 (已被伪装成 KubeJS 蓝图) 错误消耗.
             for (int i = 0; i < inv.getContainerSize(); i++) {
                 ItemStack stack = inv.getItem(i);
                 if (stack.isEmpty()) continue;
                 scanned++;
-                if (stack.getItem() instanceof CustomBlueprintItem) {
-                    // 服务端也校验: 已锁定的蓝图不允许重新绑
-                    if (CustomBlueprintItem.isLocked(stack)) {
+                if (!com.prefab.addon.structure.AsyncBuildManager.isPlayerBlueprint(stack)) continue;
+                if (isLockedForBind(stack)) continue;
+                String curPack = com.prefab.addon.structure.AsyncBuildManager.readBoundPackName(stack);
+                String curCid  = com.prefab.addon.structure.AsyncBuildManager.readBoundConstructionId(stack);
+                if (payload.packName().equals(curPack) && payload.constructionId().equals(curCid)) {
+                    boundSlot = i;
+                    PrefabCustomAddon.LOGGER.info(
+                        "[BIND-DEBUG] Server: blueprint in slot {} already bound to {}/{}, skip write (no-op)",
+                        i, curPack, curCid);
+                    break;
+                }
+            }
+            if (boundSlot == -1) {
+                // === 第 2 轮: 没找到已绑定的, 找第一个未锁定的蓝图, 写 NBT ===
+                // 这覆盖了"玩家在 GUI 里用 CustomBlueprintItem 选建筑后还没正式 bind 过"的
+                // 场景, 也覆盖"老 CustomBlueprintItem 之前没 NBT"的情况.
+                for (int i = 0; i < inv.getContainerSize(); i++) {
+                    ItemStack stack = inv.getItem(i);
+                    if (stack.isEmpty()) continue;
+                    scanned++;
+                    // 兼容 mod 原生 CustomBlueprintItem + KubeJS 注册的带 tag 物品.
+                    if (!com.prefab.addon.structure.AsyncBuildManager.isPlayerBlueprint(stack)) continue;
+                    // 已锁定的蓝图不允许重新绑 (mod 原生走 setLocked 字段; KubeJS 物品也用同一字段)
+                    if (isLockedForBind(stack)) {
                         PrefabCustomAddon.LOGGER.warn(
                             "[BIND-DEBUG] Server: blueprint in slot {} is locked, refuse re-bind", i);
                         break;
                     }
-                    CustomBlueprintItem.bindConstruction(stack,
-                        payload.packName(), payload.constructionId(), payload.locked());
+                    // 写 NBT (用 setLocked 接口, mod 原生会同时更新显示名; KubeJS 物品
+                    //   不调 setLocked, 直接写 CUSTOM_DATA 即可)
+                    if (stack.getItem() instanceof CustomBlueprintItem) {
+                        CustomBlueprintItem.bindConstruction(stack,
+                            payload.packName(), payload.constructionId(), payload.locked());
+                    } else {
+                        // KubeJS 物品: 直接写 CUSTOM_DATA, 跟 CustomBlueprintItem 字段一致
+                        net.minecraft.nbt.CompoundTag tag = new net.minecraft.nbt.CompoundTag();
+                        tag.putString("packName", payload.packName());
+                        tag.putString("constructionId", payload.constructionId());
+                        tag.putBoolean("locked", payload.locked());
+                        stack.set(net.minecraft.core.component.DataComponents.CUSTOM_DATA,
+                            net.minecraft.world.item.component.CustomData.of(tag));
+                    }
                     boundSlot = i;
-                    PrefabCustomAddon.LOGGER.info("[BIND-DEBUG] Server-side bound blueprint in slot {} (count={}, locked={})",
-                            i, stack.getCount(), payload.locked());
+                    PrefabCustomAddon.LOGGER.info("[BIND-DEBUG] Server-side bound blueprint in slot {} (item={}, count={}, locked={})",
+                            i, stack.getItem(), stack.getCount(), payload.locked());
                     break;  // 只绑第一个
                 }
             }
@@ -344,5 +484,19 @@ public class NetworkHandler {
                 PrefabCustomAddon.LOGGER.info("[BIND-DEBUG] Inventory dirty flag set and broadcastChanges called");
             }
         });
+    }
+
+    /**
+     * 蓝图是否锁定 (兼容 mod 原生 + KubeJS). KubeJS 蓝图只有 {@code locked=true} 显式写
+     * 进去才算锁定, 跟 mod 原生 {@code CustomBlueprintItem.isLocked} 语义一致.
+     */
+    private static boolean isLockedForBind(ItemStack stack) {
+        if (stack.getItem() instanceof CustomBlueprintItem) {
+            return CustomBlueprintItem.isLocked(stack);
+        }
+        net.minecraft.world.item.component.CustomData data =
+            stack.get(net.minecraft.core.component.DataComponents.CUSTOM_DATA);
+        if (data == null) return false;
+        return data.copyTag().getBoolean("locked");
     }
 }

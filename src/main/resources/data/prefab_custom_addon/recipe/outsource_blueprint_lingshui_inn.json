@@ -1,0 +1,30 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "group": "Outsource Blueprint - Lingshui Inn",
+  "pattern": [
+    "QPQ",
+    "STS",
+    "QLQ"
+  ],
+  "key": {
+    "Q": {
+      "tag": "c:compressed_quartz_crete"
+    },
+    "P": {
+      "item": "minecraft:prismarine"
+    },
+    "S": {
+      "item": "minecraft:prismarine_bricks"
+    },
+    "T": {
+      "item": "minecraft:sea_lantern"
+    },
+    "L": {
+      "tag": "c:double_compressed_lights"
+    }
+  },
+  "result": {
+    "id": "prefab_custom_addon:outsource_blueprint_lingshui_inn",
+    "count": 1
+  }
+}

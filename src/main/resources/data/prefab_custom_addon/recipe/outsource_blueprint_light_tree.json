@@ -1,0 +1,30 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "group": "Outsource Blueprint - Light Tree",
+  "pattern": [
+    "LGL",
+    "STS",
+    "LDL"
+  ],
+  "key": {
+    "L": {
+      "tag": "c:double_compressed_lights"
+    },
+    "G": {
+      "item": "minecraft:glowstone"
+    },
+    "S": {
+      "tag": "c:compressed_glow_stone"
+    },
+    "T": {
+      "item": "minecraft:oak_sapling"
+    },
+    "D": {
+      "item": "minecraft:shroomlight"
+    }
+  },
+  "result": {
+    "id": "prefab_custom_addon:outsource_blueprint_light_tree",
+    "count": 1
+  }
+}
