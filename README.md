@@ -14,7 +14,7 @@ Prefab 模组的扩展。
 
 ## 运行环境
 
-- Minecraft 1.21.1（NeoForge）或 1.20.1（Forge）
+- Minecraft 1.21.1（NeoForge）
 - 需要安装 Prefab 原版模组
 - 需要安装 LDLib2
 
