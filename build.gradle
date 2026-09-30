@@ -1,0 +1,150 @@
+plugins {
+    id 'eclipse'
+    id 'idea'
+    id 'maven-publish'
+    id 'net.minecraftforge.gradle' version '[6.0,6.2)'
+}
+
+version = mod_version
+group = mod_group_id
+
+base {
+    archivesName = mod_id
+}
+
+// MC 1.20.1 官方要求 Java 17 (ForgeGradle 6 也要求 JDK 17+ 跑构建)
+java.toolchain.languageVersion = JavaLanguageVersion.of(17)
+
+println "Java: ${System.getProperty 'java.version'}, JVM: ${System.getProperty('java.vm.version')} (${System.getProperty 'java.vendor'}), Arch: ${System.getProperty 'os.arch'}"
+
+minecraft {
+    mappings channel: mapping_channel, version: mapping_version
+
+    copyIdeResources = true
+
+    runs {
+        configureEach {
+            workingDirectory project.file('run')
+
+            property 'forge.logging.markers', 'REGISTRIES'
+            property 'forge.logging.console.level', 'debug'
+
+            mods {
+                "${mod_id}" {
+                    source sourceSets.main
+                }
+            }
+        }
+
+        client {
+            property 'forge.enabledGameTestNamespaces', mod_id
+        }
+
+        server {
+            property 'forge.enabledGameTestNamespaces', mod_id
+            args '--nogui'
+        }
+    }
+}
+
+sourceSets.main.resources { srcDir 'src/generated/resources' }
+
+repositories {
+    // 本地 jar: prefab-forge-1.20.1.jar / ldlib-forge-1.20.1.jar
+    flatDir {
+        dirs 'libs'
+    }
+    // CurseMaven: 解析 curse.maven:* 依赖 (可选联动 mod)
+    maven { url = 'https://www.cursemaven.com' }
+    maven { url = 'https://maven.aliyun.com/repository/public' }
+    maven { url = 'https://maven.aliyun.com/repository/gradle-plugin' }
+    mavenCentral()
+}
+
+dependencies {
+    minecraft "net.minecraftforge:forge:${minecraft_version}-${forge_version}"
+
+    // === Prefab 主模组 (1.20.1 Forge, com.wuest.prefab) ===
+    // compileOnly: 编译期复用 GuiBase/BuildBlock/Structure 等类;
+    // runtimeOnly: runClient/runServer 时把 prefab 加载进开发环境.
+    // 发布时 prefab 是玩家自己装的, 不打进我们的 jar.
+    compileOnly fg.deobf(files('libs/prefab-forge-1.20.1.jar'))
+    runtimeOnly fg.deobf(files('libs/prefab-forge-1.20.1.jar'))
+
+    // === LDLib2 (非官方 1.20.1 Forge 移植, com.lowdragmc.lowdraglib2, v2.2.27) ===
+    // 真依赖: 15 个 GUI 文件用的 Widget UI (和 1.21.1 NeoForge 版同一套 API).
+    // official mappings 编译的 mod jar, 不需要 fg.deobf, 直接上 classpath.
+    // 发布时通过 jar-in-jar 内嵌: src/main/resources/META-INF/jarjar/ + metadata.json,
+    // 玩家无需另装 LDLib2 (但其强制依赖 KotlinForForge 仍需玩家自装).
+    implementation files('libs/ldlib2-forge-1.20.1-2.2.27+forge.1.20.1-all.jar')
+
+    // === 可选联动 (全 compileOnly, 运行时 Class.forName 反射探测) ===
+    // Xaero's World Map / Minimap: XaeroWaypointBridge 纯反射, 不需要编译期依赖.
+    // KubeJS: KubeJSIntegration 纯反射 + ModList 探测, 不需要编译期依赖.
+    // Jade: BuildingJadePlugin 需要 jade API, 1.20.1 Forge 的 cursemaven file id 待定, 暂未移植.
+}
+
+// 关键: 强制 UTF-8 (从 NeoForge 版移植的教训: Windows 默认 GBK 会把 toml 里的中文
+// 破坏成乱码, 导致 mods.toml 解析失败 → mod 加载中断). ${mod_version} 也在这里替换.
+tasks.named('processResources', ProcessResources).configure {
+    def modVersion = project.findProperty('mod_version') ?: 'unknown'
+    var replaceProperties = [
+            minecraft_version: minecraft_version, minecraft_version_range: minecraft_version_range,
+            forge_version: forge_version, forge_version_range: forge_version_range,
+            loader_version_range: loader_version_range,
+            mod_id: mod_id, mod_name: mod_name, mod_license: mod_license, mod_version: modVersion,
+            mod_authors: mod_authors, mod_description: mod_description,
+    ]
+    inputs.properties replaceProperties
+
+    filteringCharset = 'UTF-8'
+    filesMatching(['META-INF/mods.toml', 'pack.mcmeta']) {
+        filteringCharset = 'UTF-8'
+        expand replaceProperties + [project: project]
+    }
+    filesMatching('**/*.json') {
+        filteringCharset = 'UTF-8'
+    }
+    filesMatching('**/*.lang') {
+        filteringCharset = 'UTF-8'
+    }
+    filesMatching('**/*.properties') {
+        filteringCharset = 'UTF-8'
+    }
+}
+
+tasks.named('jar', Jar).configure {
+    manifest {
+        attributes([
+                'Specification-Title'     : mod_id,
+                'Specification-Vendor'    : mod_authors,
+                'Specification-Version'   : '1',
+                'Implementation-Title'    : project.name,
+                'Implementation-Version'  : project.jar.archiveVersion,
+                'Implementation-Vendor'   : mod_authors,
+                'Implementation-Timestamp': new Date().format("yyyy-MM-dd'T'HH:mm:ssZ")
+        ])
+    }
+
+    // reobf: 把开发环境 Mojang 名混淆回 SRG 名, 产出可发布的 jar
+    finalizedBy 'reobfJar'
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    // 一次性看全量错误 (默认 100 截断)
+    options.compilerArgs << '-Xmaxerrs' << '8000'
+}
+
+publishing {
+    publications {
+        register('mavenJava', MavenPublication) {
+            artifact jar
+        }
+    }
+    repositories {
+        maven {
+            url "file://${project.projectDir}/mcmodsrepo"
+        }
+    }
+}

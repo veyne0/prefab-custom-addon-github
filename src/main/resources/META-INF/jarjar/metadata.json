@@ -1,0 +1,16 @@
+{
+  "jars": [
+    {
+      "identifier": {
+        "group": "com.lowdragmc.ldlib2",
+        "artifact": "ldlib2-forge-1.20.1"
+      },
+      "version": {
+        "range": "[2.2.27,2.3)",
+        "artifactVersion": "2.2.27+forge.1.20.1"
+      },
+      "path": "META-INF/jarjar/ldlib2-forge-1.20.1-2.2.27+forge.1.20.1-all.jar",
+      "isObfuscated": false
+    }
+  ]
+}

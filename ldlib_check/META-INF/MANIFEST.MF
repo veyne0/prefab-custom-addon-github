@@ -1,0 +1,3 @@
+Manifest-Version: 1.0
+MixinConfigs: ldlib-common.mixins.json,ldlib.mixins.json
+

@@ -1,0 +1,50 @@
+modLoader="javafml"
+loaderVersion="${loader_version_range}"
+license="${mod_license}"
+showAsResourcePack=false
+
+[[mods]]
+modId="${mod_id}"
+version="${mod_version}"
+displayName="${mod_name}"
+authors="${mod_authors}"
+description='''${mod_description}'''
+
+# 依赖 Prefab 主模组 (Forge 1.20.1 版, com.wuest.prefab, v1.10.x)
+[[dependencies.${mod_id}]]
+    modId="prefab"
+    mandatory=true
+    versionRange="[1.10,)"
+    ordering="NONE"
+    side="BOTH"
+
+# 依赖 LDLib2 (非官方 1.20.1 Forge 移植版, v2.2.27)
+# 已通过 jar-in-jar 内嵌在本模组 jar 里 (META-INF/jarjar/), 玩家无需另装.
+# LDLib2 自身强制依赖 KotlinForForge (>= 4.11.0), 玩家需要另装 KFF.
+[[dependencies.${mod_id}]]
+    modId="ldlib2"
+    mandatory=true
+    versionRange="[2.2.27,2.3)"
+    ordering="NONE"
+    side="BOTH"
+
+# Minecraft / Forge 版本范围
+[[dependencies.${mod_id}]]
+    modId="minecraft"
+    mandatory=true
+    versionRange="${minecraft_version_range}"
+    ordering="NONE"
+    side="BOTH"
+
+[[dependencies.${mod_id}]]
+    modId="forge"
+    mandatory=true
+    versionRange="${forge_version_range}"
+    ordering="NONE"
+    side="BOTH"
+
+# === 可选联动说明 (与 NeoForge 版策略一致) ===
+# Jade / Xaero / KubeJS 都不在这里声明依赖:
+#   - XaeroWaypointBridge / KubeJSIntegration 全靠 Class.forName 反射探测, 没装就静默跳过
+#   - 即使 mandatory=false, Forge 仍会打印红字 "Mod requires xxx", 误导玩家
+#   - build.gradle 里的 compileOnly 只为编译期 import, 跟运行时探测无关
