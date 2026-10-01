@@ -159,7 +159,7 @@ public class RegionSelectorEventHandler {
         if (mc.player == null) return;
         if (mc.screen != null) return;  // 开了 GUI 时不处理, 避免冲突
 
-        // ---- 全局热重载快捷键: CTRL+R 手动重新扫描拓展包 ----
+        // ---- 全局热重载快捷键: CTRL+R 手动重新扫描建筑 ----
         // 每帧检查, 加节流 (避免按住 R 时每帧 reload)
         long window = mc.getWindow().getWindow();
         boolean ctrlDown = com.mojang.blaze3d.platform.InputConstants.isKeyDown(window, GLFW.GLFW_KEY_LEFT_CONTROL)
@@ -170,7 +170,7 @@ public class RegionSelectorEventHandler {
             long nowNs = System.nanoTime();
             if (nowNs - lastManualReloadNs > 1_500_000_000L) {  // 1.5s 节流
                 lastManualReloadNs = nowNs;
-                com.prefab.addon.PrefabCustomAddon.LOGGER.info("[HOT-RELOAD] 玩家按 CTRL+R, 手动重新扫描拓展包");
+                com.prefab.addon.PrefabCustomAddon.LOGGER.info("[HOT-RELOAD] 玩家按 CTRL+R, 手动重新扫描建筑");
                 com.prefab.addon.extension.ExtensionPackManager.getInstance().reloadClient();
                 if (mc.player != null) {
                     mc.player.displayClientMessage(
@@ -236,7 +236,7 @@ public class RegionSelectorEventHandler {
             long nowNs = System.nanoTime();
             if (nowNs - lastManualReloadNs > 1_500_000_000L) {  // 1.5s 节流
                 lastManualReloadNs = nowNs;
-                com.prefab.addon.PrefabCustomAddon.LOGGER.info("[HOT-RELOAD] 玩家按 CTRL+R, 手动重新扫描拓展包");
+                com.prefab.addon.PrefabCustomAddon.LOGGER.info("[HOT-RELOAD] 玩家按 CTRL+R, 手动重新扫描建筑");
                 com.prefab.addon.extension.ExtensionPackManager.getInstance().reloadClient();
                 if (mc.player != null) {
                     mc.player.displayClientMessage(

@@ -101,9 +101,32 @@ public class StructurePreviewHud {
             // 修复: 之前 visibleLines=2 但 lines 只有 1 元素, 第 132 行 lines[1] 越界崩溃
             visibleLines = 1;
         } else {
-            lines = new String[] {
-                com.prefab.addon.PrefabCustomAddon.tr("hud.preview_controls")
-            };
+            // 编辑原理图模式: 提示改成 edit-specific 快捷键 (键名动态读当前绑定)
+            if (EditModeController.isEditing()) {
+                lines = new String[] {
+                    com.prefab.addon.PrefabCustomAddon.tr("hud.edit_controls",
+                        PackBrowserKeyHandler.keyName(PackBrowserKeyHandler.EDIT_DELETE, "左键"),
+                        PackBrowserKeyHandler.keyName(PackBrowserKeyHandler.EDIT_PLACE, "右键"),
+                        PackBrowserKeyHandler.keyName(PackBrowserKeyHandler.EDIT_UNDO, "CTRL"),
+                        PackBrowserKeyHandler.keyName(PackBrowserKeyHandler.EDIT_SAVE, "ALT"),
+                        PackBrowserKeyHandler.keyName(PackBrowserKeyHandler.EDIT_EXIT, "ESC"))
+                };
+            } else {
+                // 提示文本里的键名全部动态读当前绑定 (玩家改键后 HUD 自动跟着变)
+                lines = new String[] {
+                    com.prefab.addon.PrefabCustomAddon.tr("hud.preview_controls",
+                        PackBrowserKeyHandler.keyName(PackBrowserKeyHandler.PREVIEW_FORWARD, "↑")
+                            + PackBrowserKeyHandler.keyName(PackBrowserKeyHandler.PREVIEW_BACK, "↓")
+                            + PackBrowserKeyHandler.keyName(PackBrowserKeyHandler.PREVIEW_LEFT, "←")
+                            + PackBrowserKeyHandler.keyName(PackBrowserKeyHandler.PREVIEW_RIGHT, "→"),
+                        PackBrowserKeyHandler.keyName(PackBrowserKeyHandler.PREVIEW_RAISE, "+")
+                            + "/" + PackBrowserKeyHandler.keyName(PackBrowserKeyHandler.PREVIEW_LOWER, "-"),
+                        PackBrowserKeyHandler.keyName(PackBrowserKeyHandler.PREVIEW_FAST_MOVE, "Shift"),
+                        PackBrowserKeyHandler.keyName(PackBrowserKeyHandler.PREVIEW_ROTATE, "CTRL"),
+                        PackBrowserKeyHandler.buildKeyName(),
+                        PackBrowserKeyHandler.keyName(PackBrowserKeyHandler.CANCEL_PREVIEW, "右键"))
+                };
+            }
             visibleLines = 1;
         }
 

@@ -1,29 +1,44 @@
 package com.prefab.addon.client.gui;
 
 import com.prefab.addon.PrefabCustomAddon;
+import com.prefab.addon.client.EditModeController;
 import com.prefab.addon.config.BuildAnimationMode;
 import com.prefab.addon.config.CategoryManager;
 import com.prefab.addon.config.PlayerPreferences;
 import com.prefab.addon.extension.ConstructionInfo;
 import com.prefab.addon.extension.LocalBuilding;
 import com.prefab.addon.extension.LocalBuildingScanner;
-import com.prefab.addon.work.FolderOpener;
+import com.prefab.addon.structure.CustomStructureBuilder;
 import com.prefab.addon.work.PackCreator;
 import com.prefab.gui.GuiBase;
 import com.prefab.gui.controls.ExtendedButton;
 import com.prefab.addon.integration.KubeJSIntegration;
+import com.prefab.structures.base.BuildBlock;
+import com.prefab.structures.base.Structure;
+import com.prefab.structures.config.StructureConfiguration;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.AbstractButton;
 import net.minecraft.client.gui.components.EditBox;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.ListTag;
+import net.minecraft.nbt.NbtAccounter;
+import net.minecraft.nbt.NbtIo;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.state.BlockState;
 
 import java.awt.Desktop;
 import java.awt.FileDialog;
+import java.io.ByteArrayInputStream;
+import java.io.DataInputStream;
 import java.io.File;
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -86,7 +101,7 @@ public class GuiExtensionPackEditor extends GuiBase {
     private int grayBoxX, grayBoxY;
 
     // === "创建建筑" tab 的 EditBox 和按钮 ===
-    private EditBox edId, edName, edAuthor, edDeps, edDesc, edSize;
+    private EditBox edName, edSize, edDeps;
     /** 只读 EditBox: 显示当前已选的 NBT 建筑文件路径 / 选区信息. */
     private EditBox edNbtFile;
     /** 只读 EditBox: 显示当前已选的图标文件名 (玩家按"选图标"按钮选完后回填). */
@@ -137,8 +152,6 @@ public class GuiExtensionPackEditor extends GuiBase {
     };
     /** 建造动画 mode 切换按钮的 [x, y, w, h]. 点击循环切换 OFF→FALL→RAIN→THROW→OFF. */
     private int[] settingsModeCycleRect = new int[]{0, 0, 0, 0};
-    private int[] settingsOpenFolderRect = new int[]{0, 0, 0, 0};
-    private int[] settingsSyncServerRect = new int[]{0, 0, 0, 0};
     private int[] settingsResetRect = new int[]{0, 0, 0, 0};
     private int[] settingsDoneRect = new int[]{0, 0, 0, 0};
     /** 设置 tab 当前页 (1=挑战+性能/动画, 2=快捷操作). */
@@ -432,23 +445,13 @@ public class GuiExtensionPackEditor extends GuiBase {
         int fieldW = rw - labelW - 8;
         int fieldH = 16;
         int rowH = 20;
-        int y = ry + 18;  // 跳过标题
+        int y = ry + 30;  // 标题 (4) + 提示行 (12) + 间距
 
-        edId     = makeField(fieldX, y, fieldW, fieldH, () -> com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldIdValue,     s -> com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldIdValue = s); y += rowH;
-        edName   = makeField(fieldX, y, fieldW, fieldH, () -> com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldNameValue,   s -> com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldNameValue = s); y += rowH;
-        edAuthor = makeField(fieldX, y, fieldW, fieldH, () -> com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldAuthorValue, s -> com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldAuthorValue = s); y += rowH;
-        edDeps   = makeField(fieldX, y, fieldW, fieldH, () -> com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldDepsValue,   s -> com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldDepsValue = s); y += rowH;
-        // 尺寸 (只读, 选完 NBT/选区后自动回填)
-        edSize   = new EditBox(this.font, fieldX, y, fieldW, fieldH, Component.literal(""));
-        edSize.setMaxLength(64);
-        edSize.setValue(safe(com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldSizeValue));
-        edSize.setEditable(false);
-        this.addRenderableWidget(edSize);
-        y += rowH;
-        // 描述 (高度 24, 给底部状态条 / 按钮让出空间)
-        edDesc   = makeField(fieldX, y, fieldW, 24,       () -> com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldDescValue,   s -> com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldDescValue = s);
-        edDesc.setMaxLength(256);
-        y += 28;
+        // 字段与建筑终端"创建建筑"对齐: 可编辑只有建筑名 (标识符自动用建筑名生成);
+        // 尺寸/依赖为只读展示 (选完 NBT/选区后由 GuiCreateBuildingInfo 自动回填), 作者/描述不再展示
+        edName = makeField(fieldX, y, fieldW, fieldH, () -> com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldNameValue, s -> com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldNameValue = s); y += rowH;
+        edSize = makeReadonlyField(fieldX, y, fieldW, fieldH); y += rowH;
+        edDeps = makeReadonlyField(fieldX, y, fieldW, fieldH); y += rowH;
 
         // === 分类行: 只读显示 + ‹ › + 按钮 ===
         // 跟 NBT / 图标行 同样的高度 (12px), 总宽 = fieldW (跟其它 EditBox 对齐)
@@ -644,9 +647,12 @@ public class GuiExtensionPackEditor extends GuiBase {
                 edNbtFile.setValue("已选 NBT: " + display);
             }
         }
-        // 同步尺寸 (选完 NBT/选区后由 GuiCreateBuildingInfo 写入 fieldSizeValue)
+        // 同步尺寸/依赖 (选完 NBT/选区后由 GuiCreateBuildingInfo 写入静态字段)
         if (edSize != null) {
             edSize.setValue(safe(com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldSizeValue));
+        }
+        if (edDeps != null) {
+            edDeps.setValue(safe(com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldDepsValue));
         }
         if (edIconFile != null) {
             String iconPath = com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldIconPath;
@@ -675,6 +681,15 @@ public class GuiExtensionPackEditor extends GuiBase {
         return box;
     }
 
+    /** 创建建筑只读字段 (尺寸/依赖): 选完 NBT/选区后由 tick 同步回填. */
+    private EditBox makeReadonlyField(int x, int y, int w, int h) {
+        EditBox box = new EditBox(this.font, x, y, w, h, Component.literal(""));
+        box.setMaxLength(128);
+        box.setEditable(false);
+        this.addRenderableWidget(box);
+        return box;
+    }
+
     private ExtendedButton makeButton(int x, int y, int w, int h, String label, Runnable onClick) {
         ExtendedButton btn = new ExtendedButton(x, y, w, h, Component.literal(label), b -> onClick.run(), label);
         this.addRenderableWidget(btn);
@@ -683,12 +698,9 @@ public class GuiExtensionPackEditor extends GuiBase {
 
     /** 从 GuiCreateBuildingInfo 同步字段 → EditBox. */
     private void syncFromCb() {
-        if (edId != null)     edId.setValue(safe(com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldIdValue));
         if (edName != null)   edName.setValue(safe(com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldNameValue));
-        if (edAuthor != null) edAuthor.setValue(safe(com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldAuthorValue));
-        if (edDeps != null)   edDeps.setValue(safe(com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldDepsValue));
         if (edSize != null)   edSize.setValue(safe(com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldSizeValue));
-        if (edDesc != null)   edDesc.setValue(safe(com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldDescValue));
+        if (edDeps != null)   edDeps.setValue(safe(com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldDepsValue));
         refreshCategoryDisplay();
     }
 
@@ -724,12 +736,9 @@ public class GuiExtensionPackEditor extends GuiBase {
     private static String safe(String s) { return s == null ? "" : s; }
 
     private void setCreateTabVisible(boolean v) {
-        if (edId != null)     edId.setVisible(v);
         if (edName != null)   edName.setVisible(v);
-        if (edAuthor != null) edAuthor.setVisible(v);
-        if (edDeps != null)   edDeps.setVisible(v);
         if (edSize != null)   edSize.setVisible(v);
-        if (edDesc != null)   edDesc.setVisible(v);
+        if (edDeps != null)   edDeps.setVisible(v);
         if (edCategory != null) edCategory.setVisible(v);
         if (btnCatPrev != null) btnCatPrev.visible = v;
         if (btnCatNext != null) btnCatNext.visible = v;
@@ -1121,15 +1130,17 @@ public class GuiExtensionPackEditor extends GuiBase {
 
         // 标题
         guiGraphics.drawString(this.font, "§l创建建筑", rx + 4, ry + 4, TITLE_COLOR, false);
+        // 提示行: 引导去建筑终端创建
+        guiGraphics.drawString(this.font, "§6" + PrefabCustomAddon.tr("gui.create_building.hint_terminal"),
+            rx + 4, ry + 16, TITLE_COLOR, false);
 
         // 字段标签 (在 EditBox 左侧, EditBox 已经由 super.render 画, 这里只画标签)
-        int labelW = 40;
-        int rowH = 20;
-        int y = ry + 22;  // 跳过标题 (与字段 y=ry+18 对齐)
-        String[] labels = {"标识符:", "建筑名:", "作者:", "依赖:", "尺寸:", "描述:"};
+        // 布局与 initCreateTabWidgets 对齐: 字段从 ry+30 开始 (建筑名/尺寸/依赖 三行 rowH=20)
+        int y = ry + 30;
+        String[] labels = {"建筑名:", "尺寸:", "依赖:"};
+        int[] labelYs = {y + 4, y + 20 + 4, y + 40 + 4};
         for (int i = 0; i < labels.length; i++) {
-            int ly = y + i * rowH + 4;
-            guiGraphics.drawString(this.font, labels[i], rx + 4, ly, LABEL_COLOR, false);
+            guiGraphics.drawString(this.font, labels[i], rx + 4, labelYs[i], LABEL_COLOR, false);
         }
 
         // 状态消息 (绘制在专用的占位行, 不会与按钮重叠)
@@ -1307,7 +1318,7 @@ public class GuiExtensionPackEditor extends GuiBase {
     //
     // 内容较多 (挑战玩法 + 性能/动画 + 快捷操作), 分 2 页:
     //   页 1: 挑战玩法 (挑战模式 / 自动检测依赖) + 性能 / 动画 (下落动画 / 预览 / 建造)
-    //   页 2: 快捷操作 (打开文件夹 / 同步 / 重置)
+    //   页 2: 快捷操作 (重置偏好 + KubeJS 联动)
     // 顶部有"上一页 / 页码 / 下一页"小翻页条, 完成按钮固定在右下角任意页都有.
     // ============================================================
     private static final int SETTINGS_TOTAL_PAGES = 2;
@@ -1821,15 +1832,13 @@ public class GuiExtensionPackEditor extends GuiBase {
         int padX = 6;
 
         if (this.settingsPage == 1) {
-            // === 页 1: 挑战玩法 + 性能/动画 ===
-            // === 分组 1: 挑战玩法 ===
-            guiGraphics.drawString(this.font, "§e▍ 挑战玩法", rx + padX, y, LABEL_COLOR, false);
+            // === 页 1: 建造材料 + 性能/动画 ===
+            // === 分组 1: 建造材料 ===
+            guiGraphics.drawString(this.font, "§e▍ 建造材料", rx + padX, y, LABEL_COLOR, false);
             y += 12;
-            drawToggleRow(guiGraphics, rx, rw, y, mouseX, mouseY,
-                "挑战模式", "§7(消耗材料, 全服生效, 须OP权限)", isOp,
-                prefs.consumeMaterials,
-                settingsToggleRect, 0);
-            y += 28;  // 24px 行高 + 4px 间距 (跟新的 drawToggleRow 行高匹配)
+            // 挑战模式开关已移除: 生存/冒险固定消耗材料, 创造免费, 按游戏模式自动判定
+            guiGraphics.drawString(this.font, "§7生存/冒险: 消耗材料    创造: 免费", rx + padX, y, HINT_COLOR, false);
+            y += 20;
             drawToggleRow(guiGraphics, rx, rw, y, mouseX, mouseY,
                 "打开建筑时自动检测依赖", "§7(检查该建筑所需的 mod 是否安装)", true,
                 prefs.autoDepCheckOnOpen,
@@ -1850,13 +1859,7 @@ public class GuiExtensionPackEditor extends GuiBase {
             int btnW = rw - 12;
             int btnX = rx + 6;
             drawButtonRow(guiGraphics, btnX, y, btnW, btnH, mouseX, mouseY,
-                "📁 打开拓展包文件夹", settingsOpenFolderRect);
-            y += btnH + 4;
-            drawButtonRow(guiGraphics, btnX, y, btnW, btnH, mouseX, mouseY,
-                "🔄 同步服务器拓展包", settingsSyncServerRect);
-            y += btnH + 4;
-            drawButtonRow(guiGraphics, btnX, y, btnW, btnH, mouseX, mouseY,
-                "♻ 重置偏好 (清除收藏/重置挑战模式)", settingsResetRect);
+                "♻ 重置偏好 (清除收藏)", settingsResetRect);
             y += btnH + 8;
 
             // === 联动: 强制启用 KubeJS "制作蓝图" tab (调试用) ===
@@ -2201,24 +2204,7 @@ public class GuiExtensionPackEditor extends GuiBase {
                 this.settingsPage++;
                 return true;
             }
-            // 挑战模式 toggle (idx=0)
-            int[] tr0 = this.settingsToggleRect[0];
-            if (tr0[2] > 0 && mx >= tr0[0] && mx < tr0[0] + tr0[2] && my >= tr0[1] && my < tr0[1] + tr0[3]) {
-                Minecraft mc = Minecraft.getInstance();
-                if (mc.player != null && !mc.player.hasPermissions(2)) {
-                    if (mc.player != null) {
-                        mc.player.sendSystemMessage(Component.literal(
-                            com.prefab.addon.PrefabCustomAddon.tr("gui.settings.challenge_op_required"))
-                            .withStyle(ChatFormatting.RED));
-                    }
-                    setSettingsStatus("§c需要 OP 权限", 0xFF5555);
-                } else {
-                    PlayerPreferences p = PlayerPreferences.get();
-                    p.setConsumeMaterials(!p.consumeMaterials);
-                    setSettingsStatus(p.consumeMaterials ? "§a挑战模式已开启" : "§7挑战模式已关闭", 0x55FF55);
-                }
-                return true;
-            }
+            // (删除: 挑战模式 toggle idx=0 — 已改为按游戏模式自动判定, 不再有开关)
             // 自动检测依赖 toggle (idx=1) - 客户端个人设置, 不需 OP
             int[] tr1 = this.settingsToggleRect[1];
             if (tr1[2] > 0 && mx >= tr1[0] && mx < tr1[0] + tr1[2] && my >= tr1[1] && my < tr1[1] + tr1[3]) {
@@ -2261,44 +2247,13 @@ public class GuiExtensionPackEditor extends GuiBase {
                 return true;
             }
             // (删除: 建造 / 预览速度滑条, 默认 1 tick 放完所有方块, 开启下落动画时强制 1%/tick)
-            // 打开拓展包文件夹
-            int[] fr = this.settingsOpenFolderRect;
-            if (fr[2] > 0 && mx >= fr[0] && mx < fr[0] + fr[2] && my >= fr[1] && my < fr[1] + fr[3]) {
-                try {
-                    FolderOpener.openExtensionFolder();
-                    setSettingsStatus("§a已打开拓展包文件夹", 0x55FF55);
-                } catch (Exception ex) {
-                    PrefabCustomAddon.LOGGER.error("[SETTINGS] 打开拓展包文件夹失败", ex);
-                    setSettingsStatus("§c打开失败: " + ex.getMessage(), 0xFF5555);
-                }
-                return true;
-            }
-            // 同步服务器拓展包
-            int[] sr = this.settingsSyncServerRect;
-            if (sr[2] > 0 && mx >= sr[0] && mx < sr[0] + sr[2] && my >= sr[1] && my < sr[1] + sr[3]) {
-                Minecraft mc = Minecraft.getInstance();
-                try {
-                    com.prefab.addon.network.ServerPackSyncClient.getInstance().requestResync();
-                    if (mc.player != null) {
-                        mc.player.sendSystemMessage(Component.literal(
-                            com.prefab.addon.PrefabCustomAddon.tr("gui.settings.sync_requested"))
-                            .withStyle(ChatFormatting.AQUA));
-                    }
-                    setSettingsStatus("§a同步请求已发送", 0x55FF55);
-                } catch (Throwable t) {
-                    PrefabCustomAddon.LOGGER.error("[SETTINGS] 同步服务器建筑失败", t);
-                    setSettingsStatus("§c同步失败: " + t.getMessage(), 0xFF5555);
-                }
-                return true;
-            }
-            // 重置偏好 (清空收藏 + 重置挑战模式 + 重置动画)
+            // 重置偏好 (清空收藏 + 重置动画)
             int[] rr = this.settingsResetRect;
             if (rr[2] > 0 && mx >= rr[0] && mx < rr[0] + rr[2] && my >= rr[1] && my < rr[1] + rr[3]) {
                 try {
                     PlayerPreferences p = PlayerPreferences.get();
                     int removedFavs = p.favoriteKeys != null ? p.favoriteKeys.size() : 0;
                     p.favoriteKeys = new java.util.ArrayList<>();
-                    p.consumeMaterials = false;
                     p.autoDepCheckOnOpen = false;
                     p.buildAnimationMode = BuildAnimationMode.OFF;
                     p.save();
@@ -2509,6 +2464,16 @@ public class GuiExtensionPackEditor extends GuiBase {
             this.statusTick = 120;
             return;
         }
+        // "← 返回" 按钮: 编辑建筑 → 查看 → 返回, 应该回到编辑建筑 tab,
+        // 而不是默认的 GuiExtensionPackBrowser (云端/下载那个界面).
+        GuiConstructionDetail.open(buildDetailInfo(lb), () -> GuiExtensionPackEditor.open(Tab.EDIT));
+    }
+
+    /**
+     * 把 LocalBuilding 包成 {@link GuiConstructionDetail} 用的 ConstructionInfo
+     * (元信息 + 本地三件套路径一并带上). 终端 "编辑建筑" 的查看按钮也走这里.
+     */
+    public static ConstructionInfo buildDetailInfo(LocalBuilding lb) {
         ConstructionInfo ci = new ConstructionInfo(lb.id);
         ci.setName(lb.getDisplayName());
         ci.setAuthor(lb.author == null ? "" : lb.author);
@@ -2526,42 +2491,206 @@ public class GuiExtensionPackEditor extends GuiBase {
         if (lb.imagePath != null && Files.exists(lb.imagePath)) {
             ci.setLocalImagePath(lb.imagePath);
         }
-        // "← 返回" 按钮: 编辑建筑 → 查看 → 返回, 应该回到编辑建筑 tab,
-        // 而不是默认的 GuiExtensionPackBrowser (云端/下载那个界面).
-        GuiConstructionDetail.open(ci, () -> GuiExtensionPackEditor.open(Tab.EDIT));
+        return ci;
     }
 
     private void openEditBuilding(LocalBuilding lb) {
-        // 编辑: 构造 BuildingWorkInfo, 调 GuiCreateBuildingInfo.open(packId, info, null) 走编辑模式
-        // (不能调 openFullEditor(), 那会进入创建模式 = 玩家看到第 3 个图的空表单)
-        if (lb.filePath == null || !Files.exists(lb.filePath)) {
-            this.statusMessage = "建筑文件不存在: " + lb.id;
-            this.statusColor = 0xFFAA55;
+        // 编辑原理图 (Litematica 风格的 Edit Schematic): 把建筑 NBT 直接加载成 Structure, 关闭 GUI,
+        // 启动 3D 幽灵预览 + edit mode, 玩家在世界内左键删除 / 右键放置 / ALT 保存.
+        // 不再走 GuiCreateBuildingInfo 表单 (那是改名/换描述的元信息编辑, 不是 3D 原理图编辑).
+        String err = startSchematicEdit(lb);
+        if (err != null) {
+            this.statusMessage = err;
+            this.statusColor = 0xFF5555;
             this.statusTick = 120;
-            return;
         }
-        String deps = parseInfoTxt(lb.infoPath, "依赖模组");
-        if (deps == null) deps = parseInfoTxt(lb.infoPath, "dependencies");
-        if (deps == null) deps = "";
-        // 分类: 从 .txt 读 "分类: xxx", 找不到默认 "未分类" (走空字符串, ConstructionInfo 解析时归到 "未分类")
-        String category = parseInfoTxt(lb.infoPath, "分类");
-        if (category == null) category = parseInfoTxt(lb.infoPath, "category");
-        if (category == null) category = "";
-        PackCreator.BuildingWorkInfo info = new PackCreator.BuildingWorkInfo(
-            lb.id,
-            lb.filePath,
-            lb.imagePath,
-            lb.infoPath,
-            lb.getDisplayName(),
-            lb.author == null ? "" : lb.author,
-            formatSize(lb.fileSize),
-            deps,
-            lb.description == null ? "" : lb.description,
-            "",  // icon 物品 id: 单文件模式用 PNG 不用, 留空
-            category  // 分类: 让玩家能在编辑界面改
-        );
-        // packId 传空串: GuiCreateBuildingInfo 走 editor/edit 模式
-        com.prefab.addon.client.gui.GuiCreateBuildingInfo.open("", info, null);
+    }
+
+    /**
+     * 启动 3D 原理图编辑 (世界内幽灵预览, 左键删除 / 右键放置 / ALT 保存).
+     * 成功返回 null (内部会关 GUI 进 edit mode), 失败返回错误消息.
+     * 终端 "编辑建筑" 的 [编辑] 按钮也走这个入口.
+     */
+    public static String startSchematicEdit(LocalBuilding lb) {
+        if (lb.filePath == null || !Files.exists(lb.filePath)) {
+            return "建筑文件不存在: " + lb.id;
+        }
+        // 1) 包成 ConstructionInfo 喂给 CustomStructureBuilder (复用现有 NBT 解析链路)
+        ConstructionInfo ci = new ConstructionInfo(lb.id);
+        ci.setName(lb.getDisplayName());
+        ci.setAuthor(lb.author == null ? "" : lb.author);
+        ci.setDescription(lb.description == null ? "" : lb.description);
+        ci.setLocalNbtPath(lb.filePath);
+
+        // 2) NBT → Prefab Structure
+        Structure structure = CustomStructureBuilder.parseToPrefabStructure(ci);
+        if (structure == null || structure.getBlocks() == null || structure.getBlocks().isEmpty()) {
+            return "建筑 NBT 解析失败或为空: " + lb.id;
+        }
+
+        // 3) 玩家朝向 (初始化: 反向, prefab 内部约定)
+        Minecraft mc = Minecraft.getInstance();
+        net.minecraft.client.player.LocalPlayer player = mc.player;
+        Direction houseFacing = (player != null) ? player.getDirection().getOpposite() : Direction.SOUTH;
+        BlockPos playerPos = (player != null) ? player.blockPosition() : BlockPos.ZERO;
+        BlockPos basePos = playerPos.above();
+
+        // 4) 把每个 BuildBlock.blockPos 从 localPos 转为 worldPos (renderer 直接读 worldPos)
+        StructureConfiguration cfg = new StructureConfiguration();
+        cfg.Initialize();
+        cfg.pos = basePos;
+        cfg.houseFacing = houseFacing;
+        CustomStructureBuilder.offsetStructureBlocks(structure, cfg.pos, cfg.houseFacing);
+
+        // 5) 拿原始 NBT byte[]
+        byte[] nbtBytes = ci.getNbtData();
+        if (nbtBytes == null) {
+            return "无法读取 NBT 字节: " + lb.id;
+        }
+
+        // 6) 提取两个 map (world 和 local) — EditModeController 新架构用.
+        // local 坐标系从 NBT pos 直接拿, 但 NBT entry 的 state 字段可能是 {Name, Properties}
+        // (compound) 或 palette index (int). 我们只支持 compound 格式; index 格式或
+        // parse 失败 → 该 entry 不进 localMap, 之后用 worldToLocal 反推补齐.
+        java.util.LinkedHashMap<BlockPos, BlockState> worldMap = new java.util.LinkedHashMap<>();
+        for (BuildBlock bb : structure.getBlocks()) {
+            if (bb == null || bb.getBlockState() == null) continue;
+            worldMap.put(bb.blockPos, bb.getBlockState());
+        }
+        java.util.LinkedHashMap<BlockPos, BlockState> localMap = new java.util.LinkedHashMap<>();
+        int parseFailCount = 0;
+        try {
+            CompoundTag tag = NbtIo.read(new DataInputStream(new ByteArrayInputStream(nbtBytes)),
+                NbtAccounter.unlimitedHeap());
+            ListTag blocks = tag.getList("blocks", 10);
+            for (int i = 0; i < blocks.size(); i++) {
+                CompoundTag entry = blocks.getCompound(i);
+                int[] p = entry.getIntArray("pos");
+                if (p.length != 3) continue;
+                BlockPos lp = new BlockPos(p[0], p[1], p[2]);
+                BlockState s = parseStateFromNbtEntry(entry);
+                if (s != null) localMap.put(lp, s);
+                else parseFailCount++;
+            }
+        } catch (Exception ex1) {
+            // 原 NBT 是 GZIP 压缩的, 重试
+            try {
+                CompoundTag tag = NbtIo.readCompressed(
+                    new ByteArrayInputStream(nbtBytes), NbtAccounter.unlimitedHeap());
+                ListTag blocks = tag.getList("blocks", 10);
+                for (int i = 0; i < blocks.size(); i++) {
+                    CompoundTag entry = blocks.getCompound(i);
+                    int[] p = entry.getIntArray("pos");
+                    if (p.length != 3) continue;
+                    BlockPos lp = new BlockPos(p[0], p[1], p[2]);
+                    BlockState s = parseStateFromNbtEntry(entry);
+                    if (s != null) localMap.put(lp, s);
+                    else parseFailCount++;
+                }
+            } catch (Exception ex2) {
+                PrefabCustomAddon.LOGGER.warn("[EDIT-MODE] failed to parse NBT for local map, falling back to worldToLocal", ex2);
+            }
+        }
+        // === 补齐缺失: 如果 localMap 数量跟 worldMap 差很多, 用 worldToLocal 反推补齐
+        // 缺失 entry. 这是因为 NBT 的 state 可能是 palette index (int) 格式, parseStateFromNbtEntry
+        // 不支持, 全部 skip. 没有补齐的话 save NBT 会丢大部分 entry. ===
+        if (localMap.size() < worldMap.size() / 2) {
+            int added = 0;
+            for (var e : worldMap.entrySet()) {
+                BlockPos wp = e.getKey();
+                BlockPos lp = worldToLocalHelper(wp, basePos, houseFacing);
+                if (!localMap.containsKey(lp)) {
+                    localMap.put(lp, e.getValue());
+                    added++;
+                }
+            }
+            PrefabCustomAddon.LOGGER.info("[EDIT-MODE] localMap补齐: 解析成功={} 失败={} 兜底补={} (total {})",
+                localMap.size() - added, parseFailCount, added, localMap.size());
+        }
+
+        // 7) 设置 addon 预览状态
+        CustomStructureGui.setAddonPreviewStructure(structure);
+        CustomStructureGui.setAddonPreviewConfig(cfg);
+        CustomStructureGui.markAddonPreviewActive();
+        // 8) 关闭 GUI
+        mc.setScreen(null);
+        // 9) 进入 edit mode. 保存成功后清掉所有引用该文件的 ConstructionInfo 的
+        //    nbtData 缓存 — 否则建造路径仍读内存旧字节, 出现 "依赖更新了但方块没变化".
+        EditModeController.setOnSavedCallback(() -> {
+            for (com.prefab.addon.extension.ExtensionPack p : com.prefab.addon.extension.ExtensionPackManager.getInstance().getPacks()) {
+                for (ConstructionInfo c : p.getConstructions()) {
+                    if (c.getLocalNbtPath() != null && c.getLocalNbtPath().equals(lb.filePath)) {
+                        c.setNbtData(null);
+                    }
+                }
+            }
+        });
+        EditModeController.enterEditMode(worldMap, localMap, cfg, nbtBytes, lb.filePath);
+        return null; // 成功
+    }
+
+    private static int facingToSteps(Direction facing) {
+        if (facing == null) return 0;
+        return switch (facing) {
+            case SOUTH -> 0;
+            case EAST  -> 1;
+            case NORTH -> 2;
+            case WEST  -> 3;
+            default    -> 0;
+        };
+    }
+
+    /** world pos → local pos helper. 跟 EditModeController.worldToLocal 一致. */
+    private static BlockPos worldToLocalHelper(BlockPos worldPos, BlockPos basePos, Direction facing) {
+        int steps = facingToSteps(facing);
+        int rx = worldPos.getX() - basePos.getX();
+        int ry = worldPos.getY() - basePos.getY();
+        int rz = worldPos.getZ() - basePos.getZ();
+        for (int s = 0; s < steps; s++) {
+            int newRx = -rz;
+            int newRz =  rx;
+            rx = newRx;
+            rz = newRz;
+        }
+        return new BlockPos(rx, ry, rz);
+    }
+
+    private static BlockState parseStateFromNbtEntry(CompoundTag entry) {
+        if (entry.contains("state", 10)) {
+            CompoundTag st = entry.getCompound("state");
+            if (st.contains("Name", 8)) {
+                String name = st.getString("Name");
+                Block block = net.minecraft.core.registries.BuiltInRegistries.BLOCK.get(
+                    net.minecraft.resources.ResourceLocation.parse(name));
+                if (block == null) return null;
+                BlockState state = block.defaultBlockState();
+                if (st.contains("Properties", 10)) {
+                    CompoundTag props = st.getCompound("Properties");
+                    for (var prop : state.getProperties()) {
+                        if (props.contains(prop.getName(), 8)) {
+                            String val = props.getString(prop.getName());
+                            try {
+                                var optVal = prop.getValue(val);
+                                if (optVal.isPresent()) {
+                                    Object raw = optVal.get();
+                                    // setValue 签名: <T extends Comparable<T>> S setValue(Property<T>, T).
+                                    // 由于 Property<T> 的 T 在编译时擦除成 ? extends Comparable, 只能
+                                    // 用 unchecked cast — 这里我们只解析 NBT → 1.21.1 官方格式,
+                                    // 实际能 resolve 的属性都已 built-in 验证, cast 安全.
+                                    @SuppressWarnings({"unchecked", "rawtypes"})
+                                    Comparable cval = (Comparable) raw;
+                                    @SuppressWarnings("unchecked")
+                                    BlockState newState = state.setValue((net.minecraft.world.level.block.state.properties.Property) prop, cval);
+                                    state = newState;
+                                }
+                            } catch (Exception ignored) {}
+                        }
+                    }
+                }
+                return state;
+            }
+        }
+        return null;
     }
 
     // ============================================================
@@ -2637,6 +2766,44 @@ public class GuiExtensionPackEditor extends GuiBase {
                 return;
             }
 
+            // 2.5) 关键: KubeJS 蓝图 NBT 里只存 packName + constructionId 两个字符串,
+            // 右键时靠 LocalBuildingScanner 扫 prefab-extension/ + prefab-download/ 按 id 找文件.
+            // "选择建筑文件"进来的临时 LocalBuilding (external/in_game) 原路径不在扫描目录里,
+            // 直接绑定会永远"找不到建筑" — 生成前先把文件复制进 prefab-extension/, 绑定复制后的 id.
+            // (已在扫描目录里的 source: extension / download / legacy-pack:* 不重复复制)
+            if (selectedBuilding.filePath != null && Files.exists(selectedBuilding.filePath)
+                    && !"extension".equals(selectedBuilding.source)
+                    && !"download".equals(selectedBuilding.source)
+                    && (selectedBuilding.source == null || !selectedBuilding.source.startsWith("legacy-pack"))) {
+                try {
+                    byte[] bytes = Files.readAllBytes(selectedBuilding.filePath);
+                    String origName = selectedBuilding.filePath.getFileName().toString();
+                    String ext = origName.contains(".") ? origName.substring(origName.lastIndexOf('.')) : ".nbt";
+                    int fh = java.util.Arrays.hashCode(bytes);
+                    String newId = String.format("mb_%d_%06x", System.currentTimeMillis() / 1000L, fh & 0xFFFFFF);
+                    java.nio.file.Path extRoot = com.prefab.addon.extension.LocalBuildingScanner.getExtensionRoot();
+                    Files.createDirectories(extRoot);
+                    java.nio.file.Path newPath = extRoot.resolve(newId + ext);
+                    Files.write(newPath, bytes);
+                    String copyName = (selectedBuilding.name == null || selectedBuilding.name.isBlank())
+                        ? newId : selectedBuilding.name;
+                    java.nio.file.Path origPath = selectedBuilding.filePath;
+                    selectedBuilding = new com.prefab.addon.extension.LocalBuilding(
+                        newId, copyName, selectedBuilding.author, selectedBuilding.description,
+                        selectedBuilding.dependencies, selectedBuilding.category,
+                        ext, (long) bytes.length, null, "extension",
+                        newPath, null, null);
+                    PrefabCustomAddon.LOGGER.info("[MAKE-BLUEPRINT] 外部建筑已复制进 prefab-extension: {} -> {}",
+                        origPath, newPath);
+                } catch (Throwable t) {
+                    PrefabCustomAddon.LOGGER.error("[MAKE-BLUEPRINT] 复制外部建筑失败", t);
+                    mbStatus = "§c复制建筑文件到 prefab-extension/ 失败: §7" + t.getMessage();
+                    mbStatusColor = 0xFF5555;
+                    mbStatusTick = 150;
+                    return;
+                }
+            }
+
             // 3) 构造 Spec (validate() 会自动加 player_ 前缀)
             CustomBlueprintCodeGenerator.Spec spec = new CustomBlueprintCodeGenerator.Spec();
             // 留空时用建筑名当 fallback, 比用 itemId ("player_blueprint") 有意义
@@ -2683,6 +2850,16 @@ public class GuiExtensionPackEditor extends GuiBase {
             }
             PrefabCustomAddon.LOGGER.info("[MAKE-BLUEPRINT] generated {}: js={} json={} tex={}",
                 nsItem, result.jsFile, result.jsonFile, result.textureFile);
+
+            // 6) 生成成功后清空表单, 避免下一张蓝图还带着上一次的选择 (建筑/贴图/配方/名称)
+            selectedBuilding = null;
+            selectedTextureSource = null;
+            for (int i = 0; i < recipeItems.size(); i++) {
+                recipeItems.set(i, null);
+            }
+            if (edBlueprintName != null) {
+                edBlueprintName.setValue("");
+            }
 
             // 不再回填输入框 — ns/id 已自动生成, 玩家不需要知道
         } catch (IllegalArgumentException iae) {

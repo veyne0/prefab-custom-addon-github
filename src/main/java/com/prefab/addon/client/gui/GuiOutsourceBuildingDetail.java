@@ -15,6 +15,7 @@ import com.lowdragmc.lowdraglib2.gui.ui.event.UIEvents;
 import com.lowdragmc.lowdraglib2.gui.ui.style.StylesheetManager;
 import com.lowdragmc.lowdraglib2.gui.ui.styletemplate.Sprites;
 import com.prefab.addon.PrefabCustomAddon;
+import com.prefab.addon.client.PackBrowserKeyHandler;
 import com.prefab.addon.extension.ConstructionInfo;
 import com.prefab.addon.outsource.OutsourceBuilding;
 import com.prefab.structures.base.Structure;
@@ -180,7 +181,13 @@ public final class GuiOutsourceBuildingDetail {
 
         player.sendSystemMessage(Component.literal(
             "§a✓ 进入预览: " + info.getName() + "\n" +
-            "§7方向键移动, CTRL 旋转, 右键取消, ALT 建造"));
+            "§7" + PackBrowserKeyHandler.keyName(PackBrowserKeyHandler.PREVIEW_FORWARD, "↑")
+                + PackBrowserKeyHandler.keyName(PackBrowserKeyHandler.PREVIEW_BACK, "↓")
+                + PackBrowserKeyHandler.keyName(PackBrowserKeyHandler.PREVIEW_LEFT, "←")
+                + PackBrowserKeyHandler.keyName(PackBrowserKeyHandler.PREVIEW_RIGHT, "→") + "移动, "
+                + PackBrowserKeyHandler.keyName(PackBrowserKeyHandler.PREVIEW_ROTATE, "CTRL") + "旋转, "
+                + PackBrowserKeyHandler.keyName(PackBrowserKeyHandler.CANCEL_PREVIEW, "右键") + "取消, "
+                + PackBrowserKeyHandler.buildKeyName() + "建造"));
         PrefabCustomAddon.LOGGER.info("[OUTSOURCE] Preview launched: {} at {} facing {} ({} blocks)",
             info.getName(), cfg.pos, cfg.houseFacing, structure.getBlocks().size());
     }
@@ -376,8 +383,10 @@ public final class GuiOutsourceBuildingDetail {
             Construction3DView.runTick(progressEl, sceneContainer, scenePlaceholder);
         });
 
+        // Scene tooltip 依赖 ModularUI.player (getCloneItemStack 需要玩家), 客户端界面必须显式传入
         return ModularUI.of(UI.of(root,
-            StylesheetManager.INSTANCE.getStylesheetSafe(StylesheetManager.MC)));
+            StylesheetManager.INSTANCE.getStylesheetSafe(StylesheetManager.MC)),
+            Minecraft.getInstance().player);
     }
 
     private static void addFieldLabel(UIElement parent, String text) {

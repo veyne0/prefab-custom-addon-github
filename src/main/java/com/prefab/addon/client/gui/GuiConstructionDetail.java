@@ -498,6 +498,10 @@ public final class GuiConstructionDetail {
             //  - 渲染器注册所有 positions → addBlocks 后能立即渲染
             //  - 此时 world 是空的, 首次 compile 0 块 → 0 ms
             renderScene.setRenderedCore(positions, null, true);
+            // 悬停方块显示原生物品 tooltip (Scene.showHoverBlockTips, 不依赖 JEI);
+            // xeiLookup 另提供 JEI/REI/EMI 查询集成
+            renderScene.setShowHoverBlockTips(true);
+            renderScene.xeiLookup();
 
             renderActive = true;
         } catch (Throwable t) {
@@ -976,12 +980,20 @@ public final class GuiConstructionDetail {
             }
         });
 
+        // Scene tooltip 依赖 ModularUI.player (getCloneItemStack 需要玩家), 客户端界面必须显式传入
         return ModularUI.of(UI.of(root,
-            StylesheetManager.INSTANCE.getStylesheetSafe(StylesheetManager.MC)));
+            StylesheetManager.INSTANCE.getStylesheetSafe(StylesheetManager.MC)),
+            Minecraft.getInstance().player);
     }
 
     // === 信息面板 (ScrollerView + 锁 toggle + 进度) ===
-    private static ScrollerView createInfoScroller(ConstructionInfo construction, TextElement progressEl) {
+    /**
+     * 构建左侧信息侧栏 (建筑名/作者/尺寸/蓝图格式/依赖/分类/描述).
+     * 公共入口: CustomStructureGui 的详情页侧栏复用; progressEl 传 null 则不放进度行.
+     * 注意: 会占用本类的 depListContainer/currentDisplayedConstruction 静态字段,
+     * 两个 GUI 不会同时打开, 互不干扰.
+     */
+    public static ScrollerView createInfoScroller(ConstructionInfo construction, @org.jetbrains.annotations.Nullable TextElement progressEl) {
         ScrollerView scroller = new ScrollerView();
         scroller.scrollerStyle(s -> s.mode(ScrollerMode.VERTICAL));
         scroller.verticalScroller(v -> v.setScrollBarSize(8f));
@@ -996,8 +1008,10 @@ public final class GuiConstructionDetail {
         );
         content.style(s -> s.background(Sprites.RECT_DARK));
 
-        // 进度 (渲染期间显示) - 放在最上面, 玩家一眼能看到
-        content.addChild(progressEl);
+        // 进度 (渲染期间显示) - 放在最上面, 玩家一眼能看到 (复用方可传 null)
+        if (progressEl != null) {
+            content.addChild(progressEl);
+        }
 
         // 建筑名
         addField(content, com.prefab.addon.PrefabCustomAddon.tr("gui.detail.name"), construction.getName());
@@ -1128,9 +1142,15 @@ public final class GuiConstructionDetail {
     }
 
     // === 依赖检测 ===
-    private static void runDepCheck(ConstructionInfo construction) {
+    /**
+     * 检测依赖并缓存结果 + 实时重建左侧依赖列表 (✗/✓).
+     * public: 终端建筑详情页 (CustomStructureGui) 的 "检测依赖" 按钮复用同一逻辑,
+     * 保证点完后左侧 mod 列表立即显示 ✓/✗.
+     *
+     * @return 检测结果 (调用方自行决定状态栏提示)
+     */
+    public static CheckResult checkDepsAndUpdate(ConstructionInfo construction) {
         List<String> deps = construction.getDependencies();
-        PrefabCustomAddon.LOGGER.info("[DETAIL] Dep check: '{}' deps={}", construction.getName(), deps);
         CheckResult result = DependencyChecker.check(deps);
 
         // 缓存检测结果, 用于在 mod 列表后显示 ✗/✓
@@ -1153,6 +1173,13 @@ public final class GuiConstructionDetail {
             && currentDisplayedConstruction.getId().equals(construction.getId())) {
             rebuildDepList(construction);
         }
+        return result;
+    }
+
+    private static void runDepCheck(ConstructionInfo construction) {
+        List<String> deps = construction.getDependencies();
+        PrefabCustomAddon.LOGGER.info("[DETAIL] Dep check: '{}' deps={}", construction.getName(), deps);
+        CheckResult result = checkDepsAndUpdate(construction);
 
         // 简化状态消息: 顶部状态栏只显示简短结果 (依赖详情在左侧 mod 列表里用 ✗/✓ 显示)
         String shortMsg;

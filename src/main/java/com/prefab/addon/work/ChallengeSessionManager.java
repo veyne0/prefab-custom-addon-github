@@ -5,10 +5,6 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.reflect.TypeToken;
 import com.prefab.addon.PrefabCustomAddon;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.player.LocalPlayer;
-import net.minecraft.resources.ResourceLocation;
-import net.minecraft.world.entity.player.Inventory;
-import net.minecraft.world.item.ItemStack;
 
 import java.io.*;
 import java.lang.reflect.Type;
@@ -70,91 +66,13 @@ public class ChallengeSessionManager {
             .computeIfAbsent(constructionId, k -> new LinkedHashMap<>());
     }
 
-    /**
-     * 获取玩家在某建筑下的提交进度 (可写版本).
-     * 与 getSubmitted() 不同的是, 这个方法返回的是 SESSIONS 里实际的 LinkedHashMap 引用,
-     * 修改后必须调用 saveToDisk() 才会持久化.
-     * 用于单卡片提交等需要直接修改 session 累计数量的场景.
-     */
-    public static Map<String, Integer> getSubmittedAsMutable(UUID playerId, String constructionId) {
-        if (!LOADED.contains(playerId)) {
-            loadFromDisk(playerId);
-        }
-        Map<String, Map<String, Integer>> playerMap =
-            SESSIONS.computeIfAbsent(playerId, k -> new HashMap<>());
-        return playerMap.computeIfAbsent(constructionId, k -> new LinkedHashMap<>());
-    }
+    // [已移除] getSubmittedAsMutable(): 旧单卡片提交流程直接改客户端镜像用,
+    // 现在提交进度全由服务端回传快照覆盖 (applyServerState), 不再需要可写引用.
 
-    /**
-     * 从背包扣减材料, 累计到 session.
-     * 每次调用只扣"背包里当前实际有"的, 不要求一次性交齐.
-     *
-     * @return SubmissionResult - 包含本次扣减了多少, 累计还差多少
-     */
-    public static SubmissionResult submit(Inventory inv, String constructionId,
-                                           Map<String, Integer> required) {
-        UUID playerId;
-        LocalPlayer player = Minecraft.getInstance().player;
-        if (player == null) {
-            return new SubmissionResult(0, 0, 0, false);
-        }
-        playerId = player.getUUID();
-        if (!LOADED.contains(playerId)) loadFromDisk(playerId);
-
-        Map<String, Integer> submitted = getSubmitted(playerId, constructionId);
-        int thisRoundDeducted = 0;
-        int totalStillMissing = 0;
-
-        for (Map.Entry<String, Integer> e : required.entrySet()) {
-            String blockId = e.getKey();
-            int need = e.getValue();
-            int alreadySubmitted = submitted.getOrDefault(blockId, 0);
-            int remaining = need - alreadySubmitted;
-            if (remaining <= 0) continue;
-
-            // 玩家背包里实际有多少 (按 block id 解析成 item)
-            int available = MaterialCalculator.countInInventory(inv, blockId);
-            int take = Math.min(available, remaining);
-            if (take <= 0) {
-                totalStillMissing += remaining;
-                continue;
-            }
-
-            // 从背包扣减
-            int toRemove = take;
-            for (int i = 0; i < inv.getContainerSize() && toRemove > 0; i++) {
-                ItemStack s = inv.getItem(i);
-                if (s.isEmpty()) continue;
-                ResourceLocation target = ResourceLocation.tryParse(blockId);
-                if (target == null) continue;
-                if (matchesItem(s, target)) {
-                    int shrink = Math.min(s.getCount(), toRemove);
-                    s.shrink(shrink);
-                    toRemove -= shrink;
-                }
-            }
-            int actuallyDeducted = take - toRemove;
-            if (actuallyDeducted > 0) {
-                submitted.merge(blockId, actuallyDeducted, Integer::sum);
-                thisRoundDeducted += actuallyDeducted;
-            }
-            int afterTake = remaining - actuallyDeducted;
-            if (afterTake > 0) {
-                totalStillMissing += afterTake;
-            }
-        }
-        inv.setChanged();
-        if (player.containerMenu != null) player.containerMenu.broadcastChanges();
-
-        // === 持久化: 立刻写回磁盘, 这样下次进游戏还能拿到 ===
-        saveToDisk(playerId);
-
-        boolean allDone = totalStillMissing == 0;
-        PrefabCustomAddon.LOGGER.info("[CHALLENGE-SESSION] submit: 本次扣 {} 个, 还差 {} 个, 完成={}",
-            thisRoundDeducted, totalStillMissing, allDone);
-        return new SubmissionResult(thisRoundDeducted, totalStillMissing,
-            submitted.values().stream().mapToInt(Integer::intValue).sum(), allDone);
-    }
+    // [已移除] 旧的客户端 submit(): 只在**客户端**背包扣材料, 服务端不知情 →
+    // 玩家打开任何容器 GUI 后服务端把"没扣过"的背包同步回来, 材料复活 (刷物品 bug).
+    // 材料扣除已改为**服务端权威**: 见 ServerMaterialLedger.submit + SubmitMaterialsPayload.
+    // 客户端本类现在只保存服务端回传的镜像快照 (applyServerState), 供 UI / isReady 门控用.
 
     /**
      * 检查某建筑是否已提交完毕 (即累计提交 == 需求)
@@ -180,6 +98,24 @@ public class ChallengeSessionManager {
             PrefabCustomAddon.LOGGER.info("[CHALLENGE-SESSION] 重置: 玩家={} 建筑={}", playerId, constructionId);
             saveToDisk(playerId);
         }
+    }
+
+    /**
+     * 用**服务端权威快照**替换本地镜像 session (客户端收到 MaterialSubmitResultPayload 时调用).
+     *
+     * 修复刷物品 bug 后, 客户端不再自己扣背包/累计提交量 —— 材料扣除全在服务端
+     * (ServerMaterialLedger) 完成, 客户端这个 session 只是给 UI 显示 / isReady 门控用的镜像.
+     * 这里直接用服务端回传的完整快照覆盖, 保证两侧进度一致.
+     *
+     * @param serverState 服务端账本处理后的完整累计 (重置时为空 map)
+     */
+    public static void applyServerState(UUID playerId, String constructionId, Map<String, Integer> serverState) {
+        if (!LOADED.contains(playerId)) loadFromDisk(playerId);
+        Map<String, Map<String, Integer>> playerMap = SESSIONS.computeIfAbsent(playerId, k -> new HashMap<>());
+        LinkedHashMap<String, Integer> mirror = new LinkedHashMap<>();
+        if (serverState != null) mirror.putAll(serverState);
+        playerMap.put(constructionId, mirror);
+        saveToDisk(playerId);
     }
 
     /**
@@ -228,36 +164,6 @@ public class ChallengeSessionManager {
         }
     }
 
-    public static class SubmissionResult {
-        public final int thisRoundDeducted;  // 本次扣减的方块数
-        public final int totalStillMissing;  // 全部还差多少 (累计)
-        public final int totalSubmittedSoFar;  // 累计已提交
-        public final boolean allDone;
-
-        public SubmissionResult(int thisRoundDeducted, int totalStillMissing,
-                                int totalSubmittedSoFar, boolean allDone) {
-            this.thisRoundDeducted = thisRoundDeducted;
-            this.totalStillMissing = totalStillMissing;
-            this.totalSubmittedSoFar = totalSubmittedSoFar;
-            this.allDone = allDone;
-        }
-
-        public String getSummary() {
-            if (allDone) return "✓ 全部材料已提交!";
-            if (thisRoundDeducted == 0) return "✗ 背包里没有可提交的材料";
-            return "本次提交 " + thisRoundDeducted + " 个, 还差 " + totalStillMissing + " 个";
-        }
-    }
-
-    private static boolean matchesItem(ItemStack s, ResourceLocation rl) {
-        ResourceLocation itemLoc = net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(s.getItem());
-        if (itemLoc.equals(rl)) return true;
-        net.minecraft.world.level.block.Block b =
-            net.minecraft.core.registries.BuiltInRegistries.BLOCK.getOptional(rl).orElse(null);
-        if (b != null && net.minecraft.core.registries.BuiltInRegistries.ITEM
-                .getKey(b.asItem()).equals(itemLoc)) {
-            return true;
-        }
-        return false;
-    }
+    // [已移除] SubmissionResult / matchesItem: 仅服务于已删除的客户端 submit().
+    // 服务端提交结果由 ServerMaterialLedger.Result 承担.
 }

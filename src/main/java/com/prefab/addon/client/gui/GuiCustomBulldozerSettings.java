@@ -115,10 +115,10 @@ public final class GuiCustomBulldozerSettings {
         presetBtns.addChild(makePresetBtn("§764x64x32", 64, 64, 32, fieldLength, fieldWidth, fieldHeight));
         content.addChild(presetBtns);
 
-        // === 固定说明: 任何模式都不生成掉落物 (玩家不再能切换) ===
+        // === 掉落物规则说明 (服务端判定: 长宽高每个都≤16 才生成掉落物) ===
         Label fixedInfo = new Label();
         fixedInfo.setText(Component.literal(
-            "§7ⓘ 清除时§c不生成掉落物§7 (固定, 不可改, 大区域性能最佳)"));
+            "§7ⓘ 掉落物规则: §e长/宽/高 每个都≤16 时清除生成掉落物§7; §c任一边>16 不生成§7 (服务端判定)"));
         fixedInfo.textStyle(t -> t.textColor(0xFFFFCC55).textAlignHorizontal(Horizontal.LEFT));
         fixedInfo.layout(l -> l.widthPercent(100).height(18));
         content.addChild(fixedInfo);
@@ -195,11 +195,13 @@ public final class GuiCustomBulldozerSettings {
         );
         bottomBar.style(s -> s.background(Sprites.RECT_DARK));
         Label currentLabel = new Label();
+        int curL = ItemCustomBulldozer.getLength(stack);
+        int curW = ItemCustomBulldozer.getWidth(stack);
+        int curH = ItemCustomBulldozer.getHeight(stack);
+        boolean curSmall = curL <= 16 && curW <= 16 && curH <= 16;
         currentLabel.setText(Component.literal(String.format(
-            "§7当前: §f%dx%dx%d §7|  §c不生成掉落物",
-            ItemCustomBulldozer.getLength(stack),
-            ItemCustomBulldozer.getWidth(stack),
-            ItemCustomBulldozer.getHeight(stack)
+            "§7当前: §f%dx%dx%d §7|  " + (curSmall ? "§a生成掉落物 (每边≤16)" : "§c不生成掉落物 (任一边>16)"),
+            curL, curW, curH
         )).withStyle(ChatFormatting.WHITE));
         currentLabel.textStyle(t -> t.textAlignHorizontal(Horizontal.LEFT));
         currentLabel.layout(l -> l.widthPercent(100).height(18));
@@ -291,9 +293,7 @@ public final class GuiCustomBulldozerSettings {
             return;
         }
         ItemCustomBulldozer.setDimensions(stack, L, W, H);
-        // 固定 noDrops = true (玩家不能改, 性能最优)
-        ItemCustomBulldozer.setNoDrops(stack, true);
-        PrefabCustomAddon.LOGGER.info("[Bulldozer] settings saved: {}x{}x{} (noDrops 固定开启)",
+        PrefabCustomAddon.LOGGER.info("[Bulldozer] settings saved: {}x{}x{} (掉落物由服务端按尺寸判定)",
             L, W, H);
         // 关闭 LdLib UI, 回到主推土机 GUI
         Minecraft.getInstance().setScreen(parent);

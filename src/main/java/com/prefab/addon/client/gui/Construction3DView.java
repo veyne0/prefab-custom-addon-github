@@ -308,6 +308,10 @@ public final class Construction3DView {
 
             renderScene.createScene(renderWorld);
             renderScene.setRenderedCore(positions, null, true);
+            // 悬停方块显示原生物品 tooltip (Scene.showHoverBlockTips, 不依赖 JEI);
+            // xeiLookup 另提供 JEI/REI/EMI 查询集成
+            renderScene.setShowHoverBlockTips(true);
+            renderScene.xeiLookup();
             renderActive = true;
         } catch (Throwable t) {
             PrefabCustomAddon.LOGGER.error("[3DVIEW] initRender failed", t);

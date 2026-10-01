@@ -13,6 +13,7 @@ import com.prefab.addon.items.OutsourceBlueprintItem;
 import com.prefab.addon.network.NetworkHandler;
 import com.prefab.addon.network.ServerPackSyncServer;
 import com.prefab.addon.outsource.OutsourceBuildingLoader;
+import com.prefab.addon.terminal.TerminalRegistry;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.item.CreativeModeTab;
@@ -94,6 +95,12 @@ public class PrefabCustomAddon {
                 return item;
             });
 
+    // 多方块结构蓝图: 右键打开独立多方块浏览器 (GTM / Mekanism / MBD2 标签页).
+    // 客户端开 GUI 逻辑在 MultiblockBlueprintClientHandler (Dist.CLIENT 拦截右键),
+    // 本类 (common) 绝不引用 client 类, 避免 dedicated server 加载崩溃.
+    public static final DeferredItem<Item> MULTIBLOCK_BLUEPRINT = ITEMS.register("multiblock_blueprint",
+            () -> new com.prefab.addon.items.MultiblockBlueprintItem(new Item.Properties().stacksTo(1)));
+
     // 外包建筑蓝图 —— 8 个 Item 实例,每个对应 投影/ 下的一个子文件夹。
     //  玩家把 投影.zip 放进 prefab-outsource/ 后,扫描器用 "投影_<子文件夹名>" 作为 buildingId,
     //  这里每个 Item 硬编码自己的 buildingId,所以创造栏里的 8 个蓝图只能打开对应建筑。
@@ -154,6 +161,8 @@ public class PrefabCustomAddon {
                 output.accept(CUSTOM_BLUEPRINT.get());
                 output.accept(CUSTOM_BULLDOZER.get());
                 output.accept(MINI_BUILDING_CONVERTER.get());
+                output.accept(MULTIBLOCK_BLUEPRINT.get());
+                output.accept(TerminalRegistry.TERMINAL.get());
                 // MINI_BUILDING_BLOCK_ITEM 不在创造栏显示, 它只能通过转换器生成
                 // 8 个外包建筑蓝图(硬编码,按子文件夹顺序)
                 for (DeferredItem<Item> b : OUTSOURCE_BLUEPRINTS) {
@@ -176,6 +185,8 @@ public class PrefabCustomAddon {
         modEventBus.addListener(this::clientSetup);
         modEventBus.addListener(this::addCreativeTabContents);
         modEventBus.addListener(NetworkHandler::register);
+        // 现代终端 (LDLib2 UI): 注册物品/创造栏/网络通道
+        TerminalRegistry.register(modEventBus);
         // 1.21.1: RegisterClientExtensionsEvent 是注入 IClientItemExtensions 的新入口
         // (Item.initializeClient 已 deprecated, 不再被调用)
         modEventBus.addListener(com.prefab.addon.client.MiniBuildingClientExtensions::onRegisterClientExtensions);
@@ -310,6 +321,8 @@ public class PrefabCustomAddon {
             event.accept(CUSTOM_BULLDOZER.get());
             event.accept(MINI_BUILDING_CONVERTER.get());
             event.accept(OPERATION_WAND.get());
+            event.accept(MULTIBLOCK_BLUEPRINT.get());
+            event.accept(TerminalRegistry.TERMINAL.get());
             // 8 个外包建筑蓝图(每个 Item 硬编码了 buildingId,直接 accept 即可)
             for (DeferredItem<Item> b : OUTSOURCE_BLUEPRINTS) {
                 event.accept(b.get());
@@ -389,7 +402,7 @@ public class PrefabCustomAddon {
     }
 
     /**
-     * 玩家进服后, 服务端把拓展包清单推给该玩家, 触发客户端自动拉取。
+     * 玩家进服后, 服务端把建筑清单推给该玩家, 触发客户端自动拉取。
      * 同时把当前全服建造速度也推一份, 让客户端 SettingsGui 滑条值与服务端同步。
      *
      * 额外: 给该玩家发一条欢迎消息到聊天栏, 告诉玩家按 O 可以打开本模组设置界面.

@@ -1,8 +1,7 @@
 package com.prefab.addon.client.gui;
 
-import com.mojang.blaze3d.systems.RenderSystem;
-import com.prefab.addon.PrefabCustomAddon;
 import com.prefab.addon.client.CustomBulldozerPreviewRenderer;
+import com.prefab.addon.client.PackBrowserKeyHandler;
 import com.prefab.addon.items.ItemCustomBulldozer;
 import com.prefab.addon.network.ExecuteCustomBulldozerPayload;
 import com.prefab.structures.gui.GuiBulldozer;
@@ -15,7 +14,7 @@ import net.minecraft.world.item.ItemStack;
 import net.neoforged.neoforge.network.PacketDistributor;
 
 /**
- * 自定义推土机 GUI.
+ * 自定义推土机 GUI (仅清除模式).
  *
  * <p>继承 prefab 原版 {@link GuiBulldozer}, 在原版「建造」「取消」基础上加:</p>
  * <ul>
@@ -23,6 +22,9 @@ import net.neoforged.neoforge.network.PacketDistributor;
  *   <li>「设置」按钮: 打开子 GUI 调尺寸</li>
  *   <li>「预览」按钮: 进入 3D 黄线框预览模式 (方向键移动, ALT 清除)</li>
  * </ul>
+ *
+ * <p>注: 曾有「填充模式」, 已移除; 打开 GUI 时强制把旧 NBT 里的填充标记清掉,
+ * 避免老物品残留 fillMode=true 走进填充分支.</p>
  */
 public class GuiCustomBulldozer extends GuiBulldozer {
 
@@ -38,6 +40,8 @@ public class GuiCustomBulldozer extends GuiBulldozer {
     public GuiCustomBulldozer(ItemStack stack, BlockPos pos) {
         super();
         this.stack = stack;
+        // 只保留清除模式: 清掉旧版本 NBT 里可能残留的填充标记
+        ItemCustomBulldozer.setFillMode(this.stack, false);
         // 用父类 GuiStructure 的 public BlockPos pos 字段, 不要在本类里再定义同名字段 (会 shadow, 父类 Initialize() 拿不到).
         this.pos = pos.immutable();
         // 注意: specificConfiguration 此时还是 null, 父类 GuiBulldozer.Initialize() 里才创建并赋给 this.pos,
@@ -47,14 +51,10 @@ public class GuiCustomBulldozer extends GuiBulldozer {
     @Override
     protected void Initialize() {
         super.Initialize();
-        // 原版的 build/cancel 按钮是放在 super.Initialize 里的. 我们重新排版, 把这两个
-        // 按钮往下挪一行, 上面放 settings / preview.
-        // 父类按钮坐标是按 256x256 大图算的 (grayBoxX + 10/147, grayBoxY + 136),
-        // 我们这里只追加新按钮, 不动父类按钮位置, 避免破坏 prefab 的图像资源.
-        int btnW = 56;
+        // 3 按钮右对齐: 设置 | 预览 | 清除
+        int btnW = 52;
         int btnH = 18;
         int gap = 4;
-        // 按钮向右放: 面板 ~350 宽, 3 按钮 (56*3 + 4*2 = 176), 留右边 12px → 起始 x = 350-176-12 = 162
         int row2Y = this.height - 28;
         int startX = this.width - 3 * btnW - 2 * gap - 12;
 
@@ -66,9 +66,9 @@ public class GuiCustomBulldozer extends GuiBulldozer {
         // 「预览」按钮: 进入 3D 黄线框
         this.btnPreview = Button.builder(Component.literal("§e📐 预览"), b -> {
             enterPreview();
-        }).bounds(startX + btnW + gap, row2Y, btnW, btnH).build();
+        }).bounds(startX + (btnW + gap), row2Y, btnW, btnH).build();
 
-        // 「建造/清除」按钮 (跟原版 build 一样, 但发我们的网络包)
+        // 「清除」按钮 (跟原版 build 一样, 但发我们的网络包)
         this.btnBuildCustom = Button.builder(Component.literal("§a§l清除"), b -> {
             executeClear();
         }).bounds(startX + 2 * (btnW + gap), row2Y, btnW, btnH).build();
@@ -86,11 +86,17 @@ public class GuiCustomBulldozer extends GuiBulldozer {
         int L = ItemCustomBulldozer.getLength(this.stack);
         int W = ItemCustomBulldozer.getWidth(this.stack);
         int H = ItemCustomBulldozer.getHeight(this.stack);
-        Direction facing = this.minecraft.player.getDirection().getOpposite();
+        Direction facing = this.minecraft.player.getDirection();  // 区域向玩家前方延伸 (原 .getOpposite() 会生成在背后)
         CustomBulldozerPreviewRenderer.start(this.pos, L, W, H, facing, this.stack);
         this.minecraft.setScreen(null);
+        String moveKeys = PackBrowserKeyHandler.keyName(PackBrowserKeyHandler.PREVIEW_FORWARD, "↑")
+            + PackBrowserKeyHandler.keyName(PackBrowserKeyHandler.PREVIEW_BACK, "↓")
+            + PackBrowserKeyHandler.keyName(PackBrowserKeyHandler.PREVIEW_LEFT, "←")
+            + PackBrowserKeyHandler.keyName(PackBrowserKeyHandler.PREVIEW_RIGHT, "→");
+        String cancelKey = PackBrowserKeyHandler.keyName(PackBrowserKeyHandler.CANCEL_PREVIEW, "右键");
         this.minecraft.player.sendSystemMessage(Component.literal(
-            "§e进入预览模式: 方向键移动, §l§6ALT§r§e确认清除, 右键取消"
+            "§e进入预览模式: " + moveKeys + "移动, §l§6" + PackBrowserKeyHandler.buildKeyName()
+                + "§r§e确认清除, " + cancelKey + "取消"
         ));
     }
 
@@ -98,9 +104,10 @@ public class GuiCustomBulldozer extends GuiBulldozer {
         int L = ItemCustomBulldozer.getLength(this.stack);
         int W = ItemCustomBulldozer.getWidth(this.stack);
         int H = ItemCustomBulldozer.getHeight(this.stack);
-        // 自定义推土机固定 noDrops = true (任何模式都不生成掉落物, 性能最优)
-        Direction facing = this.minecraft.player.getDirection().getOpposite();
-        PacketDistributor.sendToServer(new ExecuteCustomBulldozerPayload(this.pos, L, W, H, facing, true));
+        // noDrops 传 false: 掉落物由服务端按尺寸判定 (长宽高每个都≤16 才生成)
+        Direction facing = this.minecraft.player.getDirection();  // 区域向玩家前方延伸 (原 .getOpposite() 会生成在背后)
+        PacketDistributor.sendToServer(new ExecuteCustomBulldozerPayload(
+            this.pos, L, W, H, facing, false, false, ""));
         this.minecraft.setScreen(null);
     }
 
@@ -131,10 +138,11 @@ public class GuiCustomBulldozer extends GuiBulldozer {
         guiGraphics.drawString(this.font,
             "§7耐久: §f" + (this.stack.getMaxDamage() - this.stack.getDamageValue()) + "/" + this.stack.getMaxDamage(),
             x + 10, y + 46, 0xFFFFFF, false);
+        guiGraphics.drawString(this.font, "§7模式: §b清除模式", x + 10, y + 58, 0xFFFFFF, false);
 
         // 说明文字 (用原版方法绘制, 走 prefab 风格)
-        String desc = "§7右键放置起点 → 设置尺寸 → 直接点 §a§l清除§7 或点 §e📐 预览§7 进入 3D 预览模式";
-        int linesY = y + 64;
+        String desc = "§7右键放置起点 → §6设置§7尺寸 → 直接点 §a§l清除§7 或点 §e📐 预览§7 进入 3D 预览模式";
+        int linesY = y + 74;
         for (String line : desc.split("§7")) {
             if (line.isEmpty()) continue;
             guiGraphics.drawString(this.font, "§7" + line, x + 10, linesY, 0xFFFFFF, false);

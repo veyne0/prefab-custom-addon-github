@@ -86,9 +86,8 @@ public final class AsyncBuildManager {
         public boolean blueprintConsumed; // 蓝图是否已消耗 (完成时消耗)
         /**
          * 静默模式: KubeJS 联动蓝图建造时 = true.
-         *   - 不发 "开始建造" / "建造完成" / "已存入云端" 等聊天栏消息
          *   - 完成后不存云端 (云端 tab 只放 CustomBlueprintItem 出的建筑)
-         * 普通 mod 原生 CustomBlueprintItem 走的还是带消息 + 存云端的老路径.
+         * 注: V2.2.0 起建造过程全静默 (都不发聊天消息), 此字段只控制云端备份.
          */
         public final boolean silent;
 
@@ -238,19 +237,7 @@ public final class AsyncBuildManager {
         PrefabCustomAddon.LOGGER.info("[BUILD-ASYNC] 启动: player={} pack={} construction={} origin={} totalBlocks={} mode={} houseFacing={}({} steps) silent={}",
             player.getName().getString(), packName, constructionId, origin,
             task.totalBlocks, mode, houseFacing, steps, silent);
-        // KubeJS 联动蓝图走 silent 模式, 不发 "开始建造" 聊天消息 (玩家视角是右键就放完了, 不需要被提醒)
-        if (player != null && !silent) {
-            String speedDesc = mode == BuildAnimationMode.OFF
-                ? "100%/tick (单 tick 全放, 瞬建, 可能卡顿)"
-                : "1 块/tick (§d" + mode.name() + " 动画§e, 配合" + switch (mode) {
-                    case FALL  -> "竖直下落";
-                    case RAIN  -> "方块雨";
-                    case THROW -> "四周抛过来";
-                    default    -> "?";
-                } + "动画, ~50s/1000块)";
-            String msg = "§e开始建造: " + constructionId + ": " + task.totalBlocks + " 块 (异步, " + speedDesc + ")";
-            player.sendSystemMessage(net.minecraft.network.chat.Component.literal(msg));
-        }
+        // 不发 "开始建造" 聊天消息 (V2.2.0: 建造过程全静默, 只留日志)
     }
 
     /**
@@ -427,18 +414,7 @@ public final class AsyncBuildManager {
             }
         }
 
-        // 进度反馈 (每 10% 给玩家发一次消息). KubeJS 联动蓝图 silent 模式跳过.
-        if (task.silent) {
-            // do nothing
-        } else {
-            int currentPct = task.getPercent();
-            int lastReportedPct = (task.placedCount - batchSize <= 0) ? 0 :
-                                  ((task.placedCount - batchSize) * 100 / task.totalBlocks);
-            if (currentPct / 10 > lastReportedPct / 10 && currentPct < 100) {
-                player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
-                    "§7建造中: " + currentPct + "% (" + task.placedCount + "/" + task.totalBlocks + ")"));
-            }
-        }
+        // 进度不再发聊天消息 (V2.2.0: 建造过程全静默)
 
         if (task.nextIndex >= task.totalBlocks) {
             task.completed = true;
@@ -508,12 +484,7 @@ public final class AsyncBuildManager {
             task.blueprintConsumed = true;
         }
 
-        // KubeJS 联动蓝图走 silent 模式, 不发 "建造完成" 聊天消息
-        if (task.player != null && !task.player.isRemoved() && !task.silent) {
-            task.player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
-                PrefabCustomAddon.tr("build.done", task.constructionId, task.placedCount, (int) elapsedMs))
-                .withStyle(net.minecraft.ChatFormatting.GREEN));
-        }
+        // 不发 "建造完成" 聊天消息 (V2.2.0: 建造过程全静默)
 
         // === 云端自动备份 ===
         // KubeJS 联动蓝图走 silent 模式, 完成后不存云端 (云端 tab 只放原生 CustomBlueprintItem 出的建筑)
@@ -626,11 +597,7 @@ public final class AsyncBuildManager {
 
             com.prefab.addon.cloud.CloudBuildingManager.getInstance().add(task.player, cb);
 
-            if (task.player != null && !task.player.isRemoved()) {
-                task.player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
-                    PrefabCustomAddon.tr("build.cloud_saved", displayName))
-                    .withStyle(net.minecraft.ChatFormatting.AQUA));
-            }
+            // 不发 "已存入云端" 聊天消息 (V2.2.0: 建造过程全静默, 云端 tab 里能看到)
         } catch (Throwable t) {
             PrefabCustomAddon.LOGGER.warn("[BUILD-ASYNC] 云端备份失败 (非致命, 建筑仍在世界中)", t);
         }

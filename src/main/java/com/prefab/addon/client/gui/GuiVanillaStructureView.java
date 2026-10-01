@@ -180,7 +180,10 @@ public final class GuiVanillaStructureView {
         scene.useCacheBuffer(true);
         scene.syncCompile(true);
         scene.setTickWorld(false);
-
+        // 悬停方块显示原生物品 tooltip (不依赖 JEI; 只设置一次, 变体切换不重复);
+        // xeiLookup 另提供 JEI/REI/EMI 查询集成
+        scene.setShowHoverBlockTips(true);
+        scene.xeiLookup();
         // 提示文字 (3D 没加载完时显示在场景左上角) - 用 absolute 浮在 Scene 上层
         TextElement sceneHint = new TextElement();
         sceneHint.setText("加载中...");

@@ -215,26 +215,7 @@ public class PlayerPreferences {
         }
     }
 
-    public void toggleConsumeMaterials() {
-        this.consumeMaterials = !this.consumeMaterials;
-        save();
-        PrefabCustomAddon.LOGGER.info("[PREFS] 切换 consumeMaterials = {}", this.consumeMaterials);
-    }
-
-    /**
-     * 显式设置 consumeMaterials (供 GUI 调用, 而不是 toggle).
-     * 新版 SettingsGui (LDLib2) 的 Toggle 直接给布尔值, 不再 toggle.
-     */
-    public void setConsumeMaterials(boolean value) {
-        if (this.consumeMaterials == value) return;
-        this.consumeMaterials = value;
-        save();
-        PrefabCustomAddon.LOGGER.info("[PREFS] 设置 consumeMaterials = {}", this.consumeMaterials);
-    }
-
-    /**
-     * 预览批处理百分比 (1..100). 限制范围, 避免异常值.
-     */
+    /** 预览批处理百分比 (1..100). 限制范围, 避免异常值. */
     public int getPreviewBatchPercent() {
         return clampPercent(this.previewBatchPercent, 1);
     }

@@ -129,7 +129,7 @@ public class GuiCustomStructureSelection {
         titleEl.layout(l -> l.widthPercent(100).height(20));
         root.addChild(titleEl);
 
-        // 提示行 (左键: 进入拓展包 | 右键: ...)
+        // 提示行 (左键: 进入 | 右键: 进入并选第一个)
         TextElement hintEl = new TextElement();
         hintEl.setText(com.prefab.addon.PrefabCustomAddon.tr("gui.select.hint"));
         hintEl.textStyle(t -> t.textColor(0xAAAAAA).textAlignHorizontal(Horizontal.CENTER));

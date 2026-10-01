@@ -81,6 +81,51 @@ public class ItemCustomBulldozer extends Item {
         stack.set(DataComponents.CUSTOM_DATA, CustomData.of(tag));
     }
 
+    // === fillMode: 填充模式 (true = 用选中方块填满区域, false = 清除) ===
+    // 默认 false (清除模式). 玩家在推土机 GUI 点「清除模式/填充模式」按钮切换, 写进 NBT 持久化.
+
+    public static boolean getFillMode(ItemStack stack) {
+        CompoundTag tag = getOrCreateTag(stack);
+        return tag.contains("fillMode") && tag.getBoolean("fillMode");
+    }
+
+    public static void setFillMode(ItemStack stack, boolean fillMode) {
+        CompoundTag tag = getOrCreateTag(stack);
+        tag.putBoolean("fillMode", fillMode);
+        stack.set(DataComponents.CUSTOM_DATA, CustomData.of(tag));
+    }
+
+    // === fillBlockId: 填充用的方块注册 id (e.g. "minecraft:stone"), 空串 = 未选择 ===
+
+    public static String getFillBlockId(ItemStack stack) {
+        CompoundTag tag = getOrCreateTag(stack);
+        return tag.contains("fillBlockId") ? tag.getString("fillBlockId") : "";
+    }
+
+    public static void setFillBlockId(ItemStack stack, String blockId) {
+        CompoundTag tag = getOrCreateTag(stack);
+        tag.putString("fillBlockId", blockId == null ? "" : blockId);
+        stack.set(DataComponents.CUSTOM_DATA, CustomData.of(tag));
+    }
+
+    /**
+     * 填充方块的本地化显示名 (未选择/无效时返回 "§c未选择").
+     * 只用 common 类 (BuiltInRegistries / ResourceLocation / Block), 服务端安全.
+     */
+    public static String getFillBlockDisplayName(ItemStack stack) {
+        String id = getFillBlockId(stack);
+        if (id.isEmpty()) return "§c未选择";
+        try {
+            net.minecraft.world.level.block.Block b =
+                net.minecraft.core.registries.BuiltInRegistries.BLOCK.get(
+                    net.minecraft.resources.ResourceLocation.parse(id));
+            if (b == null || b == net.minecraft.world.level.block.Blocks.AIR) return "§c未选择";
+            return new ItemStack(b).getHoverName().getString();
+        } catch (Throwable t) {
+            return "§c未选择";
+        }
+    }
+
     // === Tooltip ===
 
     @Override
@@ -91,8 +136,9 @@ public class ItemCustomBulldozer extends Item {
             "§7区域: §f%dx%dx%d §7(长x宽x高)",
             getLength(stack), getWidth(stack), getHeight(stack))
         ).withStyle(ChatFormatting.GRAY));
-        // 自定义推土机固定不生成掉落物, 不论模式
-        tooltip.add(Component.literal("§7掉落物: §c✗ 固定禁用 (任何模式都不生成)")
+        // 只有清除模式 (填充模式已移除)
+        // 掉落物规则: 长宽高每个都≤16 才生成 (服务端判定)
+        tooltip.add(Component.literal("§7掉落物: §e长宽高每个≤16 时生成, §c大范围不生成")
             .withStyle(ChatFormatting.GRAY));
         if (stack.getDamageValue() > 0) {
             int maxDmg = stack.getMaxDamage();

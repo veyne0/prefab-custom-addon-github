@@ -26,6 +26,45 @@ import java.util.*;
  */
 public class NbtFormatConverter {
 
+    /**
+     * 从任意支持格式 (vanilla / litematic / schem) 的建筑文件字节里提取依赖 mod id 列表.
+     * <p>原理: 转 vanilla 后读 palette 里所有 Name, 收集 namespace != "minecraft" 的 mod id.
+     * 用于网页下载的建筑补全依赖 (服务器/网页表单都没有依赖信息, 只能在客户端本地解析).</p>
+     *
+     * @return 排序去重的 mod id 列表 (如 ["botania", "ars_nouveau"]); 解析失败返回空列表, 绝不返回 null
+     */
+    public static java.util.List<String> extractModIds(byte[] nbtData) {
+        java.util.Set<String> mods = new java.util.TreeSet<>();
+        if (nbtData == null || nbtData.length == 0) return new java.util.ArrayList<>(mods);
+        try {
+            CompoundTag root;
+            try (var bais = new ByteArrayInputStream(nbtData)) {
+                root = NbtIo.readCompressed(bais, NbtAccounter.create(64L * 1024 * 1024));
+            } catch (Exception e) {
+                try (var bais = new ByteArrayInputStream(nbtData)) {
+                    root = NbtIo.read(new DataInputStream(bais));
+                }
+            }
+            if (root == null) return new java.util.ArrayList<>(mods);
+            CompoundTag van = toVanilla(root);
+            if (van == null) van = root;
+            if (!van.contains("palette", Tag.TAG_LIST)) return new java.util.ArrayList<>(mods);
+            ListTag palette = van.getList("palette", Tag.TAG_COMPOUND);
+            for (int i = 0; i < palette.size(); i++) {
+                String name = palette.getCompound(i).getString("Name");
+                if (name == null || name.isEmpty()) continue;
+                int colon = name.indexOf(':');
+                String ns = colon > 0 ? name.substring(0, colon) : "minecraft";
+                if (!ns.isEmpty() && !ns.equals("minecraft")) {
+                    mods.add(ns);
+                }
+            }
+        } catch (Throwable t) {
+            PrefabCustomAddon.LOGGER.warn("[NBT-DEBUG] extractModIds 失败 (非致命): {}", t.getMessage());
+        }
+        return new java.util.ArrayList<>(mods);
+    }
+
     /** 检测 NBT 根 CompoundTag 的格式. */
     public static String detectFormat(CompoundTag root) {
         if (root == null) return "unknown";

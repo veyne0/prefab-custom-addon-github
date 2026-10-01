@@ -8,7 +8,6 @@ import com.lowdragmc.lowdraglib2.gui.ui.data.Horizontal;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Button;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Label;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Scroller;
-import com.lowdragmc.lowdraglib2.gui.ui.elements.Toggle;
 import com.lowdragmc.lowdraglib2.gui.ui.style.StylesheetManager;
 import com.lowdragmc.lowdraglib2.gui.ui.styletemplate.Sprites;
 import com.prefab.addon.PrefabCustomAddon;
@@ -27,7 +26,7 @@ import net.minecraft.network.chat.Component;
  *
  * <h2>权限</h2>
  * <ul>
- *   <li><b>挑战模式 (consumeMaterials)</b>: 需要 OP (permission level >= 2). 非 OP 点击 toggle 会被还原并提示.</li>
+ *   <li><b>材料消耗</b>: 按玩家游戏模式自动判定 (生存/冒险消耗, 创造免费), 不再需要 OP 开关.</li>
  *   <li><b>预览速度 (previewBatchPercent)</b>: <strong>个人</strong>设置 (客户端本地, 不走网络), 无权限要求.</li>
  *   <li><b>建造速度 (buildBatchPercent)</b>: <strong>全服共享</strong>, 需要 OP (服务端校验, 非 OP 直接拒绝).
  *       GUI 改值时发 {@link UpdateBuildSpeedPayload} 给服务端, 服务端处理完用 {@link com.prefab.addon.network.SyncBuildSpeedPayload}
@@ -69,33 +68,12 @@ public final class SettingsGui {
         title.textStyle(t -> t.textAlignHorizontal(Horizontal.CENTER));
         root.addChild(title);
 
-        // 副标题
+        // 副标题: 材料规则提示 (挑战模式开关已移除, 改为按游戏模式自动判定)
         Label subtitle = new Label();
         subtitle.setText(
-            Component.literal(PrefabCustomAddon.tr("gui.settings.challenge_hint")).withStyle(ChatFormatting.GRAY));
+            Component.literal(PrefabCustomAddon.tr("gui.settings.material_rule_hint")).withStyle(ChatFormatting.GRAY));
         subtitle.textStyle(t -> t.textAlignHorizontal(Horizontal.CENTER));
         root.addChild(subtitle);
-
-        // === 挑战模式 toggle ===
-        Toggle challengeToggle = new Toggle();
-        challengeToggle.setText(challengeButtonText(prefs.consumeMaterials, isOp));
-        challengeToggle.setOn(prefs.consumeMaterials);
-        challengeToggle.setOnToggleChanged(isOn -> {
-            if (!isOp) {
-                if (mc.player != null) {
-                    mc.player.sendSystemMessage(Component.literal(
-                        PrefabCustomAddon.tr("gui.settings.challenge_op_required"))
-                        .withStyle(ChatFormatting.RED));
-                }
-                PrefabCustomAddon.LOGGER.warn("[SETTINGS] Non-OP player tried to toggle challenge mode");
-                challengeToggle.setOn(!isOn);
-                return;
-            }
-            prefs.setConsumeMaterials(isOn);
-            challengeToggle.setText(challengeButtonText(isOn, true));
-            PrefabCustomAddon.LOGGER.info("[SETTINGS] Challenge mode toggled to {}", isOn);
-        });
-        root.addChild(challengeToggle);
 
         // === 预览生成速度 (个人设置) ===
         // 之前: 滑条控制 AsyncPreviewBatcher 每 tick 处理多少 % 块 (默认 10%/tick).
@@ -132,19 +110,19 @@ public final class SettingsGui {
         });
         root.addChild(buildScroller);
 
-        // === 打开拓展包文件夹 (无权限要求) ===
-        Button folderButton = new Button().setText(Component.literal("📁 打开拓展包文件夹"));
+        // === 打开建筑文件夹 (无权限要求) ===
+        Button folderButton = new Button().setText(Component.literal("📁 打开建筑文件夹"));
         folderButton.setOnClick(e -> {
             try {
                 FolderOpener.openExtensionFolder();
             } catch (Exception ex) {
-                PrefabCustomAddon.LOGGER.error("[SETTINGS] 打开拓展包文件夹失败", ex);
+                PrefabCustomAddon.LOGGER.error("[SETTINGS] 打开建筑文件夹失败", ex);
             }
         });
         root.addChild(folderButton);
 
-        // === 同步服务器拓展包 (无权限要求, 玩家自己触发) ===
-        Button syncServerButton = new Button().setText(Component.literal("🔄 同步服务器拓展包"));
+        // === 同步服务器建筑 (无权限要求, 玩家自己触发) ===
+        Button syncServerButton = new Button().setText(Component.literal("🔄 同步服务器建筑"));
         syncServerButton.setOnClick(e -> {
             // 触发 ServerPackSyncClient 的手动同步流程 (重新发 manifest 到服务端)
             try {
@@ -155,7 +133,7 @@ public final class SettingsGui {
                         .withStyle(ChatFormatting.AQUA));
                 }
             } catch (Throwable t) {
-                PrefabCustomAddon.LOGGER.error("[SETTINGS] 同步服务器拓展包失败", t);
+                PrefabCustomAddon.LOGGER.error("[SETTINGS] 同步服务器建筑失败", t);
                 if (mc.player != null) {
                     mc.player.sendSystemMessage(Component.literal(
                         "✗ 同步失败: " + t.getMessage()).withStyle(ChatFormatting.RED));
@@ -169,18 +147,11 @@ public final class SettingsGui {
         doneButton.setOnClick(e -> mc.setScreen(null));
         root.addChild(doneButton);
 
-        PrefabCustomAddon.LOGGER.info("[SETTINGS] Init: challengeMode={} isOp={} previewBatch={}% buildBatch={}%",
-            prefs.consumeMaterials, isOp, prefs.getPreviewBatchPercent(), prefs.getBuildBatchPercent());
+        PrefabCustomAddon.LOGGER.info("[SETTINGS] Init: isOp={} previewBatch={}% buildBatch={}%",
+            isOp, prefs.getPreviewBatchPercent(), prefs.getBuildBatchPercent());
 
         return ModularUI.of(UI.of(root,
             StylesheetManager.INSTANCE.getStylesheetSafe(StylesheetManager.GDP)));
-    }
-
-    private static Component challengeButtonText(boolean consume, boolean isOp) {
-        String status = consume ? "✓ ON" : "✗ OFF";
-        String opHint = isOp ? "" : "  §c(OP only)";
-        // 全服生效 + OP 权限 这两条是关键提示, 直接钉在按钮文字后面, 玩家一眼能看到.
-        return Component.literal(PrefabCustomAddon.tr("gui.settings.challenge_label", status, opHint));
     }
 
     private static Component buildLabelText(int pct, boolean isOp) {

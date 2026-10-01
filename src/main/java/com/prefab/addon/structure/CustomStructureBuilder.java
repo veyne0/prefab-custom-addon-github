@@ -494,10 +494,10 @@ public class CustomStructureBuilder {
             PrefabCustomAddon.LOGGER.error("[PLACE-ASYNC] 找不到建筑: {}/{}", packName, constructionId);
             if (player != null) {
                 // 多行提示: 告诉玩家 (1) 真正的"权威"是服务端 prefab-extension/ 而不是本地
-                // (2) 怎么把包放到服务端 (3) 放完后怎么同步到客户端: 按 O → 同步拓展包
+                // (2) 怎么把建筑文件放到服务端 (3) 放完后怎么同步到客户端: 按 O → 同步服务器建筑
                 player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
                     com.prefab.addon.PrefabCustomAddon.tr("err.not_found", packName, constructionId)
-                    + " §7(包名 " + packName + ")").withStyle(net.minecraft.ChatFormatting.RED));
+                    + " §7(源文件: " + packName + ")").withStyle(net.minecraft.ChatFormatting.RED));
                 player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
                     com.prefab.addon.PrefabCustomAddon.tr("err.hint.pack_on_server"))
                     .withStyle(net.minecraft.ChatFormatting.YELLOW));
@@ -545,13 +545,7 @@ public class CustomStructureBuilder {
             blockDataList.size(), com.prefab.addon.config.PlayerPreferences.get().getBuildBatchPercent(), houseFacing, silent);
         AsyncBuildManager.startTask(player, level, origin, packName, constructionId, blockDataList, houseFacing, mode, silent);
 
-        // silent 模式 (KubeJS 联动蓝图) 不发这条提示 — 玩家右键就放完, 跟原版一样安静
-        if (player != null && !silent) {
-            player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
-                "§e⏳ 开始建造 " + constructionId + ": " + blockDataList.size() + " 块 (异步分批, "
-                + com.prefab.addon.config.PlayerPreferences.get().getBuildBatchPercent() + "%, 进度在聊天栏)")
-                .withStyle(net.minecraft.ChatFormatting.YELLOW));
-        }
+        // 不发 "⏳ 开始建造" 聊天提示 (V2.2.0: 建造过程全静默)
         return true;
     }
 
@@ -690,6 +684,19 @@ public class CustomStructureBuilder {
                                        java.util.Map<com.prefab.structures.base.BuildBlock, BlockPos> localMap) {
         if (structure == null || localMap == null) return;
         STRUCTURE_LOCAL_POS.put(structure, localMap);
+    }
+
+    /**
+     * 拿 structure 的 localPos map (BuildBlock → 在 local 坐标系里的位置).
+     * 外部需要把 world pos 转回 local pos 时调这个 (例如 EditModeController 改 NBT 前
+     * 要知道每个 BuildBlock 在 local 坐标系的位置). 返回 internal map 的拷贝, 防外部乱改.
+     */
+    public static java.util.Map<com.prefab.structures.base.BuildBlock, BlockPos> getLocalPosMap(
+            com.prefab.structures.base.Structure structure) {
+        if (structure == null) return java.util.Collections.emptyMap();
+        java.util.Map<com.prefab.structures.base.BuildBlock, BlockPos> m = STRUCTURE_LOCAL_POS.get(structure);
+        if (m == null) return java.util.Collections.emptyMap();
+        return new java.util.HashMap<>(m);
     }
 
     /**

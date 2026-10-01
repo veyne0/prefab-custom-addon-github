@@ -490,6 +490,41 @@ public class PackDownloadManager {
                     PrefabCustomAddon.LOGGER.warn("[DOWNLOAD-B] Info download failed for {}: {}", info.id, infoEx.getMessage());
                 }
 
+                // ---- 4) 从建筑文件本地解析依赖 mod, 补写进 .txt ----
+                // 服务器/网页表单都没有依赖信息 (上传时不采集), 只能在客户端解析 NBT palette 提取.
+                // 不写的话 LocalBuildingScanner 读到的依赖是空的, 详情页显示 "依赖 mod (0) 无".
+                try {
+                    byte[] nbtBytes = Files.readAllBytes(filePath);
+                    java.util.List<String> mods =
+                        com.prefab.addon.work.NbtFormatConverter.extractModIds(nbtBytes);
+                    Path txtPath = targetDir.resolve(baseName + suffix + ".txt");
+                    if (!mods.isEmpty()) {
+                        // .txt 可能不存在 (服务器 /info 404): 写一个最小元信息, 保证有地方挂依赖行
+                        if (Files.notExists(txtPath)) {
+                            String minimal = "建筑名: " + (info.name == null ? info.id : info.name) + "\n"
+                                + "作者: " + (info.author == null ? "" : info.author) + "\n"
+                                + "说明: " + (info.description == null ? "" : info.description) + "\n";
+                            Files.write(txtPath, minimal.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                                StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+                        }
+                        String txt = Files.readString(txtPath, java.nio.charset.StandardCharsets.UTF_8);
+                        boolean hasDeps = txt.contains("依赖") || txt.toLowerCase().contains("depend");
+                        if (!hasDeps) {
+                            String line = "依赖: " + String.join(", ", mods) + "\n";
+                            Files.writeString(txtPath, txt + (txt.endsWith("\n") ? "" : "\n") + line,
+                                java.nio.charset.StandardCharsets.UTF_8);
+                            PrefabCustomAddon.LOGGER.info("[DOWNLOAD-B] Dependencies extracted: {} -> {}",
+                                mods, txtPath.getFileName());
+                        }
+                    } else {
+                        PrefabCustomAddon.LOGGER.info("[DOWNLOAD-B] No non-vanilla blocks found in {} (pure vanilla)",
+                            filePath.getFileName());
+                    }
+                } catch (Exception depEx) {
+                    PrefabCustomAddon.LOGGER.warn("[DOWNLOAD-B] Dependency extraction failed for {}: {}",
+                        info.id, depEx.getMessage());
+                }
+
                 if (callback != null) callback.onComplete(filePath);
             } catch (Exception e) {
                 PrefabCustomAddon.LOGGER.error("[DOWNLOAD-B] Failed", e);

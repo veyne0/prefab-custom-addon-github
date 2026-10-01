@@ -9,6 +9,7 @@ import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.Tesselator;
 import com.mojang.blaze3d.vertex.VertexFormat;
 import com.prefab.addon.PrefabCustomAddon;
+import com.prefab.addon.items.ItemCustomBulldozer;
 import com.prefab.addon.network.ExecuteCustomBulldozerPayload;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
@@ -111,9 +112,11 @@ public class CustomBulldozerPreviewRenderer {
 
     public static void execute() {
         if (state == null) return;
-        // 强制 noDrops = true: 自定义推土机任何模式都不生成掉落物, 玩家不能改
+        // noDrops 传 false: 掉落物由服务端按尺寸判定 (长宽高每个都≤16 才生成)
+        boolean fill = ItemCustomBulldozer.getFillMode(state.stack);
+        String blockId = fill ? ItemCustomBulldozer.getFillBlockId(state.stack) : "";
         PacketDistributor.sendToServer(new ExecuteCustomBulldozerPayload(
-            state.pos, state.length, state.width, state.height, state.facing, true));
+            state.pos, state.length, state.width, state.height, state.facing, false, fill, blockId));
         state = null;
     }
 
@@ -132,7 +135,8 @@ public class CustomBulldozerPreviewRenderer {
         poseStack.pushPose();
         poseStack.translate(-camPos.x, -camPos.y, -camPos.z);
 
-        // 1) 6 个外法线面渲染淡黄色半透明 (玻璃箱效果, 让玩家从外面看进去觉得"这片会被清掉")
+        // 清除/填充模式统一用黄色显示框 (两模式预览保持一致)
+        // 1) 6 个外法线面渲染淡黄色半透明 (玻璃箱效果)
         drawFaceOverlay(poseStack, box, 1.0f, 0.95f, 0.2f, 0.12f);
         // 2) 黄色主线框 (框出边界)
         drawWireframe(poseStack, box, 1.0f, 1.0f, 0.2f, 1.0f);

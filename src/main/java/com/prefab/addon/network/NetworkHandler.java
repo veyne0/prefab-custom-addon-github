@@ -1,482 +1,314 @@
+/*
+ * Decompiled with CFR 0.152.
+ * 
+ * Could not load the following classes:
+ *  net.minecraft.ChatFormatting
+ *  net.minecraft.core.component.DataComponents
+ *  net.minecraft.nbt.CompoundTag
+ *  net.minecraft.network.chat.Component
+ *  net.minecraft.network.protocol.common.custom.CustomPacketPayload
+ *  net.minecraft.server.MinecraftServer
+ *  net.minecraft.server.level.ServerLevel
+ *  net.minecraft.server.level.ServerPlayer
+ *  net.minecraft.world.entity.player.Inventory
+ *  net.minecraft.world.item.ItemStack
+ *  net.minecraft.world.item.component.CustomData
+ *  net.neoforged.neoforge.network.PacketDistributor
+ *  net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent
+ *  net.neoforged.neoforge.network.handling.IPayloadContext
+ *  net.neoforged.neoforge.network.registration.PayloadRegistrar
+ */
 package com.prefab.addon.network;
 
 import com.prefab.addon.PrefabCustomAddon;
+import com.prefab.addon.client.BuildAnimationRenderer;
+import com.prefab.addon.cloud.CloudBuilding;
+import com.prefab.addon.cloud.CloudBuildingClientCache;
 import com.prefab.addon.cloud.CloudBuildingDeletePayload;
 import com.prefab.addon.cloud.CloudBuildingManager;
 import com.prefab.addon.cloud.CloudBuildingRecallPayload;
 import com.prefab.addon.cloud.CloudBuildingSummonPayload;
 import com.prefab.addon.cloud.CloudBuildingSyncPayload;
+import com.prefab.addon.config.PlayerPreferences;
 import com.prefab.addon.extension.ExtensionPackManager;
 import com.prefab.addon.items.CustomBlueprintItem;
+import com.prefab.addon.multiblock.MultiblockPlacer;
+import com.prefab.addon.network.BatchBlocksPlacedPayload;
+import com.prefab.addon.network.BindConstructionPayload;
+import com.prefab.addon.network.BuildCustomStructurePayload;
+import com.prefab.addon.network.BuildOutsourceStructurePayload;
+import com.prefab.addon.network.ClientBuildingSyncHelper;
+import com.prefab.addon.network.ExecuteCustomBulldozerPayload;
+import com.prefab.addon.network.MiniBuildingCapturePayload;
+import com.prefab.addon.network.MiniBuildingFullDataPayload;
+import com.prefab.addon.network.MiniBuildingItemDataRequestPayload;
+import com.prefab.addon.network.MiniBuildingItemDataResponsePayload;
+import com.prefab.addon.network.MultiblockSummonPayload;
+import com.prefab.addon.network.OperationWandBuildPayload;
+import com.prefab.addon.network.OperationWandScanPayload;
+import com.prefab.addon.network.OperationWandScanResultPayload;
+import com.prefab.addon.network.RequestMiniBuildingDataPayload;
+import com.prefab.addon.network.RequestServerPackManifestPayload;
+import com.prefab.addon.network.RequestServerPacksPayload;
+import com.prefab.addon.network.ServerPackChunkAckPayload;
+import com.prefab.addon.network.ServerPackChunkPayload;
+import com.prefab.addon.network.ServerPackManifestPayload;
+import com.prefab.addon.network.ServerPackSyncClient;
+import com.prefab.addon.network.ServerPackSyncServer;
+import com.prefab.addon.network.SyncBuildSpeedPayload;
+import com.prefab.addon.network.UpdateBuildSpeedPayload;
+import com.prefab.addon.structure.AsyncBuildManager;
+import com.prefab.addon.structure.CustomStructureBuilder;
+import com.prefab.addon.structure.OutsourceBuildManager;
+import java.util.ArrayList;
+import net.minecraft.ChatFormatting;
+import net.minecraft.core.component.DataComponents;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.network.chat.Component;
+import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.item.ItemStack;
-import net.minecraft.world.level.Level;
-import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
-import net.neoforged.bus.api.SubscribeEvent;
+import net.minecraft.world.item.component.CustomData;
 import net.neoforged.neoforge.network.PacketDistributor;
 import net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent;
-import net.neoforged.neoforge.network.registration.PayloadRegistrar;
 import net.neoforged.neoforge.network.handling.IPayloadContext;
+import net.neoforged.neoforge.network.registration.PayloadRegistrar;
 
 public class NetworkHandler {
-
-    public static void register(final RegisterPayloadHandlersEvent event) {
-        final PayloadRegistrar registrar = event.registrar("1");
-        registrar.playToServer(
-                BuildCustomStructurePayload.TYPE,
-                BuildCustomStructurePayload.STREAM_CODEC,
-                NetworkHandler::handleBuild
-        );
-        registrar.playToServer(
-                BindConstructionPayload.TYPE,
-                BindConstructionPayload.STREAM_CODEC,
-                NetworkHandler::handleBind
-        );
-        // ===== 外包建筑 ALT 建造: 客户端→服务端 (独立于普通 BuildCustomStructurePayload) =====
-        // 走的是 OutsourceBuildManager.placeStructure, 跟 OutsourceBuildingLoader 配合,
-        // 不查 ExtensionPackManager, 蓝图消耗按 buildingId 匹配 OutsourceBlueprintItem.
-        registrar.playToServer(
-                BuildOutsourceStructurePayload.TYPE,
-                BuildOutsourceStructurePayload.STREAM_CODEC,
-                NetworkHandler::handleBuildOutsource
-        );
-        // 自定义推土机: 客户端 → 服务端执行清除
-        registrar.playToServer(
-                ExecuteCustomBulldozerPayload.TYPE,
-                ExecuteCustomBulldozerPayload.STREAM_CODEC,
-                ExecuteCustomBulldozerPayload::handle
-        );
-
-        // 迷你建筑转换器: 客户端 → 服务端执行 capture (避免 ClientLevel 缓存不全)
-        registrar.playToServer(
-            MiniBuildingCapturePayload.TYPE,
-            MiniBuildingCapturePayload.STREAM_CODEC,
-            MiniBuildingCapturePayload::handle
-        );
-
-        // 迷你建筑完整 NBT 同步: 客户端 BE 只有 ref, 主动向服务端请求,
-        // 服务端从外部文件读出来走 byte[] 推回 (绕过 2MB NbtAccounter).
-        registrar.playToServer(
-            RequestMiniBuildingDataPayload.TYPE,
-            RequestMiniBuildingDataPayload.STREAM_CODEC,
-            RequestMiniBuildingDataPayload::handle
-        );
-        registrar.playToClient(
-            MiniBuildingFullDataPayload.TYPE,
-            MiniBuildingFullDataPayload.STREAM_CODEC,
-            MiniBuildingFullDataPayload::handle
-        );
-
-        // 迷你建筑物品栏渲染: 物品只存引用, 客户端按 ref_id 请求完整 NBT,
-        // 服务端从外部文件读出后走 byte[] 推回 (同样绕过 2MB NbtAccounter).
-        registrar.playToServer(
-            MiniBuildingItemDataRequestPayload.TYPE,
-            MiniBuildingItemDataRequestPayload.STREAM_CODEC,
-            MiniBuildingItemDataRequestPayload::handle
-        );
-        registrar.playToClient(
-            MiniBuildingItemDataResponsePayload.TYPE,
-            MiniBuildingItemDataResponsePayload.STREAM_CODEC,
-            MiniBuildingItemDataResponsePayload::handle
-        );
-
-        // ===== 客户端→服务端: 全局建造速度 (OP 校验) =====
-        registrar.playToServer(
-                UpdateBuildSpeedPayload.TYPE,
-                UpdateBuildSpeedPayload.STREAM_CODEC,
-                NetworkHandler::handleUpdateBuildSpeed
-        );
-        // ===== 服务端→客户端: 广播当前全服建造速度 (供 SettingsGui 同步显示) =====
-        registrar.playToClient(
-                SyncBuildSpeedPayload.TYPE,
-                SyncBuildSpeedPayload.STREAM_CODEC,
-                (payload, ctx) -> com.prefab.addon.config.PlayerPreferences.get()
-                        .setBuildBatchPercentFromServer(payload.percent())
-        );
-
-        // ===== 服务端→客户端: 拓展包同步 (清单 / 分片) =====
-        registrar.playToClient(
-                ServerPackManifestPayload.TYPE,
-                ServerPackManifestPayload.STREAM_CODEC,
-                (payload, ctx) -> ServerPackSyncClient.getInstance().handleManifest(payload)
-        );
-        registrar.playToClient(
-                ServerPackChunkPayload.TYPE,
-                ServerPackChunkPayload.STREAM_CODEC,
-                (payload, ctx) -> ServerPackSyncClient.getInstance().handleChunk(payload)
-        );
-
-        // ===== 客户端→服务端: 拓展包同步 (请求 / ACK / 重发清单) =====
-        registrar.playToServer(
-                RequestServerPacksPayload.TYPE,
-                RequestServerPacksPayload.STREAM_CODEC,
-                (payload, ctx) -> {
-                    ServerPlayer sp = (ServerPlayer) ctx.player();
-                    ServerPackSyncServer.getInstance().handleRequest(sp, payload);
+    public static void register(RegisterPayloadHandlersEvent event) {
+        PayloadRegistrar registrar = event.registrar("1");
+        registrar.playToServer(BuildCustomStructurePayload.TYPE, BuildCustomStructurePayload.STREAM_CODEC, NetworkHandler::handleBuild);
+        registrar.playToServer(BindConstructionPayload.TYPE, BindConstructionPayload.STREAM_CODEC, NetworkHandler::handleBind);
+        registrar.playToServer(BuildOutsourceStructurePayload.TYPE, BuildOutsourceStructurePayload.STREAM_CODEC, NetworkHandler::handleBuildOutsource);
+        registrar.playToServer(ExecuteCustomBulldozerPayload.TYPE, ExecuteCustomBulldozerPayload.STREAM_CODEC, ExecuteCustomBulldozerPayload::handle);
+        registrar.playToServer(MiniBuildingCapturePayload.TYPE, MiniBuildingCapturePayload.STREAM_CODEC, MiniBuildingCapturePayload::handle);
+        registrar.playToServer(RequestMiniBuildingDataPayload.TYPE, RequestMiniBuildingDataPayload.STREAM_CODEC, RequestMiniBuildingDataPayload::handle);
+        registrar.playToClient(MiniBuildingFullDataPayload.TYPE, MiniBuildingFullDataPayload.STREAM_CODEC, MiniBuildingFullDataPayload::handle);
+        registrar.playToServer(MiniBuildingItemDataRequestPayload.TYPE, MiniBuildingItemDataRequestPayload.STREAM_CODEC, MiniBuildingItemDataRequestPayload::handle);
+        registrar.playToClient(MiniBuildingItemDataResponsePayload.TYPE, MiniBuildingItemDataResponsePayload.STREAM_CODEC, MiniBuildingItemDataResponsePayload::handle);
+        registrar.playToServer(UpdateBuildSpeedPayload.TYPE, UpdateBuildSpeedPayload.STREAM_CODEC, NetworkHandler::handleUpdateBuildSpeed);
+        registrar.playToClient(SyncBuildSpeedPayload.TYPE, SyncBuildSpeedPayload.STREAM_CODEC, (payload, ctx) -> PlayerPreferences.get().setBuildBatchPercentFromServer(payload.percent()));
+        registrar.playToClient(ServerPackManifestPayload.TYPE, ServerPackManifestPayload.STREAM_CODEC, (payload, ctx) -> ServerPackSyncClient.getInstance().handleManifest((ServerPackManifestPayload)payload));
+        registrar.playToClient(ServerPackChunkPayload.TYPE, ServerPackChunkPayload.STREAM_CODEC, (payload, ctx) -> ServerPackSyncClient.getInstance().handleChunk((ServerPackChunkPayload)payload));
+        registrar.playToServer(RequestServerPacksPayload.TYPE, RequestServerPacksPayload.STREAM_CODEC, (payload, ctx) -> {
+            ServerPlayer sp = (ServerPlayer)ctx.player();
+            ServerPackSyncServer.getInstance().handleRequest(sp, (RequestServerPacksPayload)payload);
+        });
+        registrar.playToServer(ServerPackChunkAckPayload.TYPE, ServerPackChunkAckPayload.STREAM_CODEC, (payload, ctx) -> {
+            ServerPlayer sp = (ServerPlayer)ctx.player();
+            ServerPackSyncServer.getInstance().handleAck(sp, (ServerPackChunkAckPayload)payload);
+        });
+        registrar.playToServer(RequestServerPackManifestPayload.TYPE, RequestServerPackManifestPayload.STREAM_CODEC, (payload, ctx) -> {
+            ServerPlayer sp = (ServerPlayer)ctx.player();
+            PrefabCustomAddon.LOGGER.info("[PACK-SYNC] {} requested manifest resend", (Object)sp.getName().getString());
+            int n = ExtensionPackManager.getInstance().reload();
+            PrefabCustomAddon.LOGGER.info("[PACK-SYNC] After reload: {} packs on server", (Object)n);
+            ServerPackSyncServer.getInstance().onPlayerJoin(sp);
+        });
+        registrar.playToServer(CloudBuildingRecallPayload.TYPE, CloudBuildingRecallPayload.STREAM_CODEC, (payload, ctx) -> {
+            ServerPlayer sp = (ServerPlayer)ctx.player();
+            CloudBuildingManager.getInstance().recall(sp, payload.buildingId());
+        });
+        registrar.playToServer(CloudBuildingSummonPayload.TYPE, CloudBuildingSummonPayload.STREAM_CODEC, (payload, ctx) -> {
+            ServerPlayer sp = (ServerPlayer)ctx.player();
+            CloudBuildingManager.getInstance().summon(sp, payload.buildingId(), payload.pos(), payload.facing());
+        });
+        registrar.playToServer(CloudBuildingDeletePayload.TYPE, CloudBuildingDeletePayload.STREAM_CODEC, (payload, ctx) -> {
+            ServerPlayer sp = (ServerPlayer)ctx.player();
+            CloudBuildingManager.getInstance().delete(sp, payload.buildingId());
+        });
+        registrar.playToServer(MultiblockSummonPayload.TYPE, MultiblockSummonPayload.STREAM_CODEC, (payload, ctx) -> {
+            ServerPlayer sp = (ServerPlayer)ctx.player();
+            MultiblockPlacer.place(sp, payload.id(), payload.pos(), payload.facing());
+        });
+        registrar.playToClient(CloudBuildingSyncPayload.TYPE, CloudBuildingSyncPayload.STREAM_CODEC, (payload, ctx) -> {
+            ArrayList<CloudBuilding> list = new ArrayList<CloudBuilding>();
+            for (CompoundTag tag : payload.buildings()) {
+                try {
+                    list.add(CloudBuilding.fromNbt(tag));
                 }
-        );
-        registrar.playToServer(
-                ServerPackChunkAckPayload.TYPE,
-                ServerPackChunkAckPayload.STREAM_CODEC,
-                (payload, ctx) -> {
-                    ServerPlayer sp = (ServerPlayer) ctx.player();
-                    ServerPackSyncServer.getInstance().handleAck(sp, payload);
+                catch (Exception e) {
+                    PrefabCustomAddon.LOGGER.warn("[CLOUD-CACHE] \u8df3\u8fc7\u635f\u574f\u7684\u4e91\u7aef\u5efa\u7b51: {}", (Object)e.getMessage());
                 }
-        );
-        registrar.playToServer(
-                RequestServerPackManifestPayload.TYPE,
-                RequestServerPackManifestPayload.STREAM_CODEC,
-                (payload, ctx) -> {
-                    ServerPlayer sp = (ServerPlayer) ctx.player();
-                    PrefabCustomAddon.LOGGER.info("[PACK-SYNC] {} requested manifest resend", sp.getName().getString());
-                    // 玩家主动点 "同步" 按钮时, 顺带重扫一次服务器目录,
-                    // 这样服主中途加 zip 不需要重启服也能让客户端拿到
-                    int n = ExtensionPackManager.getInstance().reload();
-                    PrefabCustomAddon.LOGGER.info("[PACK-SYNC] After reload: {} packs on server", n);
-                    ServerPackSyncServer.getInstance().onPlayerJoin(sp);
-                }
-        );
-
-        // ===== 云端建筑: 客户端→服务端 (收回/放出请求) + 服务端→客户端 (全量同步) =====
-        registrar.playToServer(
-                CloudBuildingRecallPayload.TYPE,
-                CloudBuildingRecallPayload.STREAM_CODEC,
-                (payload, ctx) -> {
-                    ServerPlayer sp = (ServerPlayer) ctx.player();
-                    CloudBuildingManager.getInstance().recall(sp, payload.buildingId());
-                }
-        );
-        registrar.playToServer(
-                CloudBuildingSummonPayload.TYPE,
-                CloudBuildingSummonPayload.STREAM_CODEC,
-                (payload, ctx) -> {
-                    ServerPlayer sp = (ServerPlayer) ctx.player();
-                    CloudBuildingManager.getInstance().summon(sp, payload.buildingId(), payload.pos(), payload.facing());
-                }
-        );
-        registrar.playToServer(
-                CloudBuildingDeletePayload.TYPE,
-                CloudBuildingDeletePayload.STREAM_CODEC,
-                (payload, ctx) -> {
-                    ServerPlayer sp = (ServerPlayer) ctx.player();
-                    CloudBuildingManager.getInstance().delete(sp, payload.buildingId());
-                }
-        );
-        registrar.playToClient(
-                CloudBuildingSyncPayload.TYPE,
-                CloudBuildingSyncPayload.STREAM_CODEC,
-                (payload, ctx) -> {
-                    java.util.List<com.prefab.addon.cloud.CloudBuilding> list = new java.util.ArrayList<>();
-                    for (var tag : payload.buildings()) {
-                        try {
-                            list.add(com.prefab.addon.cloud.CloudBuilding.fromNbt(tag));
-                        } catch (Exception e) {
-                            PrefabCustomAddon.LOGGER.warn("[CLOUD-CACHE] 跳过损坏的云端建筑: {}", e.getMessage());
-                        }
-                    }
-                    com.prefab.addon.cloud.CloudBuildingClientCache.getInstance().replaceAll(list);
-
-                    // === Jade / Xaero 联动: 全量 diff ===
-                    // 1) BuildingDatabase 全量替换 (只对 placed=true 的)
-                    // 2) Xaero 航点: 新增/位置变了 → addWaypoint, 之前 placed 现在 not → removeWaypoint
-                    // 必须在 client thread 跑 (Xaero 内部状态不线程安全)
-                    ctx.enqueueWork(() -> ClientBuildingSyncHelper.onSyncReceived(list));
-                }
-        );
-
-        // ===== 服务端→客户端: 一批方块刚被放置 (用于"建造下落动画") =====
-        registrar.playToClient(
-                BatchBlocksPlacedPayload.TYPE,
-                BatchBlocksPlacedPayload.STREAM_CODEC,
-                (payload, ctx) -> com.prefab.addon.client.BuildAnimationRenderer.onBatchBlocksPlaced(payload)
-        );
-
-        // ===== 操作手杖: 客户端→服务端扫描, 服务端→客户端结果, 客户端→服务端建造 =====
-        registrar.playToServer(
-                OperationWandScanPayload.TYPE,
-                OperationWandScanPayload.STREAM_CODEC,
-                OperationWandScanPayload::handle
-        );
-        registrar.playToClient(
-                OperationWandScanResultPayload.TYPE,
-                OperationWandScanResultPayload.STREAM_CODEC,
-                OperationWandScanResultPayload::handle
-        );
-        registrar.playToServer(
-                OperationWandBuildPayload.TYPE,
-                OperationWandBuildPayload.STREAM_CODEC,
-                OperationWandBuildPayload::handle
-        );
+            }
+            CloudBuildingClientCache.getInstance().replaceAll(list);
+            ctx.enqueueWork(() -> ClientBuildingSyncHelper.onSyncReceived(list));
+        });
+        registrar.playToClient(BatchBlocksPlacedPayload.TYPE, BatchBlocksPlacedPayload.STREAM_CODEC, (payload, ctx) -> BuildAnimationRenderer.onBatchBlocksPlaced(payload));
+        registrar.playToServer(OperationWandScanPayload.TYPE, OperationWandScanPayload.STREAM_CODEC, OperationWandScanPayload::handle);
+        registrar.playToClient(OperationWandScanResultPayload.TYPE, OperationWandScanResultPayload.STREAM_CODEC, OperationWandScanResultPayload::handle);
+        registrar.playToServer(OperationWandBuildPayload.TYPE, OperationWandBuildPayload.STREAM_CODEC, OperationWandBuildPayload::handle);
+        // 挑战模式材料提交 (服务端权威扣除, 修复刷物品 bug)
+        registrar.playToServer(SubmitMaterialsPayload.TYPE, SubmitMaterialsPayload.STREAM_CODEC, SubmitMaterialsPayload::handle);
+        registrar.playToClient(MaterialSubmitResultPayload.TYPE, MaterialSubmitResultPayload.STREAM_CODEC, MaterialSubmitResultPayload::handle);
+        registrar.playToServer(ResetMaterialLedgerPayload.TYPE, ResetMaterialLedgerPayload.STREAM_CODEC, ResetMaterialLedgerPayload::handle);
     }
 
-    /**
-     * 客户端发送 BuildCustomStructurePayload 到服务端
-     */
     public static void sendToServer(BuildCustomStructurePayload payload) {
-        PacketDistributor.sendToServer(payload);
+        PacketDistributor.sendToServer((CustomPacketPayload)payload, (CustomPacketPayload[])new CustomPacketPayload[0]);
     }
 
-    /**
-     * 客户端发送 BindConstructionPayload 到服务端：把当前 Construction 绑定到玩家背包里的 Custom Blueprint
-     */
     public static void sendToServer(BindConstructionPayload payload) {
-        PacketDistributor.sendToServer(payload);
+        PacketDistributor.sendToServer((CustomPacketPayload)payload, (CustomPacketPayload[])new CustomPacketPayload[0]);
     }
 
-    /** 客户端→服务端: 通用 */
     public static void sendToServer(RequestServerPacksPayload payload) {
-        PacketDistributor.sendToServer(payload);
+        PacketDistributor.sendToServer((CustomPacketPayload)payload, (CustomPacketPayload[])new CustomPacketPayload[0]);
     }
+
     public static void sendToServer(ServerPackChunkAckPayload payload) {
-        PacketDistributor.sendToServer(payload);
+        PacketDistributor.sendToServer((CustomPacketPayload)payload, (CustomPacketPayload[])new CustomPacketPayload[0]);
     }
+
     public static void sendToServer(RequestServerPackManifestPayload payload) {
-        PacketDistributor.sendToServer(payload);
+        PacketDistributor.sendToServer((CustomPacketPayload)payload, (CustomPacketPayload[])new CustomPacketPayload[0]);
     }
 
-    /** 客户端→服务端: 申请修改全服建造速度 */
     public static void sendToServer(UpdateBuildSpeedPayload payload) {
-        PacketDistributor.sendToServer(payload);
+        PacketDistributor.sendToServer((CustomPacketPayload)payload, (CustomPacketPayload[])new CustomPacketPayload[0]);
     }
 
-    /**
-     * 通用 sendToServer: 给不想专门写一坨 overload 的自定义 payload 用 (例如云端建筑的收回/放出).
-     * 任何 {@link CustomPacketPayload} 都能直接传进来, 避免给每个新包都加一个 overload.
-     */
     public static void sendToServer(CustomPacketPayload payload) {
-        PacketDistributor.sendToServer(payload);
+        PacketDistributor.sendToServer((CustomPacketPayload)payload, (CustomPacketPayload[])new CustomPacketPayload[0]);
     }
 
-    /**
-     * 服务端→所有在线玩家: 广播当前全服建造速度.
-     * 给每个在线玩家单独发一份 (不依赖所有玩家在同一连接上, 兼容性更好).
-     */
-    public static void broadcastBuildSpeed(net.minecraft.server.MinecraftServer server, int percent) {
+    public static void broadcastBuildSpeed(MinecraftServer server, int percent) {
         SyncBuildSpeedPayload payload = new SyncBuildSpeedPayload(percent);
         for (ServerPlayer sp : server.getPlayerList().getPlayers()) {
-            PacketDistributor.sendToPlayer(sp, payload);
+            PacketDistributor.sendToPlayer((ServerPlayer)sp, (CustomPacketPayload)payload, (CustomPacketPayload[])new CustomPacketPayload[0]);
         }
     }
 
-    /**
-     * 服务端处理: 修改全服建造速度 (OP 校验).
-     * 非 OP 直接拒绝 + 警告. 通过后写入服务端 PlayerPreferences, 并广播给所有在线玩家.
-     */
     private static void handleUpdateBuildSpeed(UpdateBuildSpeedPayload payload, IPayloadContext context) {
         context.player().getServer().execute(() -> {
-            ServerPlayer player = (ServerPlayer) context.player();
+            ServerPlayer player = (ServerPlayer)context.player();
             int requestedPercent = Math.max(1, Math.min(100, payload.percent()));
-
-            // OP 校验 (permission level >= 2)
             if (!player.hasPermissions(2)) {
-                PrefabCustomAddon.LOGGER.warn("[BUILD-SPEED] Non-OP player {} tried to set build speed to {}%, refused",
-                    player.getName().getString(), requestedPercent);
-                player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
-                    PrefabCustomAddon.tr("err.build_speed_op"))
-                    .withStyle(net.minecraft.ChatFormatting.RED));
+                PrefabCustomAddon.LOGGER.warn("[BUILD-SPEED] Non-OP player {} tried to set build speed to {}%, refused", (Object)player.getName().getString(), (Object)requestedPercent);
+                player.sendSystemMessage((Component)Component.literal((String)PrefabCustomAddon.tr("err.build_speed_op", new Object[0])).withStyle(ChatFormatting.RED));
                 return;
             }
-
-            int oldPercent = com.prefab.addon.config.PlayerPreferences.get().getBuildBatchPercent();
+            int oldPercent = PlayerPreferences.get().getBuildBatchPercent();
             if (oldPercent == requestedPercent) {
-                PrefabCustomAddon.LOGGER.info("[BUILD-SPEED] OP {} set build speed to {}% (no change)",
-                    player.getName().getString(), requestedPercent);
+                PrefabCustomAddon.LOGGER.info("[BUILD-SPEED] OP {} set build speed to {}% (no change)", (Object)player.getName().getString(), (Object)requestedPercent);
                 return;
             }
-
-            // 写服务端 PlayerPreferences
-            com.prefab.addon.config.PlayerPreferences.get().setBuildBatchPercent(requestedPercent);
-            PrefabCustomAddon.LOGGER.info("[BUILD-SPEED] OP {} set build speed: {}% → {}% (全服生效, 广播给所有在线玩家)",
-                player.getName().getString(), oldPercent, requestedPercent);
-
-            // 广播给所有在线玩家 (让他们的 SettingsGui 滑条显示同步到新值)
-            broadcastBuildSpeed(player.getServer(), requestedPercent);
-
-            // 给发起者一个确认消息
-            player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
-                String.format("§a[建造速度] 已设为 %d%% (全服生效)", requestedPercent))
-                .withStyle(net.minecraft.ChatFormatting.GREEN));
+            PlayerPreferences.get().setBuildBatchPercent(requestedPercent);
+            PrefabCustomAddon.LOGGER.info("[BUILD-SPEED] OP {} set build speed: {}% \u2192 {}% (\u5168\u670d\u751f\u6548, \u5e7f\u64ad\u7ed9\u6240\u6709\u5728\u7ebf\u73a9\u5bb6)", new Object[]{player.getName().getString(), oldPercent, requestedPercent});
+            NetworkHandler.broadcastBuildSpeed(player.getServer(), requestedPercent);
+            player.sendSystemMessage((Component)Component.literal((String)String.format("\u00a7a[\u5efa\u9020\u901f\u5ea6] \u5df2\u8bbe\u4e3a %d%% (\u5168\u670d\u751f\u6548)", requestedPercent)).withStyle(ChatFormatting.GREEN));
         });
     }
 
     private static void handleBuild(BuildCustomStructurePayload payload, IPayloadContext context) {
         context.player().getServer().execute(() -> {
-            ServerPlayer player = (ServerPlayer) context.player();
-            net.minecraft.server.level.ServerLevel level = (net.minecraft.server.level.ServerLevel) player.level();
-            PrefabCustomAddon.LOGGER.info("Building custom structure '{}' from pack '{}' at {} (silent={})",
-                    payload.constructionId(), payload.packName(), payload.pos(), payload.silent());
-            try {
-                // 关键: 服务端 build 路径必须强制从磁盘重扫, 防止管理员中途删除 zip 后
-                //   内存里 packs 列表还是旧的 → 看似还能 build, 实际 build 用了"已删除"的数据.
-                //   这是真正的"防误用"机制: 客户端有任何 zip 都没用, 服务端磁盘上有才能建.
-                com.prefab.addon.extension.ExtensionPackManager.getInstance().forceReload();
-
-                // 关键: 异步任务. placeStructure 立即返回 true (任务已注册到 AsyncBuildManager),
-                // 蓝图消耗在异步任务 onCompleted() 里完成 (失败/取消时**不消耗**).
-                boolean ok = com.prefab.addon.structure.CustomStructureBuilder.getInstance()
-                        .placeStructure(player, level, payload.pos(), payload.packName(),
-                                payload.constructionId(), payload.houseFacing(), payload.animationMode(),
-                                payload.silent());
-                if (!ok) {
-                    PrefabCustomAddon.LOGGER.warn("[BUILD-DEBUG] 启动异步建造任务失败, 蓝图不消耗: pack={}/{}",
-                        payload.packName(), payload.constructionId());
-                    if (player != null) {
-                        player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
-                                "§e提示: 建造启动失败, 蓝图未消耗").withStyle(net.minecraft.ChatFormatting.YELLOW));
+            ServerPlayer player;
+            block6: {
+                player = (ServerPlayer)context.player();
+                ServerLevel level = (ServerLevel)player.level();
+                PrefabCustomAddon.LOGGER.info("Building custom structure '{}' from pack '{}' at {} (silent={})", new Object[]{payload.constructionId(), payload.packName(), payload.pos(), payload.silent()});
+                try {
+                    ExtensionPackManager.getInstance().forceReload();
+                    boolean ok = CustomStructureBuilder.getInstance().placeStructure(player, level, payload.pos(), payload.packName(), payload.constructionId(), payload.houseFacing(), payload.animationMode(), payload.silent());
+                    if (!ok) {
+                        PrefabCustomAddon.LOGGER.warn("[BUILD-DEBUG] \u542f\u52a8\u5f02\u6b65\u5efa\u9020\u4efb\u52a1\u5931\u8d25, \u84dd\u56fe\u4e0d\u6d88\u8017: pack={}/{}", (Object)payload.packName(), (Object)payload.constructionId());
+                        if (player != null) {
+                            player.sendSystemMessage((Component)Component.literal((String)"\u00a7e\u63d0\u793a: \u5efa\u9020\u542f\u52a8\u5931\u8d25, \u84dd\u56fe\u672a\u6d88\u8017").withStyle(ChatFormatting.YELLOW));
+                        }
+                    } else {
+                        // 建造任务已启动: 清服务端材料账本 (与客户端 StructurePreviewKeyHandler 的 reset 对齐)
+                        com.prefab.addon.work.ServerMaterialLedger.reset(player, payload.constructionId());
                     }
                 }
-            } catch (Exception e) {
-                PrefabCustomAddon.LOGGER.error("Build failed for {}/{}", payload.packName(), payload.constructionId(), e);
-                if (player != null) {
-                    player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
-                            "✗ 建造失败: " + e.getMessage()).withStyle(net.minecraft.ChatFormatting.RED));
+                catch (Exception e) {
+                    PrefabCustomAddon.LOGGER.error("Build failed for {}/{}", new Object[]{payload.packName(), payload.constructionId(), e});
+                    if (player == null) break block6;
+                    player.sendSystemMessage((Component)Component.literal((String)("\u2717 \u5efa\u9020\u5931\u8d25: " + e.getMessage())).withStyle(ChatFormatting.RED));
                 }
             }
-            // 兜底: 服务端没找到这个 construction (玩家本地有, 但服务端没有) → 明确告诉玩家
-            if (com.prefab.addon.extension.ExtensionPackManager.getInstance()
-                    .findConstruction(payload.packName(), payload.constructionId()) == null) {
-                PrefabCustomAddon.LOGGER.error("[BUILD-REFUSE] Server has no construction '{}' in pack '{}'. " +
-                        "Player {} tried to build it (pack only on client?)",
-                        payload.constructionId(), payload.packName(), player.getName().getString());
+            if (ExtensionPackManager.getInstance().findConstruction(payload.packName(), payload.constructionId()) == null) {
+                PrefabCustomAddon.LOGGER.error("[BUILD-REFUSE] Server has no construction '{}' in pack '{}'. Player {} tried to build it (pack only on client?)", new Object[]{payload.constructionId(), payload.packName(), player.getName().getString()});
                 if (player != null) {
-                    // 多行提示, 同 CustomStructureBuilder.placeStructure 里的找不到建筑提示保持一致
-                    player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
-                            PrefabCustomAddon.tr("err.not_on_server"))
-                            .withStyle(net.minecraft.ChatFormatting.RED));
-                    player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
-                            PrefabCustomAddon.tr("err.hint.pack_on_server"))
-                            .withStyle(net.minecraft.ChatFormatting.YELLOW));
-                    player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
-                            PrefabCustomAddon.tr("err.hint.sync_server"))
-                            .withStyle(net.minecraft.ChatFormatting.YELLOW));
+                    player.sendSystemMessage((Component)Component.literal((String)PrefabCustomAddon.tr("err.not_on_server", new Object[0])).withStyle(ChatFormatting.RED));
+                    player.sendSystemMessage((Component)Component.literal((String)PrefabCustomAddon.tr("err.hint.pack_on_server", new Object[0])).withStyle(ChatFormatting.YELLOW));
+                    player.sendSystemMessage((Component)Component.literal((String)PrefabCustomAddon.tr("err.hint.sync_server", new Object[0])).withStyle(ChatFormatting.YELLOW));
                 }
             }
         });
     }
 
-    /**
-     * 服务端处理 {@link BuildOutsourceStructurePayload}.
-     *
-     * <p>跟 {@link #handleBuild} 走完全独立的路径:
-     * <ul>
-     *   <li>不查 ExtensionPackManager (外包建筑不在那里)</li>
-     *   <li>不调 CustomStructureBuilder.placeStructure (它会去 findConstruction, 找不到就退出)</li>
-     *   <li>直接调 OutsourceBuildManager.placeStructure → 强制重扫 OutsourceBuildingLoader
-     *       → 解析 NBT → AsyncBuildManager.startTask(packName="outsource")</li>
-     *   <li>任务完成时 AsyncBuildManager.consumeBlueprint 检测 packName=="outsource" →
-     *       OutsourceBuildManager.consumeOutsourceBlueprint 按 buildingId 匹配消耗</li>
-     * </ul>
-     */
     private static void handleBuildOutsource(BuildOutsourceStructurePayload payload, IPayloadContext context) {
         context.player().getServer().execute(() -> {
-            ServerPlayer player = (ServerPlayer) context.player();
-            net.minecraft.server.level.ServerLevel level = (net.minecraft.server.level.ServerLevel) player.level();
-            PrefabCustomAddon.LOGGER.info(
-                "[OUTSOURCE-BUILD] Server received build request: buildingId='{}' style={} pos={} facing={} mode={}",
-                payload.buildingId(), payload.styleIndex(), payload.pos(),
-                payload.houseFacing(), payload.animationMode());
-            try {
-                boolean ok = com.prefab.addon.structure.OutsourceBuildManager.placeStructure(
-                    player, level, payload.buildingId(), payload.styleIndex(),
-                    payload.pos(), payload.houseFacing(), payload.animationMode());
-                if (!ok) {
-                    PrefabCustomAddon.LOGGER.warn(
-                        "[OUTSOURCE-BUILD] 启动失败: buildingId={} style={}, 蓝图不消耗",
-                        payload.buildingId(), payload.styleIndex());
+            block3: {
+                ServerPlayer player = (ServerPlayer)context.player();
+                ServerLevel level = (ServerLevel)player.level();
+                PrefabCustomAddon.LOGGER.info("[OUTSOURCE-BUILD] Server received build request: buildingId='{}' style={} pos={} facing={} mode={}", new Object[]{payload.buildingId(), payload.styleIndex(), payload.pos(), payload.houseFacing(), payload.animationMode()});
+                try {
+                    boolean ok = OutsourceBuildManager.placeStructure(player, level, payload.buildingId(), payload.styleIndex(), payload.pos(), payload.houseFacing(), payload.animationMode());
+                    if (!ok) {
+                        PrefabCustomAddon.LOGGER.warn("[OUTSOURCE-BUILD] \u542f\u52a8\u5931\u8d25: buildingId={} style={}, \u84dd\u56fe\u4e0d\u6d88\u8017", (Object)payload.buildingId(), (Object)payload.styleIndex());
+                    }
                 }
-            } catch (Exception e) {
-                PrefabCustomAddon.LOGGER.error("[OUTSOURCE-BUILD] Build failed for {}",
-                    payload.buildingId(), e);
-                if (player != null) {
-                    player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
-                            "✗ 外包建筑建造失败: " + e.getMessage())
-                            .withStyle(net.minecraft.ChatFormatting.RED));
+                catch (Exception e) {
+                    PrefabCustomAddon.LOGGER.error("[OUTSOURCE-BUILD] Build failed for {}", (Object)payload.buildingId(), (Object)e);
+                    if (player == null) break block3;
+                    player.sendSystemMessage((Component)Component.literal((String)("\u2717 \u5916\u5305\u5efa\u7b51\u5efa\u9020\u5931\u8d25: " + e.getMessage())).withStyle(ChatFormatting.RED));
                 }
             }
         });
     }
 
-    /**
-     * 服务端处理：找到玩家背包里的 Custom Blueprint，写入 packName/constructionId，
-     * 并把变化广播到客户端。
-     *
-     * 关键：如果只改客户端的 ItemStack，服务端 ItemStack 不会被修改，
-     * 玩家退出存档后绑定就丢了。
-     */
     private static void handleBind(BindConstructionPayload payload, IPayloadContext context) {
         context.player().getServer().execute(() -> {
-            ServerPlayer player = (ServerPlayer) context.player();
-            PrefabCustomAddon.LOGGER.info("[BIND-DEBUG] Server received bind request: {}/{} locked={}",
-                    payload.packName(), payload.constructionId(), payload.locked());
-
+            ItemStack stack;
+            int i;
+            ServerPlayer player = (ServerPlayer)context.player();
+            PrefabCustomAddon.LOGGER.info("[BIND-DEBUG] Server received bind request: {}/{} locked={}", new Object[]{payload.packName(), payload.constructionId(), payload.locked()});
             Inventory inv = player.getInventory();
             int boundSlot = -1;
             int scanned = 0;
-            // === 第 1 轮: 扫"已经匹配 payload 的 stack", 命中就直接跳过, 不写 NBT.
-            // 这是修 KubeJS 联动蓝图 + 自定义蓝图共存的关键: 玩家用 KubeJS 蓝图右键预览
-            // → ALT 建造时, KubeJS 蓝图自己的 NBT (packName/constructionId) 已经跟 payload
-            // 完全一致, 命中后 no-op. **不会**像之前那样把 KubeJS 的 packName/constructionId
-            // 写到 slot 3 的自定义蓝图 NBT 里, 避免后续 consumeBlueprint 严格匹配时找到
-            // slot 3 (已被伪装成 KubeJS 蓝图) 错误消耗.
-            for (int i = 0; i < inv.getContainerSize(); i++) {
-                ItemStack stack = inv.getItem(i);
+            for (i = 0; i < inv.getContainerSize(); ++i) {
+                stack = inv.getItem(i);
                 if (stack.isEmpty()) continue;
-                scanned++;
-                if (!com.prefab.addon.structure.AsyncBuildManager.isPlayerBlueprint(stack)) continue;
-                if (isLockedForBind(stack)) continue;
-                String curPack = com.prefab.addon.structure.AsyncBuildManager.readBoundPackName(stack);
-                String curCid  = com.prefab.addon.structure.AsyncBuildManager.readBoundConstructionId(stack);
-                if (payload.packName().equals(curPack) && payload.constructionId().equals(curCid)) {
+                ++scanned;
+                if (!AsyncBuildManager.isPlayerBlueprint(stack) || NetworkHandler.isLockedForBind(stack)) continue;
+                String curPack = AsyncBuildManager.readBoundPackName(stack);
+                String curCid = AsyncBuildManager.readBoundConstructionId(stack);
+                if (!payload.packName().equals(curPack) || !payload.constructionId().equals(curCid)) continue;
+                boundSlot = i;
+                PrefabCustomAddon.LOGGER.info("[BIND-DEBUG] Server: blueprint in slot {} already bound to {}/{}, skip write (no-op)", new Object[]{i, curPack, curCid});
+                break;
+            }
+            if (boundSlot == -1) {
+                for (i = 0; i < inv.getContainerSize(); ++i) {
+                    stack = inv.getItem(i);
+                    if (stack.isEmpty()) continue;
+                    ++scanned;
+                    if (!AsyncBuildManager.isPlayerBlueprint(stack)) continue;
+                    if (NetworkHandler.isLockedForBind(stack)) {
+                        PrefabCustomAddon.LOGGER.warn("[BIND-DEBUG] Server: blueprint in slot {} is locked, refuse re-bind", (Object)i);
+                        break;
+                    }
+                    if (stack.getItem() instanceof CustomBlueprintItem) {
+                        CustomBlueprintItem.bindConstruction(stack, payload.packName(), payload.constructionId(), payload.locked());
+                    } else {
+                        CompoundTag tag = new CompoundTag();
+                        tag.putString("packName", payload.packName());
+                        tag.putString("constructionId", payload.constructionId());
+                        tag.putBoolean("locked", payload.locked());
+                        stack.set(DataComponents.CUSTOM_DATA, CustomData.of(tag));
+                    }
                     boundSlot = i;
-                    PrefabCustomAddon.LOGGER.info(
-                        "[BIND-DEBUG] Server: blueprint in slot {} already bound to {}/{}, skip write (no-op)",
-                        i, curPack, curCid);
+                    PrefabCustomAddon.LOGGER.info("[BIND-DEBUG] Server-side bound blueprint in slot {} (item={}, count={}, locked={})", new Object[]{i, stack.getItem(), stack.getCount(), payload.locked()});
                     break;
                 }
             }
             if (boundSlot == -1) {
-                // === 第 2 轮: 没找到已绑定的, 找第一个未锁定的蓝图, 写 NBT ===
-                // 这覆盖了"玩家在 GUI 里用 CustomBlueprintItem 选建筑后还没正式 bind 过"的
-                // 场景, 也覆盖"老 CustomBlueprintItem 之前没 NBT"的情况.
-                for (int i = 0; i < inv.getContainerSize(); i++) {
-                    ItemStack stack = inv.getItem(i);
-                    if (stack.isEmpty()) continue;
-                    scanned++;
-                    // 兼容 mod 原生 CustomBlueprintItem + KubeJS 注册的带 tag 物品.
-                    if (!com.prefab.addon.structure.AsyncBuildManager.isPlayerBlueprint(stack)) continue;
-                    // 已锁定的蓝图不允许重新绑 (mod 原生走 setLocked 字段; KubeJS 物品也用同一字段)
-                    if (isLockedForBind(stack)) {
-                        PrefabCustomAddon.LOGGER.warn(
-                            "[BIND-DEBUG] Server: blueprint in slot {} is locked, refuse re-bind", i);
-                        break;
-                    }
-                    // 写 NBT (用 setLocked 接口, mod 原生会同时更新显示名; KubeJS 物品
-                    //   不调 setLocked, 直接写 CUSTOM_DATA 即可)
-                    if (stack.getItem() instanceof CustomBlueprintItem) {
-                        CustomBlueprintItem.bindConstruction(stack,
-                            payload.packName(), payload.constructionId(), payload.locked());
-                    } else {
-                        // KubeJS 物品: 直接写 CUSTOM_DATA, 跟 CustomBlueprintItem 字段一致
-                        net.minecraft.nbt.CompoundTag tag = new net.minecraft.nbt.CompoundTag();
-                        tag.putString("packName", payload.packName());
-                        tag.putString("constructionId", payload.constructionId());
-                        tag.putBoolean("locked", payload.locked());
-                        stack.set(net.minecraft.core.component.DataComponents.CUSTOM_DATA,
-                            net.minecraft.world.item.component.CustomData.of(tag));
-                    }
-                    boundSlot = i;
-                    PrefabCustomAddon.LOGGER.info("[BIND-DEBUG] Server-side bound blueprint in slot {} (item={}, count={}, locked={})",
-                            i, stack.getItem(), stack.getCount(), payload.locked());
-                    break;  // 只绑第一个
-                }
-            }
-
-            if (boundSlot == -1) {
-                PrefabCustomAddon.LOGGER.warn("[BIND-DEBUG] No Custom Blueprint found in player inventory! " +
-                        "Scanned {} non-empty slots", scanned);
+                PrefabCustomAddon.LOGGER.warn("[BIND-DEBUG] No Custom Blueprint found in player inventory! Scanned {} non-empty slots", (Object)scanned);
             } else {
-                // 关键：把服务端的变化推到客户端
                 inv.setChanged();
                 if (player.containerMenu != null) {
                     player.containerMenu.broadcastChanges();
@@ -486,17 +318,15 @@ public class NetworkHandler {
         });
     }
 
-    /**
-     * 蓝图是否锁定 (兼容 mod 原生 + KubeJS). KubeJS 蓝图只有 {@code locked=true} 显式写
-     * 进去才算锁定, 跟 mod 原生 {@code CustomBlueprintItem.isLocked} 语义一致.
-     */
     private static boolean isLockedForBind(ItemStack stack) {
         if (stack.getItem() instanceof CustomBlueprintItem) {
             return CustomBlueprintItem.isLocked(stack);
         }
-        net.minecraft.world.item.component.CustomData data =
-            stack.get(net.minecraft.core.component.DataComponents.CUSTOM_DATA);
-        if (data == null) return false;
+        CustomData data = (CustomData)stack.get(DataComponents.CUSTOM_DATA);
+        if (data == null) {
+            return false;
+        }
         return data.copyTag().getBoolean("locked");
     }
 }
+

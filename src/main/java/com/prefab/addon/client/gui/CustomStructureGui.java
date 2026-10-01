@@ -21,6 +21,7 @@ import com.prefab.addon.extension.ConstructionInfo;
 import com.prefab.addon.extension.ExtensionPackManager;
 import com.prefab.addon.structure.CustomStructureBuilder;
 import com.prefab.addon.structure.CustomStructureBuilder.BlockData;
+import com.prefab.addon.work.DependencyChecker;
 import com.prefab.addon.work.MaterialCalculator;
 import com.prefab.addon.work.NbtStructureParser;
 import com.prefab.structures.base.Structure;
@@ -30,6 +31,8 @@ import com.prefab.structures.render.StructureRenderHandler;
 import dev.vfyjxf.taffy.style.AlignContent;
 import dev.vfyjxf.taffy.style.FlexDirection;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.player.LocalPlayer;
+import com.lowdragmc.lowdraglib2.math.Size;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.network.chat.Component;
@@ -151,12 +154,27 @@ public class CustomStructureGui {
     private static TextElement statusEl;
     private static Button btnMain;  // 预览/建造 或 提交材料(挑战模式)
 
+    // === 终端入口标记 ===
+    // 从建筑终端的"建筑选择"应用点卡片进来时 = true:
+    //   - 不要求背包里有自定义蓝图 (performBuildOrPreview 跳过 hasBlueprintInInventory 检查)
+    //   - 建造前不自动绑定蓝图 (没有蓝图可绑, 也不该劫持玩家已有的蓝图)
+    private static boolean fromTerminal = false;
+
     // === 状态消息 (例如 "提交材料后才能建造" 等提示) ===
     private static int statusTick = 0;
     private static String statusMsg = null;
     private static int statusColor = 0x55FF55;
 
     private CustomStructureGui() {}
+
+    /**
+     * 是否消耗材料: 生存/冒险固定需要, 创造免费 (取代旧的"挑战模式"全局开关,
+     * 也顺带消除了旧开关"无 OP 也能切换"的问题 — 不再有可被乱切的开关).
+     */
+    private static boolean shouldConsumeMaterials() {
+        LocalPlayer p = Minecraft.getInstance().player;
+        return p == null || !p.isCreative();
+    }
 
     /**
      * 打开自定义建筑选择界面.
@@ -170,7 +188,13 @@ public class CustomStructureGui {
         currentConstruction = construction;
         currentBlueprint = blueprint;
         currentOpenPos = openPos == null ? BlockPos.ZERO : openPos;
-        challengeMode = PlayerPreferences.get().consumeMaterials;
+        challengeMode = shouldConsumeMaterials();
+        // KubeJS 联动蓝图豁免: 玩家合成的蓝图 (配方本身已有成本) 建造不再收材料,
+        // 生存/冒险也直接建造 (材料规则只对建筑终端/原生自定义蓝图生效)
+        if (challengeMode && blueprint != null && !blueprint.isEmpty()
+                && com.prefab.addon.structure.AsyncBuildManager.isKubeJSPlayerBlueprint(blueprint)) {
+            challengeMode = false;
+        }
 
         PrefabCustomAddon.LOGGER.info("[CUSTOM-GUI-V2] open: construction='{}' id='{}' challengeMode={}",
             construction.getName(), construction.getId(), challengeMode);
@@ -179,6 +203,47 @@ public class CustomStructureGui {
         ModularUI ui = createUI(construction);
         Minecraft.getInstance().setScreen(
             new ModularUIScreen(ui, Component.literal(construction.getName())));
+    }
+
+    /**
+     * 从建筑终端"建筑选择"应用打开 (不需要自定义蓝图).
+     *
+     * <p>跟 {@link #open(ConstructionInfo, ItemStack, BlockPos)} 的区别:
+     * <ul>
+     *   <li>不传蓝图 - 建造时不检查/不消耗/不绑定蓝图</li>
+     *   <li>是否消耗材料按玩家游戏模式判定 ({@link #shouldConsumeMaterials()}):
+     *       生存/冒险走"提交材料 → 预览 → 建造", 创造直接"预览"</li>
+     *   <li>openPos 用玩家脚下方块下方一格, 预览基座落在玩家站立层</li>
+     * </ul></p>
+     */
+    public static void openFromTerminal(ConstructionInfo construction, BlockPos openPos) {
+        resetState();
+        fromTerminal = true;
+        currentConstruction = construction;
+        currentBlueprint = null;
+        currentOpenPos = openPos == null ? BlockPos.ZERO : openPos;
+        challengeMode = shouldConsumeMaterials();
+
+        PrefabCustomAddon.LOGGER.info("[CUSTOM-GUI-V2] openFromTerminal: construction='{}' id='{}' challengeMode={}",
+            construction.getName(), construction.getId(), challengeMode);
+
+        startAsyncParse(construction);
+        ModularUI ui = createUI(construction);
+        Minecraft.getInstance().setScreen(
+            new ModularUIScreen(ui, Component.literal(construction.getName())));
+    }
+
+    /**
+     * 关闭界面: 从终端打开时 (fromTerminal) 重开终端并回到"建筑选择"应用;
+     * 从主模组普通入口打开时只关屏回世界.
+     */
+    private static void closeScreen() {
+        Minecraft.getInstance().setScreen(null);
+        if (fromTerminal) {
+            fromTerminal = false;
+            com.prefab.addon.terminal.client.gui.TerminalGui.selectBuildingsOnReopen();
+            com.prefab.addon.terminal.network.TerminalPayloads.sendReopenTerminal();
+        }
     }
 
     private static void resetState() {
@@ -210,6 +275,7 @@ public class CustomStructureGui {
         statusTick = 0;
         statusMsg = null;
         challengeMode = false;
+        fromTerminal = false;
     }
 
     private static void startAsyncParse(ConstructionInfo construction) {
@@ -234,8 +300,18 @@ public class CustomStructureGui {
                     List<BlockData> blocks = CustomStructureBuilder.getInstance().parseStructureBlocks();
                     try {
                         materialList = MaterialCalculator.calculate(nbtData);
+                        // 兜底: calculate 只认 vanilla palette+blocks 格式, litematic/schem
+                        // 会得到空 required (生存模式免材料 bug). 用解析好的方块列表重算.
+                        if ((materialList == null || materialList.required.isEmpty())
+                                && blocks != null && !blocks.isEmpty()) {
+                            materialList = MaterialCalculator.fromBlocks(blocks);
+                        }
                         nbtInfo = NbtStructureParser.parse(nbtData);
                     } catch (Throwable t) {
+                        // 计算异常也兜底 (materialList=null 同样会免材料)
+                        if (blocks != null && !blocks.isEmpty()) {
+                            materialList = MaterialCalculator.fromBlocks(blocks);
+                        }
                         PrefabCustomAddon.LOGGER.warn("[CUSTOM-GUI-V2] Material/info parse failed (non-fatal)", t);
                     }
                     long ms = System.currentTimeMillis() - t0;
@@ -273,7 +349,7 @@ public class CustomStructureGui {
         }
     }
 
-    private static void initRender() {
+    private static void initRender(int panelW, int panelH) {
         if (parseResult == null || parseResult.isEmpty()) {
             renderDone = true;
             return;
@@ -322,8 +398,20 @@ public class CustomStructureGui {
             renderScene.syncCompile(true);
             renderScene.setTickWorld(false);
 
-            renderScene.createScene(renderWorld);
+            // FBO 渲染器: Immediate 渲染器的 unProject/glReadPixels 用 GUI 顶部原点 y,
+            // 而 GL 是底部原点 - trace 反投影会镜像错位 (tooltip/选中乱跳);
+            // FBOWorldSceneRenderer.drawScene 内部做了 (1 - (mouseY-y)/height) 翻转修正.
+            // fboSize 按面板尺寸 x GUI 缩放传入, 保证宽高比一致 (不拉伸) 且清晰.
+            var mc = Minecraft.getInstance();
+            int scale = (int) mc.getWindow().getGuiScale();
+            int fboW = Math.min(2048, Math.max(16, panelW * Math.max(1, scale)));
+            int fboH = Math.min(2048, Math.max(16, panelH * Math.max(1, scale)));
+            renderScene.createScene(renderWorld, true, Size.of(fboW, fboH));
             renderScene.setRenderedCore(positions, null, true);
+            // 悬停方块显示原生物品 tooltip (Scene.showHoverBlockTips, 不依赖 JEI);
+            // xeiLookup 另提供 JEI/REI/EMI 查询集成
+            renderScene.setShowHoverBlockTips(true);
+            renderScene.xeiLookup();
 
             renderActive = true;
         } catch (Throwable t) {
@@ -390,11 +478,26 @@ public class CustomStructureGui {
         root.style(s -> s.background(Sprites.BORDER));
         root.setOverflowVisible(false);
 
-        // === 中间: 3D 预览容器 (flexGrow=1 占满中间) ===
+        // === 中间: 左侧信息侧栏 + 3D 预览容器 (侧栏复用 GuiConstructionDetail 的字段面板) ===
+        UIElement middle = new UIElement();
+        middle.layout(l -> l
+            .flexDirection(FlexDirection.ROW)
+            .flexGrow(1).flexShrink(1)
+            .widthPercent(100).heightPercent(100)
+            .gapAll(2)
+            .minHeight(0).minWidth(0)
+        );
+
+        // 左侧信息栏: 建筑名/作者/尺寸/蓝图格式/依赖/分类/描述 (传 null 不带进度行)
+        UIElement sidebar = GuiConstructionDetail.createInfoScroller(construction, null);
+        sidebar.layout(l -> l.width(150).heightPercent(100).flexShrink(0));
+        middle.addChild(sidebar);
+
+        // === 3D 预览容器 (占侧栏以外剩余宽度) ===
         UIElement sceneContainer = new UIElement();
         sceneContainer.layout(l -> l
             .flexGrow(1).flexShrink(1)
-            .widthPercent(100).heightPercent(100)
+            .heightPercent(100)
             .minHeight(0).minWidth(0)
         );
         sceneContainer.style(s -> s.background(Sprites.RECT_DARK));
@@ -411,7 +514,8 @@ public class CustomStructureGui {
             .justifyContent(AlignContent.CENTER));
         sceneContainer.addChild(scenePlaceholder);
 
-        root.addChild(sceneContainer);
+        middle.addChild(sceneContainer);
+        root.addChild(middle);
 
         // === 底部: 状态消息 (简短, 一行) ===
         statusEl = new TextElement();
@@ -445,7 +549,7 @@ public class CustomStructureGui {
                     try { scene.releaseRendererResource(); } catch (Throwable ignored) {}
                 }
             } finally {
-                Minecraft.getInstance().setScreen(null);
+                closeScreen();
             }
         });
         btnCancel.layout(l -> l.flexGrow(1).heightPercent(100));
@@ -465,6 +569,28 @@ public class CustomStructureGui {
             buttonRow.addChild(btnPreview);
         }
 
+        // 第三个按钮: 终端打开时为 "检测依赖" (终端里没有可更换的蓝图);
+        // 蓝图打开时为 "更换建筑" (跳建筑浏览器).
+        if (fromTerminal) {
+            Button btnDeps = new Button().setText(com.prefab.addon.PrefabCustomAddon.tr("gui.custom.check_deps"));
+            btnDeps.setOnClick(e -> {
+                ConstructionInfo c = currentConstruction;
+                if (c == null) {
+                    return;
+                }
+                List<String> deps = c.getDependencies();
+                // 检测 + 缓存 + 重建左侧依赖列表 (✓/✗), 与独立详情页共用逻辑
+                DependencyChecker.CheckResult result = GuiConstructionDetail.checkDepsAndUpdate(c);
+                if (result.missing.isEmpty()) {
+                    showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.dep_check_pass",
+                            result.present.size(), (deps == null ? 0 : deps.size())), 0x55FF55, 200);
+                } else {
+                    showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.dep_check_done"), 0xFFAA55, 200);
+                }
+            });
+            btnDeps.layout(l -> l.flexGrow(1).heightPercent(100));
+            buttonRow.addChild(btnDeps);
+        } else {
         // 更换建筑按钮
         // 需求: 跳到建筑浏览器 (第1张图, 左侧 tab 栏 + 建筑卡片网格),
         //       而不是直接进入某个建筑的详情 (之前: GuiConstructionDetail.openFirstAvailable()).
@@ -495,15 +621,14 @@ public class CustomStructureGui {
             btnChange.setText(com.prefab.addon.PrefabCustomAddon.tr("gui.custom.locked"));
         }
         buttonRow.addChild(btnChange);
+        }
 
         root.addChild(buttonRow);
 
         // === tick handler - 整个 3D 预览 + 按钮状态的生命周期 ===
-        final int[] debugTickCounter = {0};
+        final int[] tickCounter = {0};
         root.addEventListener(UIEvents.TICK, event -> {
-            debugTickCounter[0]++;
-            final int tickNum = debugTickCounter[0];
-
+            final int tickNum = ++tickCounter[0];
             // 解析状态检查
             if (!parseComplete && !parseFailed) {
                 checkParse();
@@ -511,7 +636,7 @@ public class CustomStructureGui {
 
             // parse 完成后初始化 render
             if (parseComplete && !parseFailed && renderScene == null && !renderActive && !renderDone) {
-                initRender();
+                initRender((int) sceneContainer.getSizeWidth(), (int) sceneContainer.getSizeHeight());
                 if (renderScene != null) {
                     sceneContainer.clearAllChildren();
                     renderScene.layout(l -> l.widthPercent(100).heightPercent(100));
@@ -568,8 +693,10 @@ public class CustomStructureGui {
             updateMainButtonState();
         });
 
+        // Scene tooltip 依赖 ModularUI.player (getCloneItemStack 需要玩家), 客户端界面必须显式传入
         return ModularUI.of(UI.of(root,
-            StylesheetManager.INSTANCE.getStylesheetSafe(StylesheetManager.MC)));
+            StylesheetManager.INSTANCE.getStylesheetSafe(StylesheetManager.MC)),
+            Minecraft.getInstance().player);
     }
 
     /** 建造按钮 (或挑战模式下的"提交材料"/"预览"按钮) 点击处理 */
@@ -707,7 +834,7 @@ public class CustomStructureGui {
     private static void performBuildOrPreview() {
         if (currentConstruction == null) return;
 
-        // 多人模式下, 服务器没有这个拓展包 → 阻止
+        // 多人模式下, 服务器没有这个建筑 → 阻止
         if (!com.prefab.addon.extension.ExtensionPackManager.isBuildable(currentConstruction)) {
             showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.custom.no_server_pack"), 0xFF5555, 200);
             return;
@@ -717,8 +844,8 @@ public class CustomStructureGui {
             showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.custom.challenge_not_ready"), 0xFFAA00, 100);
             return;
         }
-        // 背包里没蓝图 → 阻止
-        if (!hasBlueprintInInventory()) {
+        // 背包里没蓝图 → 阻止 (终端入口不需要蓝图, 跳过)
+        if (!fromTerminal && !hasBlueprintInInventory()) {
             showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.custom.no_blueprint"), 0xFF5555, 100);
             return;
         }
@@ -731,9 +858,12 @@ public class CustomStructureGui {
         // **关键**: 在建造前, 自动把当前 Construction 绑定到玩家背包里第一张未锁定的蓝图.
         // 之前从来没自动绑过, 导致服务端 consumeBlueprint 时找不到匹配的 blueprint
         // (蓝图的 packName/constructionId 字段都是空的或者绑到了别的建筑).
-        com.prefab.addon.network.NetworkHandler.sendToServer(
-            new com.prefab.addon.network.BindConstructionPayload(
-                packName, currentConstruction.getId(), false));
+        // 终端入口不绑定: 没有蓝图可绑, 也不该把玩家已有的蓝图偷偷改绑到这个建筑.
+        if (!fromTerminal) {
+            com.prefab.addon.network.NetworkHandler.sendToServer(
+                new com.prefab.addon.network.BindConstructionPayload(
+                    packName, currentConstruction.getId(), false));
+        }
 
         PrefabCustomAddon.LOGGER.info("[CUSTOM-GUI-V2] Build: pack={} id={} pos={} challengeMode={} animationMode={}",
             packName, currentConstruction.getId(), buildPos, challengeMode,
@@ -872,6 +1002,11 @@ public class CustomStructureGui {
         // 同时把普通 custom 的 currentConstruction 显式置 null, 防止 ALT 分支误判
         // "上一个 custom 建筑还在", 走错 build 路径
         currentConstruction = null;
+    }
+
+    /** 本次 GUI 是否从建筑终端打开 (无蓝图建造流程, 供 ALT 建造路径判断). */
+    public static boolean isOpenedFromTerminal() {
+        return fromTerminal;
     }
 
     private static boolean hasBlueprintInInventory() {
