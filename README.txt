@@ -4,3 +4,5 @@
 
 ldlib2官方项目地址：https://github.com/Low-Drag-MC/LDLib2
 作者：KilaBash
+
+许可：LGPL v3.0
