@@ -262,8 +262,8 @@ public class StructurePreviewKeyHandler {
             PrefabCustomAddon.LOGGER.warn("[PREVIEW-BUILD] packName/constructionId \u4e3a\u7a7a, GUI \u5df2\u5173\u95ed");
             return;
         }
-        // 材料消耗按玩家游戏模式判定: 生存/冒险消耗, 创造免费 (旧的"挑战模式"开关已移除)
-        boolean consumeMaterials = !player.isCreative();
+        // 材料消耗按玩家游戏模式判定: 生存/冒险消耗, 创造免费; OP 开启免材料模式时全部免费
+        boolean consumeMaterials = !player.isCreative() && !com.prefab.addon.work.FreeBuildMode.isEnabled();
         // KubeJS 联动蓝图豁免 (与 GUI 流程一致): 玩家合成的蓝图建造不收材料.
         // 判定优先级跟下面 silent 的确定保持一致: 先看预览来源蓝图, 再退回背包第一个蓝图.
         if (consumeMaterials) {
@@ -462,8 +462,9 @@ public class StructurePreviewKeyHandler {
         }
         MaterialCalculator.MaterialList matList = shape.toMaterialList();
         UUID uuid = player.getUUID();
-        // 创造模式免材料 (与自定义建筑同一规则); 生存/冒险需要提交材料
-        if (!player.isCreative() && !ChallengeSessionManager.isReady(uuid, shape.sessionKey(), matList.required)) {
+        // 创造模式免材料 + 免材料模式豁免 (与自定义建筑同一规则); 生存/冒险需要提交材料
+        if (!player.isCreative() && !com.prefab.addon.work.FreeBuildMode.isEnabled()
+                && !ChallengeSessionManager.isReady(uuid, shape.sessionKey(), matList.required)) {
             Map<String, Integer> submitted = ChallengeSessionManager.getSubmitted(uuid, shape.sessionKey());
             int submittedCount = 0;
             int requiredCount = 0;

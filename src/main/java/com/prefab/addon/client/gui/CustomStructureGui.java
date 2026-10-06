@@ -36,7 +36,6 @@ import com.lowdragmc.lowdraglib2.math.Size;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.network.chat.Component;
-import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.item.ItemStack;
 
 import java.util.ArrayList;
@@ -160,6 +159,12 @@ public class CustomStructureGui {
     //   - 建造前不自动绑定蓝图 (没有蓝图可绑, 也不该劫持玩家已有的蓝图)
     private static boolean fromTerminal = false;
 
+    // === 浏览器入口标记 ===
+    // 从建筑浏览器 (GuiExtensionPackBrowser) 蓝图模式点卡片直跳进来时 = true:
+    //   "关闭"按钮不直接回游戏, 而是重新打开浏览器 (浏览器构造器会恢复 分页/分类 状态);
+    //   "更换建筑"按钮也保持蓝图直跳模式 (openForBlueprint), 不清掉 blueprintStack.
+    private static boolean fromBrowser = false;
+
     // === 状态消息 (例如 "提交材料后才能建造" 等提示) ===
     private static int statusTick = 0;
     private static String statusMsg = null;
@@ -170,8 +175,13 @@ public class CustomStructureGui {
     /**
      * 是否消耗材料: 生存/冒险固定需要, 创造免费 (取代旧的"挑战模式"全局开关,
      * 也顺带消除了旧开关"无 OP 也能切换"的问题 — 不再有可被乱切的开关).
+     * OP 开启全服免材料模式 (/prefabaddon freemode on) 时同样免材料.
      */
     private static boolean shouldConsumeMaterials() {
+        // 免材料模式优先: 开启时所有玩家都不需要材料
+        if (com.prefab.addon.work.FreeBuildMode.isEnabled()) {
+            return false;
+        }
         LocalPlayer p = Minecraft.getInstance().player;
         return p == null || !p.isCreative();
     }
@@ -201,6 +211,7 @@ public class CustomStructureGui {
 
         startAsyncParse(construction);
         ModularUI ui = createUI(construction);
+        runAutoDepCheck(construction);
         Minecraft.getInstance().setScreen(
             new ModularUIScreen(ui, Component.literal(construction.getName())));
     }
@@ -229,12 +240,41 @@ public class CustomStructureGui {
 
         startAsyncParse(construction);
         ModularUI ui = createUI(construction);
+        runAutoDepCheck(construction);
         Minecraft.getInstance().setScreen(
             new ModularUIScreen(ui, Component.literal(construction.getName())));
     }
 
     /**
+     * 从建筑浏览器 (GuiExtensionPackBrowser) 蓝图模式点卡片直跳打开.
+     * 与 {@link #open(ConstructionInfo, ItemStack, BlockPos)} 一致, 只是标记来源 = 浏览器:
+     * 之后"关闭"/"更换建筑"按钮返回浏览器, 而不是直接回游戏.
+     */
+    public static void openFromBrowser(ConstructionInfo construction, ItemStack blueprint, BlockPos openPos) {
+        open(construction, blueprint, openPos);
+        // open() 内部 resetState() 会清标记, 这里在 setScreen 之前补上
+        fromBrowser = true;
+    }
+
+    /**
+     * 进入界面时自动检测依赖 (替代原 "检测依赖" 按钮):
+     * 检测 + 缓存 + 与独立详情页共用逻辑, 结果显示在底部状态栏.
+     */
+    private static void runAutoDepCheck(ConstructionInfo c) {
+        List<String> deps = c.getDependencies();
+        // 检测 + 缓存 + 重建左侧依赖列表 (✓/✗), 与独立详情页共用逻辑
+        DependencyChecker.CheckResult result = GuiConstructionDetail.checkDepsAndUpdate(c);
+        if (result.missing.isEmpty()) {
+            showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.dep_check_pass",
+                    result.present.size(), (deps == null ? 0 : deps.size())), 0x55FF55, 200);
+        } else {
+            showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.dep_check_done"), 0xFFAA55, 200);
+        }
+    }
+
+    /**
      * 关闭界面: 从终端打开时 (fromTerminal) 重开终端并回到"建筑选择"应用;
+     * 从浏览器蓝图模式打开时 (fromBrowser) 重开建筑浏览器 (恢复之前的分页/分类状态);
      * 从主模组普通入口打开时只关屏回世界.
      */
     private static void closeScreen() {
@@ -243,6 +283,9 @@ public class CustomStructureGui {
             fromTerminal = false;
             com.prefab.addon.terminal.client.gui.TerminalGui.selectBuildingsOnReopen();
             com.prefab.addon.terminal.network.TerminalPayloads.sendReopenTerminal();
+        } else if (fromBrowser) {
+            fromBrowser = false;
+            GuiExtensionPackBrowser.open();
         }
     }
 
@@ -276,6 +319,7 @@ public class CustomStructureGui {
         statusMsg = null;
         challengeMode = false;
         fromTerminal = false;
+        fromBrowser = false;
     }
 
     private static void startAsyncParse(ConstructionInfo construction) {
@@ -569,28 +613,9 @@ public class CustomStructureGui {
             buttonRow.addChild(btnPreview);
         }
 
-        // 第三个按钮: 终端打开时为 "检测依赖" (终端里没有可更换的蓝图);
-        // 蓝图打开时为 "更换建筑" (跳建筑浏览器).
-        if (fromTerminal) {
-            Button btnDeps = new Button().setText(com.prefab.addon.PrefabCustomAddon.tr("gui.custom.check_deps"));
-            btnDeps.setOnClick(e -> {
-                ConstructionInfo c = currentConstruction;
-                if (c == null) {
-                    return;
-                }
-                List<String> deps = c.getDependencies();
-                // 检测 + 缓存 + 重建左侧依赖列表 (✓/✗), 与独立详情页共用逻辑
-                DependencyChecker.CheckResult result = GuiConstructionDetail.checkDepsAndUpdate(c);
-                if (result.missing.isEmpty()) {
-                    showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.dep_check_pass",
-                            result.present.size(), (deps == null ? 0 : deps.size())), 0x55FF55, 200);
-                } else {
-                    showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.dep_check_done"), 0xFFAA55, 200);
-                }
-            });
-            btnDeps.layout(l -> l.flexGrow(1).heightPercent(100));
-            buttonRow.addChild(btnDeps);
-        } else {
+        // 第三个按钮: 蓝图打开时为 "更换建筑" (跳建筑浏览器).
+        // 终端打开时没有第三按钮 (原 "检测依赖" 按钮已移除: 进入界面时自动检测).
+        if (!fromTerminal) {
         // 更换建筑按钮
         // 需求: 跳到建筑浏览器 (第1张图, 左侧 tab 栏 + 建筑卡片网格),
         //       而不是直接进入某个建筑的详情 (之前: GuiConstructionDetail.openFirstAvailable()).
@@ -598,9 +623,17 @@ public class CustomStructureGui {
         Button btnChange = new Button().setText(com.prefab.addon.PrefabCustomAddon.tr("gui.custom.change"));
         btnChange.setOnClick(e -> {
             if (renderScene != null) renderScene.releaseRendererResource();
-            // 之前: GuiConstructionDetail.openFirstAvailable();  // 详情层 (地狱门那个 3D 预览)
-            // 现在: GuiExtensionPackBrowser.open();               // 建筑浏览器 (第1张图, 卡片网格 + tab)
-            GuiExtensionPackBrowser.open();
+            // 只要带着自定义蓝图就保持蓝图直跳模式 (点卡片仍直开本界面):
+            // 不管是从浏览器直跳进来 (fromBrowser) 还是右键已绑定蓝图直接 open() 进来,
+            // 否则后者会掉进普通浏览模式, 点卡片进 GuiConstructionDetail 详情页 (界面不统一).
+            // 无蓝图 (终端入口等) 才用普通浏览模式.
+            if (currentBlueprint != null && !currentBlueprint.isEmpty()) {
+                GuiExtensionPackBrowser.openForBlueprint(currentBlueprint, currentOpenPos);
+            } else {
+                // 之前: GuiConstructionDetail.openFirstAvailable();  // 详情层 (地狱门那个 3D 预览)
+                // 现在: GuiExtensionPackBrowser.open();               // 建筑浏览器 (第1张图, 卡片网格 + tab)
+                GuiExtensionPackBrowser.open();
+            }
         });
         btnChange.layout(l -> l.flexGrow(1).heightPercent(100));
         // 蓝图锁定时变灰
@@ -621,6 +654,70 @@ public class CustomStructureGui {
             btnChange.setText(com.prefab.addon.PrefabCustomAddon.tr("gui.custom.locked"));
         }
         buttonRow.addChild(btnChange);
+        }
+
+        // KubeJS 创建的玩家蓝图标记: 收藏/删除/缩略图按钮都不显示
+        // (KubeJS 建筑资源由 KubeJS 侧管理, 无需客户端处理)
+        boolean kubeJSBlueprint = currentBlueprint != null && !currentBlueprint.isEmpty()
+                && com.prefab.addon.structure.AsyncBuildManager.isKubeJSPlayerBlueprint(currentBlueprint);
+
+        // 收藏 + 删除建筑按钮 (与 GuiConstructionDetail 详情页同款):
+        //   - 收藏: 切换并持久化到 PlayerPreferences (键 = packName/constructionId)
+        //   - 删除: 二次确认后删本地 .nbt/.txt/.png 三件套 (zip 包内建筑会提示无法删)
+        // KubeJS 玩家蓝图不显示这两个按钮 (KubeJS 建筑资源由 KubeJS 侧管理, 与缩略图按钮同规则)
+        if (!kubeJSBlueprint) {
+        // 收藏按钮: 已收藏 "★ 已收藏"(黄) / 未收藏 "☆ 收藏"(白)
+        String pkg = construction.getPack() != null ? construction.getPack().getPackageName() : null;
+        boolean fav = PlayerPreferences.get().isFavorite(pkg, construction.getId());
+        Button btnFavorite = new Button();
+        btnFavorite.setText(com.prefab.addon.PrefabCustomAddon.tr(fav ? "gui.detail.favorited" : "gui.detail.favorite"));
+        btnFavorite.text.textStyle(t -> t.textColor(fav ? 0xFFFFDD66 : 0xFFFFFFFF));
+        btnFavorite.textStyle(t -> t.textAlignHorizontal(Horizontal.CENTER));
+        btnFavorite.layout(l -> l.width(62).heightPercent(100).flexShrink(0));
+        btnFavorite.setOnClick(e -> {
+            boolean nowFav = PlayerPreferences.get().toggleFavorite(pkg, construction.getId());
+            btnFavorite.setText(com.prefab.addon.PrefabCustomAddon.tr(nowFav ? "gui.detail.favorited" : "gui.detail.favorite"));
+            btnFavorite.text.textStyle(t -> t.textColor(nowFav ? 0xFFFFDD66 : 0xFFFFFFFF));
+            showStatus(com.prefab.addon.PrefabCustomAddon.tr(nowFav ? "gui.detail.add_favorite" : "gui.detail.remove_favorite"),
+                nowFav ? 0x55FF55 : 0xFFAA55, 100);
+        });
+        buttonRow.addChild(btnFavorite);
+
+        // 删除建筑按钮: 先释放 3D 渲染资源 (确认弹窗会替换当前 screen), 再走二次确认弹窗
+        Button btnDelete = new Button().setText("§c🗑 删除建筑");
+        btnDelete.setOnClick(e -> {
+            if (renderScene != null) {
+                var scene = renderScene;
+                renderScene = null;  // 先置 null 防止二次释放
+                try { scene.releaseRendererResource(); } catch (Throwable ignored) {}
+            }
+            GuiConstructionDetail.confirmDeleteBuildingFromGui(currentConstruction, currentBlueprint, currentOpenPos);
+        });
+        btnDelete.layout(l -> l.width(66).heightPercent(100).flexShrink(0));
+        buttonRow.addChild(btnDelete);
+        }
+
+        // 生成缩略图按钮 (终端/蓝图打开均可): 把 3D 预览截屏存到 ThumbnailCache,
+        // 之后建筑终端卡片会自动加载这张图作为图标.
+        //  - 已有原图 (hasPreviewImage): 禁用 + "已有原图"
+        //  - 已有缓存: "更新缩略图"
+        //  - 无缓存: "生成缩略图"
+        // KubeJS 创建的玩家蓝图: 不显示此按钮 (缩略图由 KubeJS 侧资源管理, 无需客户端生成)
+        if (!kubeJSBlueprint) {
+        Button btnThumb = new Button();
+        boolean hasOrigImg = construction.hasPreviewImage();
+        boolean hasCachedThumb = !hasOrigImg && com.prefab.addon.client.ThumbnailCache.hasCached(construction);
+        if (hasOrigImg) {
+            btnThumb.setText(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.has_thumb"));
+            btnThumb.setActive(false);
+        } else if (hasCachedThumb) {
+            btnThumb.setText(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.update_thumb"));
+        } else {
+            btnThumb.setText(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.generate_thumb"));
+        }
+        btnThumb.layout(l -> l.width(70).heightPercent(100).flexShrink(0));
+        btnThumb.setOnClick(e -> handleCaptureThumbnailClick());
+        buttonRow.addChild(btnThumb);
         }
 
         root.addChild(buttonRow);
@@ -844,26 +941,15 @@ public class CustomStructureGui {
             showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.custom.challenge_not_ready"), 0xFFAA00, 100);
             return;
         }
-        // 背包里没蓝图 → 阻止 (终端入口不需要蓝图, 跳过)
-        if (!fromTerminal && !hasBlueprintInInventory()) {
-            showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.custom.no_blueprint"), 0xFF5555, 100);
-            return;
-        }
 
         String packName = currentConstruction.getPack() != null
             ? currentConstruction.getPack().getName() : "";
         net.minecraft.core.BlockPos buildPos = currentOpenPos != null
             ? currentOpenPos : net.minecraft.core.BlockPos.ZERO;
 
-        // **关键**: 在建造前, 自动把当前 Construction 绑定到玩家背包里第一张未锁定的蓝图.
-        // 之前从来没自动绑过, 导致服务端 consumeBlueprint 时找不到匹配的 blueprint
-        // (蓝图的 packName/constructionId 字段都是空的或者绑到了别的建筑).
-        // 终端入口不绑定: 没有蓝图可绑, 也不该把玩家已有的蓝图偷偷改绑到这个建筑.
-        if (!fromTerminal) {
-            com.prefab.addon.network.NetworkHandler.sendToServer(
-                new com.prefab.addon.network.BindConstructionPayload(
-                    packName, currentConstruction.getId(), false));
-        }
+        // 建造不再要求持有/绑定自定义蓝图: 任何玩家从建筑列表选中建筑即可进入建造流程
+        // (生存交材料建一次, 创造直接建). KubeJS 联动蓝图物品 (player_blueprint) 功能保留,
+        // 但建造流程不再依赖/劫持玩家已有的蓝图.
 
         PrefabCustomAddon.LOGGER.info("[CUSTOM-GUI-V2] Build: pack={} id={} pos={} challengeMode={} animationMode={}",
             packName, currentConstruction.getId(), buildPos, challengeMode,
@@ -1009,25 +1095,54 @@ public class CustomStructureGui {
         return fromTerminal;
     }
 
-    private static boolean hasBlueprintInInventory() {
-        net.minecraft.client.player.LocalPlayer player = Minecraft.getInstance().player;
-        if (player == null) return false;
-        Inventory inv = player.getInventory();
-        for (int i = 0; i < inv.getContainerSize(); i++) {
-            ItemStack s = inv.getItem(i);
-            if (s.getItem() instanceof com.prefab.addon.items.CustomBlueprintItem) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     private static boolean checkMaterialsReady() {
         if (materialList == null || materialList.required.isEmpty()) return true;
         net.minecraft.client.player.LocalPlayer player = Minecraft.getInstance().player;
         if (player == null) return false;
         return com.prefab.addon.work.ChallengeSessionManager.isReady(
             player.getUUID(), currentConstruction.getId(), materialList.required);
+    }
+
+    /**
+     * "生成缩略图" 按钮回调: 把当前 3D 预览截屏存到 ThumbnailCache.
+     *
+     * <p>流程同 GuiConstructionDetail.captureCurrentSceneToThumbnail:
+     * 前置检查 → 删旧缓存 → ThumbnailCache.captureRegion (box-filter 缩放到 256px + 写盘).</p>
+     */
+    private static void handleCaptureThumbnailClick() {
+        if (renderScene == null || currentConstruction == null) {
+            showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.thumb_not_ready"), 0xFF5555, 60);
+            return;
+        }
+        if (currentConstruction.hasPreviewImage()) {
+            showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.thumb_has_orig"), 0xFFAA55, 60);
+            return;
+        }
+        if (com.prefab.addon.client.ThumbnailCache.hasCached(currentConstruction)) {
+            // 已有缓存, 删除旧的再生成
+            try {
+                java.nio.file.Files.deleteIfExists(
+                    com.prefab.addon.client.ThumbnailCache.getCacheFile(currentConstruction));
+            } catch (Exception ignored) {}
+        }
+        int sceneScreenX = (int) renderScene.getPositionX();
+        int sceneScreenY = (int) renderScene.getPositionY();
+        int sceneScreenW = (int) renderScene.getSizeWidth();
+        int sceneScreenH = (int) renderScene.getSizeHeight();
+        if (sceneScreenW <= 0 || sceneScreenH <= 0) {
+            showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.thumb_not_drawn"), 0xFF5555, 60);
+            return;
+        }
+        boolean ok = com.prefab.addon.client.ThumbnailCache.captureRegion(
+            sceneScreenX, sceneScreenY, sceneScreenW, sceneScreenH, currentConstruction, 256);
+        if (ok) {
+            showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.thumb_saved",
+                com.prefab.addon.client.ThumbnailCache.getCacheFile(currentConstruction)
+                    .getFileName().toString()), 0x55FF55, 60);
+        } else {
+            showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.screenshot_fail", "capture"),
+                0xFF5555, 60);
+        }
     }
 
     private static void showStatus(String msg, int color, int ticks) {

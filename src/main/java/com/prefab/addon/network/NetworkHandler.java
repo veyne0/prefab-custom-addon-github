@@ -145,6 +145,8 @@ public class NetworkHandler {
         registrar.playToServer(SubmitMaterialsPayload.TYPE, SubmitMaterialsPayload.STREAM_CODEC, SubmitMaterialsPayload::handle);
         registrar.playToClient(MaterialSubmitResultPayload.TYPE, MaterialSubmitResultPayload.STREAM_CODEC, MaterialSubmitResultPayload::handle);
         registrar.playToServer(ResetMaterialLedgerPayload.TYPE, ResetMaterialLedgerPayload.STREAM_CODEC, ResetMaterialLedgerPayload::handle);
+        // 全服免材料模式同步 (OP /prefabaddon freemode 切换后广播 + 玩家登录时快照)
+        registrar.playToClient(FreeBuildSyncPayload.TYPE, FreeBuildSyncPayload.STREAM_CODEC, FreeBuildSyncPayload::handle);
     }
 
     public static void sendToServer(BuildCustomStructurePayload payload) {
@@ -177,6 +179,14 @@ public class NetworkHandler {
 
     public static void broadcastBuildSpeed(MinecraftServer server, int percent) {
         SyncBuildSpeedPayload payload = new SyncBuildSpeedPayload(percent);
+        for (ServerPlayer sp : server.getPlayerList().getPlayers()) {
+            PacketDistributor.sendToPlayer((ServerPlayer)sp, (CustomPacketPayload)payload, (CustomPacketPayload[])new CustomPacketPayload[0]);
+        }
+    }
+
+    /** 全服免材料模式: 切换后广播给所有在线玩家 (客户端门控点视同创造模式) */
+    public static void broadcastFreeBuild(MinecraftServer server, boolean enabled) {
+        FreeBuildSyncPayload payload = new FreeBuildSyncPayload(enabled);
         for (ServerPlayer sp : server.getPlayerList().getPlayers()) {
             PacketDistributor.sendToPlayer((ServerPlayer)sp, (CustomPacketPayload)payload, (CustomPacketPayload[])new CustomPacketPayload[0]);
         }

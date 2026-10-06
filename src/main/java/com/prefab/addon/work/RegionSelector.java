@@ -2,13 +2,9 @@ package com.prefab.addon.work;
 
 import com.prefab.addon.PrefabCustomAddon;
 import com.prefab.addon.items.mini.MiniBuildingSelector;
-import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.entity.player.Player;
-import net.minecraft.world.level.Level;
-import net.minecraft.world.phys.Vec3;
-import net.minecraft.world.phys.AABB;
 
 import java.util.UUID;
 
@@ -117,10 +113,7 @@ public class RegionSelector {
 
     public static void start(Player player, Mode mode, OnCompleted callback) {
         ACTIVE.put(player.getUUID(), new SelectionState(player.getUUID(), mode, callback));
-        if (player instanceof net.minecraft.client.player.LocalPlayer) {
-            player.sendSystemMessage(Component.literal(
-                "§a[选择模式] §7左键=角点1, 右键=角点2, ALT=确认, CTRL=取消 §a(按住 §eSHIFT§a 临时解锁挖方块)"));
-        }
+        // 操作提示由 RegionSelectorHud 顶部 HUD 显示, 不再发聊天栏消息
         PrefabCustomAddon.LOGGER.info("[REGION-SELECT] Started selection for {} (mode={})",
             player.getName().getString(), mode);
     }
@@ -137,10 +130,7 @@ public class RegionSelector {
         // 占用同一个 slot, 覆盖现有选区 (理论上不会发生, 互斥)
         ACTIVE.put(player.getUUID(), new SelectionState(player.getUUID(),
             Mode.MINI_BUILDING_CAPTURE, null));
-        if (player instanceof net.minecraft.client.player.LocalPlayer) {
-            player.sendSystemMessage(Component.literal(
-                "§a[迷你建筑转换器] §7左键=角点1, 右键=角点2, ALT=转换, CTRL=取消"));
-        }
+        // 操作提示由 RegionSelectorHud 顶部 HUD 显示, 不再发聊天栏消息
         PrefabCustomAddon.LOGGER.info("[REGION-SELECT] Started mini building selection for {}",
             player.getName().getString());
     }
@@ -156,10 +146,7 @@ public class RegionSelector {
         }
         ACTIVE.put(player.getUUID(), new SelectionState(player.getUUID(),
             Mode.OPERATION_WAND, null));
-        if (player instanceof net.minecraft.client.player.LocalPlayer) {
-            player.sendSystemMessage(Component.literal(
-                "§a[操作手杖] §7左键=角点1, 右键=角点2, §aALT=捕获区域§7, §cCTRL=取消"));
-        }
+        // 操作提示由 RegionSelectorHud 顶部 HUD 显示, 不再发聊天栏消息
         PrefabCustomAddon.LOGGER.info("[REGION-SELECT] Started operation wand selection for {}",
             player.getName().getString());
     }
@@ -189,35 +176,18 @@ public class RegionSelector {
         }
     }
 
+    /** 设置角点 1 (左键). 坐标反馈由 RegionSelectorHud 显示. */
     public static void onLeftClick(Player player, BlockPos pos) {
         SelectionState st = ACTIVE.get(player.getUUID());
         if (st == null) return;
         st.pos1 = pos.immutable();
-        if (st.bothSelected()) {
-            // 不使用预制字符串, 走 corner1 + 角点 2
-            player.sendSystemMessage(Component.literal(
-                PrefabCustomAddon.tr("sel.corner1", formatPos(pos))
-                    + " §7| 角点 2: §f" + formatPos(st.pos2)
-                    + " §a(按 ALT 确认导出)"));
-        } else {
-            player.sendSystemMessage(Component.literal(
-                PrefabCustomAddon.tr("sel.corner1_next", formatPos(pos))));
-        }
     }
 
+    /** 设置角点 2 (右键). 坐标反馈由 RegionSelectorHud 显示. */
     public static void onRightClick(Player player, BlockPos pos) {
         SelectionState st = ACTIVE.get(player.getUUID());
         if (st == null) return;
         st.pos2 = pos.immutable();
-        if (st.bothSelected()) {
-            player.sendSystemMessage(Component.literal(
-                PrefabCustomAddon.tr("sel.corner2", formatPos(pos))
-                    + " §7| 角点 1: §f" + formatPos(st.pos1)
-                    + " §a(按 ALT 确认导出)"));
-        } else {
-            player.sendSystemMessage(Component.literal(
-                PrefabCustomAddon.tr("sel.corner2_next", formatPos(pos))));
-        }
     }
 
     /**
@@ -227,7 +197,8 @@ public class RegionSelector {
         SelectionState st = ACTIVE.get(player.getUUID());
         if (st == null) return;
         if (!st.bothSelected()) {
-            player.sendSystemMessage(Component.literal(PrefabCustomAddon.tr("sel.need_both")));
+            // action bar 提示 (不进聊天栏, 避免按住 ALT 时刷屏)
+            player.displayClientMessage(Component.literal(PrefabCustomAddon.tr("sel.need_both")), true);
             return;
         }
 
@@ -245,10 +216,6 @@ public class RegionSelector {
                 com.prefab.addon.items.OperationWandSelectionHandler.onConfirm(player, st);
                 break;
         }
-    }
-
-    private static String formatPos(BlockPos p) {
-        return "(" + p.getX() + ", " + p.getY() + ", " + p.getZ() + ")";
     }
 
     private static void doExport(Player player, SelectionState st) {
@@ -269,29 +236,5 @@ public class RegionSelector {
             player.sendSystemMessage(Component.literal("§c[选择模式] §4导出失败: §f" + t.getMessage()));
             if (st.callback != null) st.callback.onCancelled();
         }
-    }
-
-    /** 每帧调用, 渲染选择框和提示 - 实际渲染由 RegionSelectorEventHandler.onRenderLevel 处理 */
-    public static void onRender(net.minecraft.client.gui.GuiGraphics g, net.minecraft.client.Camera camera,
-                                float partialTicks) {
-        // 实际 3D 渲染: 见 RegionSelectorEventHandler.onRenderLevel
-        // 这里只画 2D HUD 提示文字 (右上角)
-        Minecraft mc = Minecraft.getInstance();
-        if (mc.player == null) return;
-        SelectionState st = ACTIVE.get(mc.player.getUUID());
-        if (st == null) return;
-
-        // 简单画 2D 文字提示
-        if (g == null) return;
-        int screenW = mc.getWindow().getGuiScaledWidth();
-        String tip;
-        if (st.pos1 == null) {
-            tip = PrefabCustomAddon.tr("sel.tip.corner1");
-        } else if (st.pos2 == null) {
-            tip = PrefabCustomAddon.tr("sel.tip.corner1_set", formatPos(st.pos1));
-        } else {
-            tip = PrefabCustomAddon.tr("sel.tip.both_set", formatPos(st.pos1), formatPos(st.pos2));
-        }
-        g.drawString(mc.font, tip, screenW - mc.font.width(tip) - 4, 4, 0xFFFFFF);
     }
 }

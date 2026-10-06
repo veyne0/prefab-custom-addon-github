@@ -46,7 +46,6 @@ public class PlayerPreferences {
     // 默认开启挑战模式: 适应服务器环境, 防止 OP 忘开.
     // 老用户如果之前 JSON 里有 consumeMaterials:false, load() 会一次性升级到 true.
     public boolean consumeMaterials = false;       // 挑战模式: 建造是否消耗材料 (默认 false, 关闭)
-    public boolean autoDepCheckOnOpen = false;     // 打开 GUI 时自动检测依赖 (默认 false)
     public int lastSelectedPackIndex = 0;          // 上次选中的拓展包索引
 
     // === 异步批处理配置 (大建筑性能优化) ===
@@ -171,8 +170,8 @@ public class PlayerPreferences {
                 p.consumeMaterials = false;
                 p.save();
             }
-            PrefabCustomAddon.LOGGER.info("[PREFS] 加载偏好: consumeMaterials={} autoDepCheckOnOpen={} lastPackIdx={} previewBatchPercent={} buildBatchPercent={}",
-                p.consumeMaterials, p.autoDepCheckOnOpen, p.lastSelectedPackIndex,
+            PrefabCustomAddon.LOGGER.info("[PREFS] 加载偏好: consumeMaterials={} lastPackIdx={} previewBatchPercent={} buildBatchPercent={}",
+                p.consumeMaterials, p.lastSelectedPackIndex,
                 p.previewBatchPercent, p.buildBatchPercent);
             return p;
         } catch (Exception e) {

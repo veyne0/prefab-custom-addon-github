@@ -741,9 +741,19 @@ public final class AsyncBuildManager {
 
     /**
      * 实际执行消耗 (减少 count, 推送到客户端).
+     * <p>仅 mod 原生"自定义蓝图" ({@link CustomBlueprintItem}) 建造后<b>不消耗</b>:
+     * 绑定信息 (packName/constructionId) 已写入物品, 同一份蓝图可反复建造.
+     * KubeJS 蓝图 (player_blueprint tag) 与外包蓝图照常消耗.
      */
     private static void doConsume(ServerPlayer player, Inventory inv, int slot,
                                   ItemStack stack, String context) {
+        // 自定义蓝图免消耗: 建造完成后保留蓝图, 便于重复建造同一建筑
+        if (stack.getItem() instanceof CustomBlueprintItem) {
+            PrefabCustomAddon.LOGGER.info(
+                "[BUILD-ASYNC] 自定义蓝图不消耗 (slot {}, ctx={}), 可重复使用",
+                slot, context);
+            return;
+        }
         int prevCount = stack.getCount();
         if (stack.getCount() == 1) {
             inv.setItem(slot, ItemStack.EMPTY);

@@ -155,6 +155,75 @@ public final class TerminalPayloads {
         }
     }
 
+    /** 客户端 → 服务端: 一键整理存储格 (存储软件 "一键整理" 按钮点击). */
+    public record SortStorageC2S() implements CustomPacketPayload {
+        public static final CustomPacketPayload.Type<SortStorageC2S> TYPE = new CustomPacketPayload.Type<>(
+                ResourceLocation.fromNamespaceAndPath(TerminalRegistry.MOD_ID, "sort_storage"));
+
+        public static final StreamCodec<FriendlyByteBuf, SortStorageC2S> CODEC =
+                new StreamCodec<FriendlyByteBuf, SortStorageC2S>() {
+                    @Override
+                    public SortStorageC2S decode(FriendlyByteBuf buf) {
+                        return new SortStorageC2S();
+                    }
+
+                    @Override
+                    public void encode(FriendlyByteBuf buf, SortStorageC2S p) {
+                    }
+                };
+
+        @Override
+        public Type<? extends CustomPacketPayload> type() {
+            return TYPE;
+        }
+    }
+
+    /** 服务端处理一键整理: 合并同物品 + 排序写回存储格 (持久化 listener 自动触发). */
+    public static void onSortStorage(SortStorageC2S payload, IPayloadContext ctx) {
+        if (!(ctx.player() instanceof net.minecraft.server.level.ServerPlayer player) || player.level().isClientSide) {
+            return;
+        }
+        com.prefab.addon.terminal.ui.TerminalUI.sortStorage(player);
+        if (player.containerMenu != null) {
+            player.containerMenu.broadcastChanges();
+        }
+    }
+
+    /** 客户端 → 服务端: 多配方切换 (存储软件结果槽旁 < > 按钮点击, delta = ±1). */
+    public record CycleCraftRecipeC2S(int delta) implements CustomPacketPayload {
+        public static final CustomPacketPayload.Type<CycleCraftRecipeC2S> TYPE = new CustomPacketPayload.Type<>(
+                ResourceLocation.fromNamespaceAndPath(TerminalRegistry.MOD_ID, "cycle_craft_recipe"));
+
+        public static final StreamCodec<FriendlyByteBuf, CycleCraftRecipeC2S> CODEC =
+                new StreamCodec<FriendlyByteBuf, CycleCraftRecipeC2S>() {
+                    @Override
+                    public CycleCraftRecipeC2S decode(FriendlyByteBuf buf) {
+                        return new CycleCraftRecipeC2S(buf.readVarInt());
+                    }
+
+                    @Override
+                    public void encode(FriendlyByteBuf buf, CycleCraftRecipeC2S p) {
+                        buf.writeVarInt(p.delta());
+                    }
+                };
+
+        @Override
+        public Type<? extends CustomPacketPayload> type() {
+            return TYPE;
+        }
+    }
+
+    /** 服务端处理多配方切换: 推进索引 + 重算结果预览 (result 槽随 broadcastChanges 同步客户端). */
+    public static void onCycleCraftRecipe(CycleCraftRecipeC2S payload, IPayloadContext ctx) {
+        if (!(ctx.player() instanceof net.minecraft.server.level.ServerPlayer player) || player.level().isClientSide) {
+            return;
+        }
+        com.prefab.addon.terminal.ui.TerminalUI.cycleCraftRecipe(player, payload.delta());
+        if (player.containerMenu != null) {
+            player.containerMenu.broadcastChanges();
+        }
+    }
+
     /** 客户端入口: 关闭 GUI 时保存偏好 (gui 层不直接碰 PacketDistributor). */
     public static void sendSavePrefs(CompoundTag data) {
         net.neoforged.neoforge.network.PacketDistributor.sendToServer(new SavePrefsC2S(data));
@@ -170,12 +239,24 @@ public final class TerminalPayloads {
         net.neoforged.neoforge.network.PacketDistributor.sendToServer(new ClearRecycleC2S());
     }
 
+    /** 客户端入口: 一键整理存储格. */
+    public static void sendSortStorage() {
+        net.neoforged.neoforge.network.PacketDistributor.sendToServer(new SortStorageC2S());
+    }
+
+    /** 客户端入口: 多配方切换 (本地预测由 GUI 层自行处理, 这里通知服务端真源). */
+    public static void sendCycleCraftRecipe(int delta) {
+        net.neoforged.neoforge.network.PacketDistributor.sendToServer(new CycleCraftRecipeC2S(delta));
+    }
+
     /** mod 总线注册: 只注册终端本体的 C2S 通道. */
     public static void register(RegisterPayloadHandlersEvent event) {
         PayloadRegistrar registrar = event.registrar("1");
         registrar.playToServer(SavePrefsC2S.TYPE, SavePrefsC2S.CODEC, TerminalPayloads::onSavePrefs);
         registrar.playToServer(ReopenC2S.TYPE, ReopenC2S.CODEC, TerminalPayloads::onReopen);
         registrar.playToServer(ClearRecycleC2S.TYPE, ClearRecycleC2S.CODEC, TerminalPayloads::onClearRecycle);
+        registrar.playToServer(SortStorageC2S.TYPE, SortStorageC2S.CODEC, TerminalPayloads::onSortStorage);
+        registrar.playToServer(CycleCraftRecipeC2S.TYPE, CycleCraftRecipeC2S.CODEC, TerminalPayloads::onCycleCraftRecipe);
     }
 
     private TerminalPayloads() {

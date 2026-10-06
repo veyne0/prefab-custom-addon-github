@@ -156,8 +156,9 @@ public class GuiMultiblockBrowser extends Screen {
             MultiblockShapeData sh;
             boolean ready = false;
             if (mc.player != null && (sh = MultiblockCatalog.getShape(id)) != null) {
-                // 创造模式免材料: 卡片直接显示可建造
+                // 创造模式免材料 + 免材料模式豁免: 卡片直接显示可建造
                 ready = mc.player.isCreative()
+                    || com.prefab.addon.work.FreeBuildMode.isEnabled()
                     || ChallengeSessionManager.isReady(mc.player.getUUID(), sh.sessionKey(), sh.toMaterialList().required);
             }
             readyCache.put(id, ready);

@@ -99,10 +99,13 @@ import net.minecraft.client.gui.components.events.GuiEventListener;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.renderer.GameRenderer;
 import net.minecraft.client.renderer.texture.DynamicTexture;
+import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.Style;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
 
 public class GuiExtensionPackBrowser
@@ -134,6 +137,10 @@ extends GuiBase {
     private static String rememberedCategory = null;
     private static int rememberedPage = 0;
     private static boolean rememberedPanelHidden = false;
+    /** 蓝图模式: 右键未绑定自定义蓝图时记录的蓝图物品 (null = 普通模式). */
+    private static ItemStack blueprintStack = null;
+    /** 蓝图模式: 右键未绑定自定义蓝图时记录的建造位置. */
+    private static BlockPos blueprintPos = null;
     private static final Map<Tab, TabState> TAB_STATES = new EnumMap<Tab, TabState>(Tab.class);
     private int[] paginationBarRect = null;
     private int[] paginationPrevRect = null;
@@ -143,7 +150,6 @@ extends GuiBase {
     private int[] categoryAddBtnRect = null;
     private int[] categoryToggleBtnRect = null;
     private boolean categoryPanelHidden = rememberedPanelHidden;
-    private final Map<String, List<String>> depCheckMissing;
     private int statusTick = 0;
     private String statusMessage = null;
     private int statusColor = 0x55FF55;
@@ -151,7 +157,6 @@ extends GuiBase {
     private final Map<String, ResourceLocation> previewTextureCache;
     private ExtendedButton btnBack;
     private ExtendedButton btnSync;
-    private ExtendedButton btnCheckDeps;
     private ExtendedButton btnOpenFolder;
     private ExtendedButton btnClose;
     private EditBox searchBox;
@@ -537,9 +542,11 @@ extends GuiBase {
 
     public GuiExtensionPackBrowser() {
         super("Extension Pack Browser");
+        // 默认普通模式: 清掉可能残留的蓝图状态 (Z 键 / 直接 new 的路径不受上次蓝图会话影响)
+        GuiExtensionPackBrowser.blueprintStack = null;
+        GuiExtensionPackBrowser.blueprintPos = null;
         this.currentCategory = rememberedCategory;
         this.scrollOffsetCards = rememberedPage;
-        this.depCheckMissing = new HashMap<String, List<String>>();
         this.coverTextureCache = new HashMap<String, ResourceLocation>();
         this.previewTextureCache = new HashMap<String, ResourceLocation>();
         this.downloadedBuildings = new ArrayList<LocalBuilding>();
@@ -573,6 +580,19 @@ extends GuiBase {
 
     public static void open() {
         Minecraft.getInstance().setScreen((Screen)new GuiExtensionPackBrowser());
+    }
+
+    /**
+     * 蓝图模式打开 (右键未绑定的自定义蓝图): 记录蓝图 stack + 建造位置,
+     * 之后点建筑卡片直接 {@link CustomStructureGui#open}, 跳过浏览器详情页.
+     *
+     * <p>注意: static 标志在构造函数里清空, 所以必须在构造之后赋值.</p>
+     */
+    public static void openForBlueprint(ItemStack stack, BlockPos pos) {
+        GuiExtensionPackBrowser screen = new GuiExtensionPackBrowser();
+        GuiExtensionPackBrowser.blueprintStack = stack;
+        GuiExtensionPackBrowser.blueprintPos = pos;
+        Minecraft.getInstance().setScreen((Screen)screen);
     }
 
     protected void Initialize() {
@@ -786,6 +806,9 @@ extends GuiBase {
         }
     }
 
+    /** 更新日志正文字体: vanilla 内置 uniform (ASCII 宽体位图; 中文字形仍走 unifont). */
+    private static final ResourceLocation CHANGELOG_FONT = ResourceLocation.withDefaultNamespace("uniform");
+
     private void drawTabChangelog(GuiGraphics guiGraphics, int grayBoxX, int grayBoxY, int mouseX, int mouseY) {
         int[] r = this.getContentRect(grayBoxX, grayBoxY);
         int rx = r[0];
@@ -793,12 +816,15 @@ extends GuiBase {
         int rw = r[2];
         guiGraphics.drawString(this.font, "\u66f4\u65b0\u65e5\u5fd7", rx + 4, ry + 4, 0x55AAFF);
         guiGraphics.fill(rx + 4, ry + 17, rx + rw - 4, ry + 18, -12303292);
-        String[] lines = new String[]{"V2.4.0更新日志", "修复已知bug", "新增下载建筑软件", "终端界面优化（分页/依赖检测）"};
+        String[] lines = new String[]{"V2.5.0更新内容", "修复已知bug", "建筑终端添加存储功能"};
         int lineY = ry + 24;
         for (int i = 0; i < lines.length; ++i) {
             // 内容区是浅灰底, 用深色字才看得清 (原来白/浅灰字在浅底上几乎不可见)
             int color = i == 0 ? 0x3F3F3F : 0x505050;
-            guiGraphics.drawString(this.font, lines[i], rx + 6, lineY, color);
+            // 用户要求换字体: 正文改用内置 uniform 字体渲染
+            guiGraphics.drawString(this.font,
+                    Component.literal(lines[i]).withStyle(Style.EMPTY.withFont(CHANGELOG_FONT)),
+                    rx + 6, lineY, color);
             lineY += 14;
         }
     }
@@ -1470,7 +1496,7 @@ extends GuiBase {
         int cardW = (rw - 8 - 12) / 3;
         int cardH = 70;
         int total = filtered.size();
-        int pageSize = Math.max(1, (listH + 6) / (cardH + 6));
+        int pageSize = Math.max(1, (listH + 6) / (cardH + 6)) * 3;
         int pageCount = Math.max(1, (total + pageSize - 1) / pageSize);
         int page = Math.max(0, Math.min(this.scrollOffsetCards, pageCount - 1));
         int start = page * pageSize;
@@ -2565,7 +2591,7 @@ extends GuiBase {
             int listH = rh - 22;
             int cardH = 70;
             int cardGap = 6;
-            return Math.max(1, (listH + cardGap) / (cardH + cardGap)) * 2;
+            return Math.max(1, (listH + cardGap) / (cardH + cardGap)) * 3;
         }
         if (this.currentTab == Tab.SERVERS) {
             int rh = 232;
@@ -2648,10 +2674,6 @@ extends GuiBase {
                 PrefabCustomAddon.LOGGER.warn("[BROWSER] sync \u5931\u8d25: {}", (Object)e.getMessage());
             }
             this.setStatus("\u5df2\u8bf7\u6c42\u540c\u6b65\u670d\u52a1\u5668\u5efa\u7b51", 0x55AAFF);
-            return;
-        }
-        if (button == this.btnCheckDeps) {
-            this.runDependencyCheck();
             return;
         }
         if (button == this.btnOpenFolder) {
@@ -2787,6 +2809,23 @@ extends GuiBase {
     }
 
     private void openConstructionDetail(ConstructionInfo c) {
+        // 蓝图模式: 点建筑卡片直接开 CustomStructureGui (生存=提交材料 / 创造=预览),
+        // 跳过浏览器详情页 (删除/检测依赖/选择/选择并锁定 那套是浏览器路径的操作).
+        if (GuiExtensionPackBrowser.blueprintStack != null) {
+            ItemStack stack = GuiExtensionPackBrowser.blueprintStack;
+            BlockPos pos = GuiExtensionPackBrowser.blueprintPos;
+            GuiExtensionPackBrowser.blueprintStack = null;
+            GuiExtensionPackBrowser.blueprintPos = null;
+            // 直跳 CustomStructureGui 前也要记住分页/分类状态, 否则之后"关闭"返回浏览器时回到第 1 页
+            rememberedCategory = this.currentCategory;
+            rememberedPage = this.scrollOffsetCards;
+            rememberedPanelHidden = this.categoryPanelHidden;
+            PrefabCustomAddon.LOGGER.info("[BLUEPRINT-MODE] 卡片点击直跳 CustomStructureGui: id={}, pos={}",
+                c.getId(), pos);
+            // openFromBrowser: CustomStructureGui"关闭"时会重开本浏览器 (恢复上面的 remembered 状态)
+            CustomStructureGui.openFromBrowser(c, stack, pos);
+            return;
+        }
         rememberedCategory = this.currentCategory;
         rememberedPage = this.scrollOffsetCards;
         rememberedPanelHidden = this.categoryPanelHidden;
@@ -2852,24 +2891,6 @@ extends GuiBase {
         this.statusMessage = msg;
         this.statusColor = color;
         this.statusTick = 200;
-    }
-
-    private void runDependencyCheck() {
-        LinkedHashMap<String, List<String>> missing = new LinkedHashMap<String, List<String>>();
-        ExtensionPackManager mgr = ExtensionPackManager.getInstance();
-        for (ExtensionPack p : mgr.getPacksForGui()) {
-            List<String> deps = p.getDependencies();
-            if (deps == null || deps.isEmpty()) continue;
-            DependencyChecker.CheckResult r = DependencyChecker.check(deps);
-            if (r.missing.isEmpty()) continue;
-            missing.put(p.getName(), r.missing);
-        }
-        if (missing.isEmpty()) {
-            this.setStatus("\u2713 \u6240\u6709\u62d3\u5c55\u5305\u4f9d\u8d56\u90fd\u5df2\u6ee1\u8db3", 0x55FF55);
-        } else {
-            int totalMissing = missing.values().stream().mapToInt(List::size).sum();
-            this.setStatus("\u2717 \u5171 " + totalMissing + " \u4e2a\u4f9d\u8d56\u7f3a\u5931 (\u70b9\u51fb\u4e0b\u65b9 [\u4f9d\u8d56\u8be6\u60c5] \u67e5\u770b)", 0xFFAA55);
-        }
     }
 
     private List<ConstructionInfo> filterBySearch(List<ConstructionInfo> src, String q) {

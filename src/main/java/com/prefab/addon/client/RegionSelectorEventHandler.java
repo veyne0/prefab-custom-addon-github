@@ -220,6 +220,17 @@ public class RegionSelectorEventHandler {
                     true);
             }
         }
+
+        // ---- CTRL / ALT 边沿检测: 只在按下瞬间触发一次 ----
+        // 原来 level-triggered 按住 CTRL/ALT 时每 tick 调一次 cancel/confirm,
+        // 会每秒发 20+ 条聊天消息 (sel.cancelled / sel.need_both), 聊天栏重排版导致掉帧.
+        boolean altDown = com.mojang.blaze3d.platform.InputConstants.isKeyDown(window, GLFW.GLFW_KEY_LEFT_ALT)
+                       || com.mojang.blaze3d.platform.InputConstants.isKeyDown(window, GLFW.GLFW_KEY_RIGHT_ALT);
+        boolean ctrlPress = ctrlDown && !lastCtrlDown;
+        boolean altPress = altDown && !lastAltDown;
+        lastCtrlDown = ctrlDown;
+        lastAltDown = altDown;
+
         if (shiftDown) {
             // 临时解锁中: 跳过阻止破坏的逻辑, 让 vanilla 正常处理
             return;
@@ -247,17 +258,20 @@ public class RegionSelectorEventHandler {
             return;
         }
 
-        // CTRL 取消 (用 CTRL 不用 ESC, 避免和原版暂停菜单冲突)
-        if (ctrlDown) {
+        // CTRL 取消 (边沿触发, 用 CTRL 不用 ESC, 避免和原版暂停菜单冲突)
+        if (ctrlPress) {
             RegionSelector.cancel(mc.player);
             return;
         }
-        // ALT 确认 (左 ALT 或右 ALT 都可以)
-        if (com.mojang.blaze3d.platform.InputConstants.isKeyDown(window, GLFW.GLFW_KEY_LEFT_ALT)
-            || com.mojang.blaze3d.platform.InputConstants.isKeyDown(window, GLFW.GLFW_KEY_RIGHT_ALT)) {
+        // ALT 确认 (边沿触发, 左 ALT 或右 ALT 都可以)
+        if (altPress) {
             RegionSelector.confirm(mc.player);
         }
     }
+
+    /** 上一 tick 的 CTRL/ALT 按键状态 (用于边沿触发: 只在按下瞬间响应一次) */
+    private static boolean lastCtrlDown = false;
+    private static boolean lastAltDown = false;
 
     /** 上次手动热重载时间 (纳秒), 防止按住 CTRL+R 重复触发 */
     private static long lastManualReloadNs = 0L;
@@ -275,46 +289,70 @@ public class RegionSelectorEventHandler {
 
         // 用 Create Outliner 类似的方案: Tesselator.begin(Mode, VertexFormat) 拿 BufferBuilder
         // -> build() 拿 MeshData -> BufferUploader.drawWithShader 提交.
-        com.mojang.blaze3d.vertex.Tesselator tess = com.mojang.blaze3d.vertex.Tesselator.getInstance();
-        com.mojang.blaze3d.vertex.BufferBuilder bb = tess.begin(
-                com.mojang.blaze3d.vertex.VertexFormat.Mode.DEBUG_LINES,
-                com.mojang.blaze3d.vertex.DefaultVertexFormat.POSITION_COLOR);
-
-        // PoseStack 在 RenderLevelStageEvent 阶段已经乘过 view matrix, 所以需要先 pushPose + translate -camPos
-        // 然后 addVertex 用世界坐标就会被变换到 view-space
+        // 渲染分两层: 半透明填充面 (QUADS, 体积感) + 双层线框 (DEBUG_LINES, 加粗观感).
         PoseStack pose = event.getPoseStack();
-        org.joml.Matrix4f poseMat;
         pose.pushPose();
         try {
             net.minecraft.world.phys.Vec3 cam = mc.gameRenderer.getMainCamera().getPosition();
             pose.translate(-cam.x, -cam.y, -cam.z);
-            poseMat = pose.last().pose();
+            org.joml.Matrix4f poseMat = pose.last().pose();
 
+            com.mojang.blaze3d.vertex.MeshData faceMesh = null;
+            com.mojang.blaze3d.vertex.MeshData lineMesh = null;
             try {
-                // 整体 AABB (黄) - pos1 + pos2 都选好时
+                com.mojang.blaze3d.vertex.Tesselator tess = com.mojang.blaze3d.vertex.Tesselator.getInstance();
+
+                // ---- 层 1: 半透明填充面 (QUADS), 选区体积感, 远处也一眼可见 ----
+                com.mojang.blaze3d.vertex.BufferBuilder fb = tess.begin(
+                        com.mojang.blaze3d.vertex.VertexFormat.Mode.QUADS,
+                        com.mojang.blaze3d.vertex.DefaultVertexFormat.POSITION_COLOR);
                 if (st.bothSelected()) {
                     BlockPos mn = st.getMin();
                     BlockPos mx = st.getMax();
-                    drawBoxWireframe(bb, poseMat,
+                    drawBoxFaces(fb, poseMat,
+                        (float) mn.getX(),  (float) mn.getY(),  (float) mn.getZ(),
+                        (float) (mx.getX() + 1.0), (float) (mx.getY() + 1.0), (float) (mx.getZ() + 1.0),
+                        1.0f, 0.9f, 0.2f, 0.15f);
+                }
+                if (st.pos1 != null) {
+                    drawBoxFaces(fb, poseMat,
+                        (float) st.pos1.getX(), (float) st.pos1.getY(), (float) st.pos1.getZ(),
+                        (float) (st.pos1.getX() + 1.0), (float) (st.pos1.getY() + 1.0), (float) (st.pos1.getZ() + 1.0),
+                        0.2f, 1.0f, 0.2f, 0.30f);
+                }
+                if (st.pos2 != null) {
+                    drawBoxFaces(fb, poseMat,
+                        (float) st.pos2.getX(), (float) st.pos2.getY(), (float) st.pos2.getZ(),
+                        (float) (st.pos2.getX() + 1.0), (float) (st.pos2.getY() + 1.0), (float) (st.pos2.getZ() + 1.0),
+                        1.0f, 0.3f, 0.2f, 0.30f);
+                }
+                faceMesh = fb.build();
+
+                // ---- 层 2: 线框 (原尺寸 + 外扩 0.02 各画一遍, 叠出粗线观感) ----
+                com.mojang.blaze3d.vertex.BufferBuilder bb = tess.begin(
+                        com.mojang.blaze3d.vertex.VertexFormat.Mode.DEBUG_LINES,
+                        com.mojang.blaze3d.vertex.DefaultVertexFormat.POSITION_COLOR);
+                if (st.bothSelected()) {
+                    BlockPos mn = st.getMin();
+                    BlockPos mx = st.getMax();
+                    drawBoxLines(bb, poseMat,
                         (float) mn.getX(),  (float) mn.getY(),  (float) mn.getZ(),
                         (float) (mx.getX() + 1.0), (float) (mx.getY() + 1.0), (float) (mx.getZ() + 1.0),
                         1.0f, 0.9f, 0.2f, 1.0f);
                 }
-                // pos1 小框 (绿)
                 if (st.pos1 != null) {
-                    drawBoxWireframe(bb, poseMat,
+                    drawBoxLines(bb, poseMat,
                         (float) st.pos1.getX(), (float) st.pos1.getY(), (float) st.pos1.getZ(),
                         (float) (st.pos1.getX() + 1.0), (float) (st.pos1.getY() + 1.0), (float) (st.pos1.getZ() + 1.0),
                         0.2f, 1.0f, 0.2f, 1.0f);
                 }
-                // pos2 小框 (红)
                 if (st.pos2 != null) {
-                    drawBoxWireframe(bb, poseMat,
+                    drawBoxLines(bb, poseMat,
                         (float) st.pos2.getX(), (float) st.pos2.getY(), (float) st.pos2.getZ(),
                         (float) (st.pos2.getX() + 1.0), (float) (st.pos2.getY() + 1.0), (float) (st.pos2.getZ() + 1.0),
                         1.0f, 0.3f, 0.2f, 1.0f);
                 }
-                // 指示器小框 (白) - 鼠标所指方块/位置, 方便选空气方块
+                // 指示器小框 (白) - 鼠标所指方块/位置, 方便选空气方块 (不加填充, 单层线)
                 if (mc.hitResult != null) {
                     BlockPos crossPos = ((net.minecraft.world.phys.HitResult) mc.hitResult).getType() == net.minecraft.world.phys.HitResult.Type.BLOCK
                         ? ((net.minecraft.world.phys.BlockHitResult) mc.hitResult).getBlockPos()
@@ -324,38 +362,77 @@ public class RegionSelectorEventHandler {
                         (float) (crossPos.getX() + 1.0), (float) (crossPos.getY() + 1.0), (float) (crossPos.getZ() + 1.0),
                         1.0f, 1.0f, 1.0f, 0.6f);
                 }
+                lineMesh = bb.build();
+
+                // ---- 提交: 先画面再画线 (线在最上层) ----
+                if (faceMesh != null || lineMesh != null) {
+                    try {
+                        com.mojang.blaze3d.systems.RenderSystem.setShaderColor(1f, 1f, 1f, 1f);
+                        com.mojang.blaze3d.systems.RenderSystem.enableBlend();
+                        com.mojang.blaze3d.systems.RenderSystem.defaultBlendFunc();
+                        com.mojang.blaze3d.systems.RenderSystem.disableCull();
+                        com.mojang.blaze3d.systems.RenderSystem.disableDepthTest();   // 选区总在最前, 方便看
+                        com.mojang.blaze3d.systems.RenderSystem.depthMask(false);
+                        com.mojang.blaze3d.systems.RenderSystem.setShader(
+                            net.minecraft.client.renderer.GameRenderer::getPositionColorShader);
+                        if (faceMesh != null) {
+                            com.mojang.blaze3d.vertex.BufferUploader.drawWithShader(faceMesh);
+                        }
+                        if (lineMesh != null) {
+                            com.mojang.blaze3d.vertex.BufferUploader.drawWithShader(lineMesh);
+                        }
+                    } finally {
+                        com.mojang.blaze3d.systems.RenderSystem.enableCull();
+                        com.mojang.blaze3d.systems.RenderSystem.enableDepthTest();
+                        com.mojang.blaze3d.systems.RenderSystem.depthMask(true);
+                        if (faceMesh != null) { faceMesh.close(); faceMesh = null; }
+                        if (lineMesh != null) { lineMesh.close(); lineMesh = null; }
+                    }
+                }
             } catch (Throwable t) {
                 PrefabCustomAddon.LOGGER.warn("[REGION-SELECT] Render error: {}", t.getMessage());
+                if (faceMesh != null) faceMesh.close();
+                if (lineMesh != null) lineMesh.close();
             }
         } finally {
             pose.popPose();
         }
+    }
 
-        // 提交 (build 返回 MeshData, 可空)
-        com.mojang.blaze3d.vertex.MeshData meshData = bb.build();
-        if (meshData == null) {
-            PrefabCustomAddon.LOGGER.debug("[REGION-SELECT] bb.build() returned null (no vertices?)");
-            return;
-        }
+    /**
+     * 画 AABB 线框, 原尺寸 + 外扩 0.02 各画一遍.
+     * DEBUG_LINES 在 core profile 下固定 1px, 双层叠加出 ~2px 粗线观感, 更醒目.
+     */
+    private static void drawBoxLines(com.mojang.blaze3d.vertex.BufferBuilder bb, org.joml.Matrix4f m,
+                                     float x0, float y0, float z0,
+                                     float x1, float y1, float z1,
+                                     float r, float g, float b, float a) {
+        drawBoxWireframe(bb, m, x0, y0, z0, x1, y1, z1, r, g, b, a);
+        float e = 0.02f;
+        drawBoxWireframe(bb, m, x0 - e, y0 - e, z0 - e, x1 + e, y1 + e, z1 + e, r, g, b, a);
+    }
 
-        try {
-            // 用 vanilla POSITION_COLOR shader 渲染
-            com.mojang.blaze3d.systems.RenderSystem.setShaderColor(1f, 1f, 1f, 1f);
-            com.mojang.blaze3d.systems.RenderSystem.enableBlend();
-            com.mojang.blaze3d.systems.RenderSystem.defaultBlendFunc();
-            com.mojang.blaze3d.systems.RenderSystem.disableCull();
-            com.mojang.blaze3d.systems.RenderSystem.disableDepthTest();   // 线总在最前, 方便看选区
-            com.mojang.blaze3d.systems.RenderSystem.depthMask(false);
-            com.mojang.blaze3d.systems.RenderSystem.setShader(
-                net.minecraft.client.renderer.GameRenderer::getPositionColorShader);
-            com.mojang.blaze3d.vertex.BufferUploader.drawWithShader(meshData);
-            PrefabCustomAddon.LOGGER.debug("[REGION-SELECT] Drew AABB box");
-        } finally {
-            com.mojang.blaze3d.systems.RenderSystem.enableCull();
-            com.mojang.blaze3d.systems.RenderSystem.enableDepthTest();
-            com.mojang.blaze3d.systems.RenderSystem.depthMask(true);
-            meshData.close();
-        }
+    /** 画 AABB 的 6 个半透明面 (QUADS). 给选区体积感, 远距离/复杂背景下也一眼可见. */
+    private static void drawBoxFaces(com.mojang.blaze3d.vertex.BufferBuilder bb, org.joml.Matrix4f m,
+                                     float x0, float y0, float z0,
+                                     float x1, float y1, float z1,
+                                     float r, float g, float b, float a) {
+        quad(bb, m, x0, y0, z0, x1, y0, z0, x1, y0, z1, x0, y0, z1, r, g, b, a);  // 底面
+        quad(bb, m, x0, y1, z0, x1, y1, z0, x1, y1, z1, x0, y1, z1, r, g, b, a);  // 顶面
+        quad(bb, m, x0, y0, z0, x1, y0, z0, x1, y1, z0, x0, y1, z0, r, g, b, a);  // 北面 (z0)
+        quad(bb, m, x0, y0, z1, x1, y0, z1, x1, y1, z1, x0, y1, z1, r, g, b, a);  // 南面 (z1)
+        quad(bb, m, x0, y0, z0, x0, y0, z1, x0, y1, z1, x0, y1, z0, r, g, b, a);  // 西面 (x0)
+        quad(bb, m, x1, y0, z0, x1, y0, z1, x1, y1, z1, x1, y1, z0, r, g, b, a);  // 东面 (x1)
+    }
+
+    private static void quad(com.mojang.blaze3d.vertex.BufferBuilder bb, org.joml.Matrix4f m,
+                             float ax, float ay, float az, float bx, float by, float bz,
+                             float cx, float cy, float cz, float dx, float dy, float dz,
+                             float r, float g, float b, float a) {
+        bb.addVertex(m, ax, ay, az).setColor(r, g, b, a);
+        bb.addVertex(m, bx, by, bz).setColor(r, g, b, a);
+        bb.addVertex(m, cx, cy, cz).setColor(r, g, b, a);
+        bb.addVertex(m, dx, dy, dz).setColor(r, g, b, a);
     }
 
     /**

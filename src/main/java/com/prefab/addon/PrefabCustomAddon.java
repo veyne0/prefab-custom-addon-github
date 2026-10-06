@@ -427,6 +427,11 @@ public class PrefabCustomAddon {
             PrefabCustomAddon.LOGGER.info("[BUILD-SPEED] Sent initial build speed {}% to player {}",
                 serverBuildSpeed, sp.getName().getString());
 
+            // 同步全服免材料模式开关给该玩家 (客户端门控点把它视同创造模式)
+            net.neoforged.neoforge.network.PacketDistributor.sendToPlayer(
+                sp, new com.prefab.addon.network.FreeBuildSyncPayload(
+                    com.prefab.addon.work.FreeBuildMode.isServerEnabled()));
+
             // 云端建筑: 加载该玩家的存档 + 全量推一份到客户端
             //   - 联机: 服务端 onPlayerJoin 走 setServer + 读盘 + 推 sync
             //   - 单机: getInstance() 是同一份, 客户端 cache 在收到 sync 后填充
@@ -448,6 +453,8 @@ public class PrefabCustomAddon {
      *   reload               — 重新扫描服务端 prefab-extension/ 目录
      *   recipes on|off|status — 切换 enableCustomBlueprintRecipe 配置 (开/关/查状态)
      *                          改完会自动写回 toml, 但需要 /reload 才生效 (NeoForge 配方在启动时加载).
+     *   freemode on|off|status — 切换全服免材料模式 (开启后所有玩家建造/生成建筑不再需要提交材料,
+     *                          切换即广播给所有在线玩家; 不持久化, 重启后默认关闭).
      */
     public void onRegisterCommands(final RegisterCommandsEvent event) {
         com.mojang.brigadier.CommandDispatcher<net.minecraft.commands.CommandSourceStack> d = event.getDispatcher();
@@ -511,6 +518,40 @@ public class PrefabCustomAddon {
                                     "§7[prefabaddon] enableCustomBlueprintRecipe = " + cur
                                     + (cur ? " §a(custom_blueprint 配方应已加载, 8 个外包蓝图始终生效)"
                                            : " §c(custom_blueprint 配方被禁用, 8 个外包蓝图仍生效)")),
+                                true);
+                            return 1;
+                        }))
+                )
+                .then(net.minecraft.commands.Commands.literal("freemode")
+                    .requires(src -> src.hasPermission(2))  // OP 权限
+                    .then(net.minecraft.commands.Commands.literal("on")
+                        .executes(ctx -> {
+                            com.prefab.addon.work.FreeBuildMode.setServerEnabled(true);
+                            NetworkHandler.broadcastFreeBuild(ctx.getSource().getServer(), true);
+                            ctx.getSource().sendSuccess(
+                                () -> net.minecraft.network.chat.Component.literal(
+                                    "§a[prefabaddon] 免材料模式已开启: 所有玩家建造/生成建筑不再需要提交材料"),
+                                true);
+                            return 1;
+                        }))
+                    .then(net.minecraft.commands.Commands.literal("off")
+                        .executes(ctx -> {
+                            com.prefab.addon.work.FreeBuildMode.setServerEnabled(false);
+                            NetworkHandler.broadcastFreeBuild(ctx.getSource().getServer(), false);
+                            ctx.getSource().sendSuccess(
+                                () -> net.minecraft.network.chat.Component.literal(
+                                    "§c[prefabaddon] 免材料模式已关闭: 恢复正常的材料提交要求"),
+                                true);
+                            return 1;
+                        }))
+                    .then(net.minecraft.commands.Commands.literal("status")
+                        .executes(ctx -> {
+                            boolean cur = com.prefab.addon.work.FreeBuildMode.isServerEnabled();
+                            ctx.getSource().sendSuccess(
+                                () -> net.minecraft.network.chat.Component.literal(
+                                    "§7[prefabaddon] freemode = " + cur
+                                    + (cur ? " §a(免材料模式开启中, 建造不需要提交材料)"
+                                           : " §c(免材料模式关闭, 生存/冒险建造需要提交材料)")),
                                 true);
                             return 1;
                         }))

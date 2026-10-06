@@ -32,7 +32,7 @@ import java.util.stream.Stream;
  */
 public class LocalBuildingScanner {
 
-    private static final List<String> BUILDING_EXTS = Arrays.asList(".nbt", ".schem", ".litematic");
+    private static final List<String> BUILDING_EXTS = Arrays.asList(".nbt", ".schem", ".litematic", ".schematic");
     private static final List<String> IMAGE_EXTS = Arrays.asList(".png", ".jpg", ".jpeg", ".gif", ".webp");
 
     /** 获取 prefab-download/ 根目录 (位于 .minecraft/prefab-download/). */

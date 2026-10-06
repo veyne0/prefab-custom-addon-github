@@ -33,7 +33,6 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
 
-import java.awt.Desktop;
 import java.awt.FileDialog;
 import java.io.ByteArrayInputStream;
 import java.io.DataInputStream;
@@ -144,10 +143,11 @@ public class GuiExtensionPackEditor extends GuiBase {
     // === "设置" tab 状态 ===
     /** 设置页控件矩形缓存. */
     // settingsToggleRect[i] = 第 i 个 toggle 行的 [x, y, w, h].
-    // 索引: 0=挑战模式, 1=自动检测依赖, 2=强制启用 KubeJS 联动.
+    // 索引: 0=挑战模式(已删), 1=自动检测依赖(已删, 进入建筑界面自动检测), 2=强制启用 KubeJS 联动.
+    // 数组保留 3 槽避免 KubeJS toggle (idx=2) 的索引偏移.
     private int[][] settingsToggleRect = new int[][]{
-        {0,0,0,0}, // 0: 挑战模式
-        {0,0,0,0}, // 1: 打开建筑时自动检测依赖
+        {0,0,0,0}, // 0: 挑战模式 (已删)
+        {0,0,0,0}, // 1: 打开建筑时自动检测依赖 (已删)
         {0,0,0,0}, // 2: 强制启用 KubeJS 联动 (调试用)
     };
     /** 建造动画 mode 切换按钮的 [x, y, w, h]. 点击循环切换 OFF→FALL→RAIN→THROW→OFF. */
@@ -201,6 +201,7 @@ public class GuiExtensionPackEditor extends GuiBase {
     private int[] mbRecipeGridRect = new int[]{0,0,0,0};
     private int[] mbGenerateRect = new int[]{0,0,0,0};
     private int[] mbOpenFolderRect = new int[]{0,0,0,0};
+    private int[] mbAiHelpRect = new int[]{0,0,0,0};              // AI 创建蓝图帮助
     /** 滚动条槽 [x,y,w,h] + 拇指 [x,y,w,h] (绘制在 drawMakeBlueprintTab 里). */
     private int[] mbScrollBarRect = new int[]{0,0,0,0};
     private int[] mbScrollThumbRect = new int[]{0,0,0,0};
@@ -232,10 +233,18 @@ public class GuiExtensionPackEditor extends GuiBase {
     private java.util.List<ManagedBlueprint> managedBlueprints = new java.util.ArrayList<>();
     /** 每张卡片的矩形 (x,y,w,h), 与 managedBlueprints 索引对应. */
     private final java.util.List<int[]> mbManageCardRects = new java.util.ArrayList<>();
-    /** "删除" 按钮矩形 (索引对齐 managedBlueprints). */
+    /** "删除" 按钮矩形 (与 mbManageDeleteIndices 平行, 全局索引见下). */
     private final java.util.List<int[]> mbManageDeleteBtnRects = new java.util.ArrayList<>();
+    /** "删除" 按钮对应的全局 managedBlueprints 索引 (分页后与屏幕行号不一致, 用这个对齐). */
+    private final java.util.List<Integer> mbManageDeleteIndices = new java.util.ArrayList<>();
     /** 顶部 "刷新" 按钮矩形. */
     private int[] mbManageRefreshRect = new int[]{0,0,0,0};
+    /** 蓝图管理 tab 当前页 (1 起). */
+    private int mbManagePage = 1;
+    /** 蓝图管理 tab 每页容量 (渲染时按内容区高度算出, 点击处理复用). */
+    private int mbManagePageSize = 4;
+    /** 蓝图管理 tab 翻页条矩形 {prev x,y,w,h, next x,y,w,h}. */
+    private int[] mbManagePagingRects = new int[]{0, 0, 0, 0, 0, 0, 0, 0};
     /** 状态消息 (本 tab 独立). */
     private String mgmtStatus = null;
     private int mgmtStatusTick = 0;
@@ -511,14 +520,14 @@ public class GuiExtensionPackEditor extends GuiBase {
         this.createStatusY = y;
         y += 12;
 
-        // 按钮行 1: [选 NBT] [游戏中选区] [选图标]
+        // 按钮行 1: [选建筑文件] [游戏中选区] [选图标]
         int btn1Y = y;
         this.createBtn1Y = btn1Y;
         int btnH = 14;
         int gap = 4;
         int btn1W = (rw - 16 - gap * 2) / 3;
         int btnX = rx + 8;
-        btnSelectNbt = makeButton(btnX, btn1Y, btn1W, btnH, "选 NBT", () -> {
+        btnSelectNbt = makeButton(btnX, btn1Y, btn1W, btnH, "选建筑文件", () -> {
             com.prefab.addon.client.gui.GuiCreateBuildingInfo.openNbtPickerFromExtension();
             refreshNbtFileDisplay();
         });
@@ -644,7 +653,7 @@ public class GuiExtensionPackEditor extends GuiBase {
             } else {
                 int lastSep = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
                 String display = lastSep >= 0 ? path.substring(lastSep + 1) : path;
-                edNbtFile.setValue("已选 NBT: " + display);
+                edNbtFile.setValue("已选文件: " + display);
             }
         }
         // 同步尺寸/依赖 (选完 NBT/选区后由 GuiCreateBuildingInfo 写入静态字段)
@@ -786,6 +795,7 @@ public class GuiExtensionPackEditor extends GuiBase {
         // (玩家可能在另一端 /reload / 生成新蓝图 / 删文件, 列表要刷新)
         if (tab == Tab.MANAGE_BLUEPRINT || this.currentTab == Tab.MANAGE_BLUEPRINT) {
             this.mgmtInited = false;
+            this.mbManagePage = 1;
         }
         applyTabVisibility();
     }
@@ -850,9 +860,22 @@ public class GuiExtensionPackEditor extends GuiBase {
         else if (id.endsWith(".litematic")) id = id.substring(0, id.length() - 10);
         else if (id.endsWith(".schem")) id = id.substring(0, id.length() - 6);
         else if (id.endsWith(".schematic")) id = id.substring(0, id.length() - 9);
+        // 实际文件后缀 (不再硬编码 .nbt, litematic/schem 复制时按真实格式)
+        String lowerName = res.fileName.toLowerCase(Locale.ROOT);
+        String pickedExt = ".nbt";
+        for (String e : new String[]{".litematic", ".schematic", ".schem", ".nbt"}) {
+            if (lowerName.endsWith(e)) { pickedExt = e; break; }
+        }
+        // 根据所选文件名自动填显示名 (去后缀, 保留原大小写; 每次选择都覆盖)
+        String autoName = res.fileName;
+        int dotIdx = autoName.lastIndexOf('.');
+        if (dotIdx > 0) autoName = autoName.substring(0, dotIdx);
+        if (edBlueprintName != null) {
+            edBlueprintName.setValue(autoName);
+        }
         LocalBuilding lb = new LocalBuilding(
             id, res.fileName, "", "", java.util.Collections.emptyList(), "",
-            ".nbt", 0L, null, "external",
+            pickedExt, 0L, null, "external",
             res.file.toPath(), null, null);
         this.selectedBuilding = lb;
         this.mbStatus = "§a已选建筑文件: §f" + res.fileName
@@ -1270,17 +1293,21 @@ public class GuiExtensionPackEditor extends GuiBase {
 
     /** 画编辑 tab 底部的翻页按钮: [< 上一页]  X/Y  [下一页 >]. */
     private void drawEditPagination(GuiGraphics guiGraphics, int[] cr, int mouseX, int mouseY) {
-        int rx = cr[0], ry = cr[1], rw = cr[2], rh = cr[3];
         int total = this.editFiltered.size();
         int totalPages = Math.max(1, (total + this.editPageSize - 1) / this.editPageSize);
+        drawPaginationBar(guiGraphics, cr, this.editPage, totalPages, mouseX, mouseY, this.editPagingRects);
+    }
+
+    /** 共享翻页条: [< 上一页]  X/Y  [下一页 >] (编辑 tab / 蓝图管理 tab 共用), 结果矩形写入 outRects. */
+    private void drawPaginationBar(GuiGraphics guiGraphics, int[] cr, int page, int totalPages, int mouseX, int mouseY, int[] outRects) {
+        int rx = cr[0], ry = cr[1], rw = cr[2], rh = cr[3];
         int btnY = ry + rh - 14;
         int btnH = 12;
         int btnW = 50;
-        int gap = 4;
         int prevX = rx + 6;
         int nextX = rx + rw - 6 - btnW;
-        boolean canPrev = this.editPage > 1;
-        boolean canNext = this.editPage < totalPages;
+        boolean canPrev = page > 1;
+        boolean canNext = page < totalPages;
         boolean hoverPrev = canPrev && mouseX >= prevX && mouseX < prevX + btnW && mouseY >= btnY && mouseY < btnY + btnH;
         boolean hoverNext = canNext && mouseX >= nextX && mouseX < nextX + btnW && mouseY >= btnY && mouseY < btnY + btnH;
         int prevBg = canPrev ? (hoverPrev ? BTN_BG_HOVER : BTN_BG) : 0xFFCCCCCC;
@@ -1302,15 +1329,13 @@ public class GuiExtensionPackEditor extends GuiBase {
         guiGraphics.fill(nextX + btnW - 1, btnY, nextX + btnW, btnY + btnH, CARD_BORDER);
         guiGraphics.drawString(this.font, "下一页 >", nextX + 6, btnY + 2, nextTxt, false);
         // 中间页码 X/Y
-        String pageText = this.editPage + " / " + totalPages;
+        String pageText = page + " / " + totalPages;
         int ptW = this.font.width(pageText);
         int ptX = prevX + btnW + (nextX - prevX - btnW - ptW) / 2;
         guiGraphics.drawString(this.font, pageText, ptX, btnY + 2, HINT_COLOR, false);
 
-        this.editPagingRects = new int[]{
-            prevX, btnY, btnW, btnH,
-            nextX, btnY, btnW, btnH
-        };
+        outRects[0] = prevX; outRects[1] = btnY; outRects[2] = btnW; outRects[3] = btnH;
+        outRects[4] = nextX; outRects[5] = btnY; outRects[6] = btnW; outRects[7] = btnH;
     }
 
     // ============================================================
@@ -1355,6 +1380,10 @@ public class GuiExtensionPackEditor extends GuiBase {
         mbOpenFolderRect = new int[]{rx + 8 + btnBottomW + btnBottomGap, bottomY, 110, btnBottomH};
         drawButton(guiGraphics, mbOpenFolderRect, PrefabCustomAddon.tr("gui.make_blueprint.btn.open_folder"),
             0xFFCCCCCC, mouseX, mouseY);
+        // AI 创建蓝图: 打开"怎么让 AI agent 代做蓝图"帮助屏
+        mbAiHelpRect = new int[]{rx + 8 + btnBottomW + btnBottomGap + 110 + btnBottomGap, bottomY, 90, btnBottomH};
+        drawButton(guiGraphics, mbAiHelpRect, PrefabCustomAddon.tr("gui.make_blueprint.btn.ai_help"),
+            0xFF6A4FA3, mouseX, mouseY);
 
         // ===== 2) 滚动区: 从 ry 到 scrollBottom =====
         int scrollTop = ry;
@@ -1511,7 +1540,7 @@ public class GuiExtensionPackEditor extends GuiBase {
 
         // ===== 4) 等待 NBT 时显示加载状态 =====
         if (mbPollSource != 0) {
-            String waitMsg = (mbPollSource == 1) ? "§e等待选 NBT 文件..." : "§e等待游戏内选区...";
+            String waitMsg = (mbPollSource == 1) ? "§e等待选建筑文件..." : "§e等待游戏内选区...";
             guiGraphics.drawString(this.font, waitMsg, rx + 8, statusY, 0xFFAA5500, false);
         }
     }
@@ -1578,9 +1607,9 @@ public class GuiExtensionPackEditor extends GuiBase {
         guiGraphics.drawString(this.font, "§7列出所有 KubeJS 联动创建的蓝图，可一键删除对应 KubeJS 文件",
             rx + 4, titleY + 12, HINT_COLOR, false);
 
-        // 状态消息
+        // 状态消息 (翻页条上方)
         if (this.mgmtStatus != null && this.mgmtStatusTick > 0) {
-            int sy = ry + rh - 16;
+            int sy = ry + rh - 26;
             guiGraphics.drawString(this.font, this.mgmtStatus, rx + 8, sy,
                 this.mgmtStatusColor | 0xFF000000, false);
         }
@@ -1588,6 +1617,7 @@ public class GuiExtensionPackEditor extends GuiBase {
         // 空列表提示
         this.mbManageCardRects.clear();
         this.mbManageDeleteBtnRects.clear();
+        this.mbManageDeleteIndices.clear();
         if (this.managedBlueprints.isEmpty()) {
             int ey = ry + 36;
             guiGraphics.drawString(this.font, "§7暂无 KubeJS 联动蓝图",
@@ -1607,16 +1637,22 @@ public class GuiExtensionPackEditor extends GuiBase {
         int cardGap = 4;
         int cardX = rx + 6;
         int cardW = rw - 12;
-        // 状态消息占的底部 16px 留给消息, 卡片不要覆盖
-        int bottomLimit = ry + rh - 18;
+        // 底部留出状态消息 + 翻页条的空间
+        int bottomLimit = ry + rh - 32;
 
-        // 滚动: 不加滚动条, 用列表上限即可 (一般 10 个以内, 玩家能看完)
+        // 分页: 每页容量按内容区高度算出 (和编辑 tab 一致的翻页体验)
         int n = this.managedBlueprints.size();
         int maxCards = Math.max(1, (bottomLimit - cardY + cardGap) / (cardH + cardGap));
-        for (int i = 0; i < n && i < maxCards; i++) {
+        this.mbManagePageSize = maxCards;
+        int totalPages = Math.max(1, (n + maxCards - 1) / maxCards);
+        if (this.mbManagePage > totalPages) this.mbManagePage = totalPages;
+        if (this.mbManagePage < 1) this.mbManagePage = 1;
+        int startIdx = (this.mbManagePage - 1) * maxCards;
+        int endIdx = Math.min(startIdx + maxCards, n);
+        for (int i = startIdx; i < endIdx; i++) {
             ManagedBlueprint bp = this.managedBlueprints.get(i);
-            int y = cardY + i * (cardH + cardGap);
-            if (y + cardH > bottomLimit) break;
+            int pi = i - startIdx;
+            int y = cardY + pi * (cardH + cardGap);
             int[] cr2 = new int[]{cardX, y, cardW, cardH};
             this.mbManageCardRects.add(cr2);
 
@@ -1657,7 +1693,12 @@ public class GuiExtensionPackEditor extends GuiBase {
             int[] delRect = new int[]{btnX, btnY, btnW, btnH};
             drawButton(guiGraphics, delRect, "§c✗ 删除", BTN_BG_DANGER, mouseX, mouseY);
             this.mbManageDeleteBtnRects.add(delRect);
+            // 分页后屏幕行号 != 全局索引, 用平行列表对齐删除点击
+            this.mbManageDeleteIndices.add(i);
         }
+
+        // 翻页条
+        drawPaginationBar(guiGraphics, cr, this.mbManagePage, totalPages, mouseX, mouseY, this.mbManagePagingRects);
     }
 
     /**
@@ -1839,11 +1880,7 @@ public class GuiExtensionPackEditor extends GuiBase {
             // 挑战模式开关已移除: 生存/冒险固定消耗材料, 创造免费, 按游戏模式自动判定
             guiGraphics.drawString(this.font, "§7生存/冒险: 消耗材料    创造: 免费", rx + padX, y, HINT_COLOR, false);
             y += 20;
-            drawToggleRow(guiGraphics, rx, rw, y, mouseX, mouseY,
-                "打开建筑时自动检测依赖", "§7(检查该建筑所需的 mod 是否安装)", true,
-                prefs.autoDepCheckOnOpen,
-                settingsToggleRect, 1);
-            y += 32;  // 24px 行高 + 8px 分组间距
+            // (删除: "打开建筑时自动检测依赖" toggle — 进入建筑选择界面时已自动检测, 不再有开关)
 
             // === 分组 2: 性能 / 动画 (cycle 按钮, 4 选 1) ===
             guiGraphics.drawString(this.font, "§e▍ 性能 / 动画", rx + padX, y, LABEL_COLOR, false);
@@ -2181,11 +2218,27 @@ public class GuiExtensionPackEditor extends GuiBase {
                 int[] r = this.mbManageDeleteBtnRects.get(i);
                 if (r[2] > 0 && mx >= r[0] && mx < r[0] + r[2]
                     && my >= r[1] && my < r[1] + r[3]) {
-                    if (i < this.managedBlueprints.size()) {
-                        deleteManagedBlueprint(this.managedBlueprints.get(i));
+                    int idx = this.mbManageDeleteIndices.get(i);
+                    if (idx < this.managedBlueprints.size()) {
+                        deleteManagedBlueprint(this.managedBlueprints.get(idx));
                     }
                     return true;
                 }
+            }
+            // 翻页条
+            int[] mpr = this.mbManagePagingRects;
+            int mTotal = Math.max(1, (this.managedBlueprints.size() + this.mbManagePageSize - 1) / this.mbManagePageSize);
+            // 上一页
+            if (mpr[2] > 0 && mx >= mpr[0] && mx < mpr[0] + mpr[2]
+                && my >= mpr[1] && my < mpr[1] + mpr[3] && this.mbManagePage > 1) {
+                this.mbManagePage--;
+                return true;
+            }
+            // 下一页
+            if (mpr[6] > 0 && mx >= mpr[4] && mx < mpr[4] + mpr[6]
+                && my >= mpr[5] && my < mpr[5] + mpr[7] && this.mbManagePage < mTotal) {
+                this.mbManagePage++;
+                return true;
             }
         }
         // 3) 设置 tab 交互
@@ -2205,16 +2258,7 @@ public class GuiExtensionPackEditor extends GuiBase {
                 return true;
             }
             // (删除: 挑战模式 toggle idx=0 — 已改为按游戏模式自动判定, 不再有开关)
-            // 自动检测依赖 toggle (idx=1) - 客户端个人设置, 不需 OP
-            int[] tr1 = this.settingsToggleRect[1];
-            if (tr1[2] > 0 && mx >= tr1[0] && mx < tr1[0] + tr1[2] && my >= tr1[1] && my < tr1[1] + tr1[3]) {
-                PlayerPreferences p = PlayerPreferences.get();
-                boolean newVal = !p.autoDepCheckOnOpen;
-                p.autoDepCheckOnOpen = newVal;
-                p.save();
-                setSettingsStatus(newVal ? "§a打开建筑时自动检测依赖 已开启" : "§7自动检测依赖 已关闭", 0x55FF55);
-                return true;
-            }
+            // (删除: 自动检测依赖 toggle idx=1 — 进入建筑选择界面时自动检测, 不再有开关)
             // 强制启用 KubeJS 联动 toggle (idx=2) - 客户端个人设置
             // 勾上后 KubeJSIntegration.isLoaded() 始终返回 true, "制作蓝图" tab 立即显示
             int[] tr2 = this.settingsToggleRect[2];
@@ -2254,7 +2298,6 @@ public class GuiExtensionPackEditor extends GuiBase {
                     PlayerPreferences p = PlayerPreferences.get();
                     int removedFavs = p.favoriteKeys != null ? p.favoriteKeys.size() : 0;
                     p.favoriteKeys = new java.util.ArrayList<>();
-                    p.autoDepCheckOnOpen = false;
                     p.buildAnimationMode = BuildAnimationMode.OFF;
                     p.save();
                     setSettingsStatus("§a已重置偏好 (清空 " + removedFavs + " 个收藏)", 0x55FF55);
@@ -2398,6 +2441,13 @@ public class GuiExtensionPackEditor extends GuiBase {
             if (or[2] > 0 && mx >= or[0] && mx < or[0] + or[2]
                 && my >= or[1] && my < or[1] + or[3]) {
                 openKubejsFolder();
+                return true;
+            }
+            // 4h) AI 创建蓝图帮助屏
+            int[] ah = this.mbAiHelpRect;
+            if (ah[2] > 0 && mx >= ah[0] && mx < ah[0] + ah[2]
+                && my >= ah[1] && my < ah[1] + ah[3]) {
+                GuiAiBlueprintHelp.open(this);
                 return true;
             }
         }
@@ -2779,14 +2829,28 @@ public class GuiExtensionPackEditor extends GuiBase {
                     byte[] bytes = Files.readAllBytes(selectedBuilding.filePath);
                     String origName = selectedBuilding.filePath.getFileName().toString();
                     String ext = origName.contains(".") ? origName.substring(origName.lastIndexOf('.')) : ".nbt";
-                    int fh = java.util.Arrays.hashCode(bytes);
-                    String newId = String.format("mb_%d_%06x", System.currentTimeMillis() / 1000L, fh & 0xFFFFFF);
+                    // 文件名 = 玩家填的蓝图显示名 (填了什么, 文件就叫什么.后缀),
+                    // LocalBuildingScanner 按 "文件名去后缀" 生成 id/name, 显示名能全链路对上.
+                    // 留空时退回建筑名, 两者都不可用才用 mb_ 时间戳兜底.
+                    String baseName = !displayName.isEmpty() ? displayName
+                        : (selectedBuilding.name != null && !selectedBuilding.name.isBlank()
+                            ? selectedBuilding.name.trim() : "");
+                    baseName = sanitizeFileName(baseName);
+                    if (baseName.isEmpty()) {
+                        baseName = String.format("mb_%d_%06x", System.currentTimeMillis() / 1000L,
+                            java.util.Arrays.hashCode(bytes) & 0xFFFFFF);
+                    }
                     java.nio.file.Path extRoot = com.prefab.addon.extension.LocalBuildingScanner.getExtensionRoot();
                     Files.createDirectories(extRoot);
-                    java.nio.file.Path newPath = extRoot.resolve(newId + ext);
+                    // 同名文件已存在时加序号 (_2, _3...), 不覆盖旧蓝图
+                    java.nio.file.Path newPath = extRoot.resolve(baseName + ext);
+                    String newId = baseName;
+                    for (int n = 2; Files.exists(newPath); n++) {
+                        newId = baseName + "_" + n;
+                        newPath = extRoot.resolve(newId + ext);
+                    }
                     Files.write(newPath, bytes);
-                    String copyName = (selectedBuilding.name == null || selectedBuilding.name.isBlank())
-                        ? newId : selectedBuilding.name;
+                    String copyName = newId;
                     java.nio.file.Path origPath = selectedBuilding.filePath;
                     selectedBuilding = new com.prefab.addon.extension.LocalBuilding(
                         newId, copyName, selectedBuilding.author, selectedBuilding.description,
@@ -2880,34 +2944,44 @@ public class GuiExtensionPackEditor extends GuiBase {
         }
     }
 
-    /** 打开 minecraft/kubejs 文件夹 (Desktop.open). 失败给个状态提示. */
+    /**
+     * 清洗文件名: 替换 Windows 非法字符 (\/:*?"&lt;&gt;|) 和控制字符为下划线,
+     * 去首尾空白与末尾的点 (Windows 不允许文件名以点结尾), 限长 50 字符 (避免超路径上限).
+     */
+    private static String sanitizeFileName(String s) {
+        if (s == null) return "";
+        String cleaned = s.replaceAll("[\\\\/:*?\"<>|\\x00-\\x1f]", "_").trim();
+        while (cleaned.endsWith(".")) {
+            cleaned = cleaned.substring(0, cleaned.length() - 1);
+        }
+        if (cleaned.length() > 50) {
+            cleaned = cleaned.substring(0, 50).trim();
+            while (cleaned.endsWith(".")) {
+                cleaned = cleaned.substring(0, cleaned.length() - 1);
+            }
+        }
+        return cleaned;
+    }
+
+    /** 打开 minecraft/kubejs 文件夹 (GuiAiBlueprintHelp.openFolder, Desktop 不可用时降级命令行). 失败给个状态提示. */
     private void openKubejsFolder() {
-        try {
-            Minecraft mc = Minecraft.getInstance();
-            if (mc == null) {
-                mbStatus = "§cMC 实例未就绪";
-                mbStatusColor = 0xFF5555;
-                return;
-            }
-            Path kubejsDir = mc.gameDirectory.toPath().resolve("kubejs");
-            if (!Files.exists(kubejsDir)) {
-                Files.createDirectories(kubejsDir);
-            }
-            if (Desktop.isDesktopSupported()) {
-                Desktop.getDesktop().open(kubejsDir.toFile());
-                mbStatus = PrefabCustomAddon.tr("gui.make_blueprint.status.folder_opened");
-                mbStatusColor = 0x55FF55;
-                mbStatusTick = 100;
-            } else {
-                mbStatus = PrefabCustomAddon.tr("gui.make_blueprint.status.folder_no_desktop", kubejsDir.toString());
-                mbStatusColor = 0xFFAA55;
-                mbStatusTick = 200;
-            }
-        } catch (Throwable t) {
-            mbStatus = PrefabCustomAddon.tr("gui.make_blueprint.status.folder_fail", t.getMessage());
+        Minecraft mc = Minecraft.getInstance();
+        if (mc == null) {
+            mbStatus = "§cMC 实例未就绪";
+            mbStatusColor = 0xFF5555;
+            return;
+        }
+        Path kubejsDir = mc.gameDirectory.toPath().resolve("kubejs");
+        String err = GuiAiBlueprintHelp.openFolder(kubejsDir);
+        if (err == null) {
+            mbStatus = PrefabCustomAddon.tr("gui.make_blueprint.status.folder_opened");
+            mbStatusColor = 0x55FF55;
+            mbStatusTick = 100;
+        } else {
+            mbStatus = PrefabCustomAddon.tr("gui.make_blueprint.status.folder_fail", err);
             mbStatusColor = 0xFF5555;
             mbStatusTick = 150;
-            PrefabCustomAddon.LOGGER.error("[MAKE-BLUEPRINT] 打开 kubejs 文件夹失败", t);
+            PrefabCustomAddon.LOGGER.error("[MAKE-BLUEPRINT] 打开 kubejs 文件夹失败: {}", err);
         }
     }
 

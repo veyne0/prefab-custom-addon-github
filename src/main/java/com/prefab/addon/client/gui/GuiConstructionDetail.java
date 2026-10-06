@@ -259,13 +259,17 @@ public final class GuiConstructionDetail {
         currentPack = construction.getPack();
         startAsyncParse(construction);
         ModularUI ui = createUI(construction);
+        // 进入界面自动检测依赖 (替代原 "检测依赖" 按钮): 左侧依赖列表直接显示 ✓/✗ + 状态栏提示
+        runDepCheck(construction);
         Minecraft.getInstance().setScreen(
             new ModularUIScreen(ui, Component.literal(construction.getName())));
     }
 
-    /** 安全取 packName, pack 为 null 时用 "local" 兜底 (单文件建筑). */
+    /** 安全取 packName, pack 为 null 或 packageName 为 null 时用 "local" 兜底 (单文件/服务器临时建筑). */
     private static String safePkg(ConstructionInfo c) {
-        return (c == null || c.getPack() == null) ? "local" : c.getPack().getPackageName();
+        if (c == null || c.getPack() == null) return "local";
+        String name = c.getPack().getPackageName();
+        return name != null ? name : "local";
     }
 
     /**
@@ -773,7 +777,7 @@ public final class GuiConstructionDetail {
         root.addChild(bodyRow);
         PrefabCustomAddon.LOGGER.info("[DETAIL] Body row added: infoScroller(140px) + sceneContainer(flexGrow=1)");
 
-        // 4) 按钮行 - 4 个按钮: Back, 检测依赖, 选择, 选择并锁定
+        // 4) 按钮行 - 3 个按钮: 删除建筑, 选择, 选择并锁定 (原 "检测依赖" 按钮已移除: 进入界面时自动检测)
         UIElement buttonRow = new UIElement();
         buttonRow.layout(l -> l
             .flexDirection(FlexDirection.ROW)
@@ -787,11 +791,6 @@ public final class GuiConstructionDetail {
         btnDeleteBuilding.setOnClick(e -> confirmDeleteBuilding(construction));
         btnDeleteBuilding.layout(l -> l.flexGrow(1).heightPercent(100));
         buttonRow.addChild(btnDeleteBuilding);
-
-        Button btnCheckDeps = new Button().setText(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.check_deps_btn"));
-        btnCheckDeps.setOnClick(e -> runDepCheck(construction));
-        btnCheckDeps.layout(l -> l.flexGrow(1).heightPercent(100));
-        buttonRow.addChild(btnCheckDeps);
 
         // "选择" 按钮 = 绑定当前 construction 到玩家主手 (或背包里) 的 自定义蓝图
         Button btnSelect = new Button().setText(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.select"));
@@ -1161,9 +1160,7 @@ public final class GuiConstructionDetail {
             missing.add(colon > 0 ? m.substring(0, colon) : m);
         }
         lastMissingMods = missing;
-        lastCheckPackConstructionKey = (construction.getPack() != null
-            ? construction.getPack().getPackageName()
-            : "local") + "/" + construction.getId();
+        lastCheckPackConstructionKey = safePkg(construction) + "/" + construction.getId();
         PrefabCustomAddon.LOGGER.info("[DETAIL] Dep check done: missing={}, present={}",
             result.missing, result.present);
 
@@ -1287,13 +1284,9 @@ public final class GuiConstructionDetail {
     /**
      * 截屏当前 3D 预览到 ThumbnailCache.
      *
-     * <p>流程:
-     * <ol>
-     *   <li>拿到 renderScene 在屏幕上的位置和大小</li>
-     *   <li>建一个 96x96 FBO</li>
-     *   <li>把 Scene 渲染到 FBO</li>
-     *   <li>readPixels 出来, 调 ThumbnailCache.captureCurrentFrame 保存</li>
-     * </ol>
+     * <p>流程: 拿到 renderScene 在屏幕上的位置和大小, 调
+     * {@link com.prefab.addon.client.ThumbnailCache#captureRegion} 共用方法
+     * (GUI 坐标 → framebuffer 像素坐标 + glReadPixels + box-filter 缩放到 256px + 写盘).</p>
      */
     private static void captureCurrentSceneToThumbnail() {
         if (renderScene == null || currentConstruction == null) {
@@ -1311,100 +1304,24 @@ public final class GuiConstructionDetail {
                     com.prefab.addon.client.ThumbnailCache.getCacheFile(currentConstruction));
             } catch (Exception ignored) {}
         }
-        try {
-            // 1. 拿到 Scene 在屏幕上的位置
-            int sceneScreenX = (int) renderScene.getPositionX();
-            int sceneScreenY = (int) renderScene.getPositionY();
-            int sceneScreenW = (int) renderScene.getSizeWidth();
-            int sceneScreenH = (int) renderScene.getSizeHeight();
-            if (sceneScreenW <= 0 || sceneScreenH <= 0) {
-                showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.thumb_not_drawn"), 0xFF5555, 60);
-                return;
-            }
-            PrefabCustomAddon.LOGGER.info("[DETAIL] 截屏: scenePos=({},{}) size={}x{}",
-                sceneScreenX, sceneScreenY, sceneScreenW, sceneScreenH);
-
-            // 2. 在屏幕上画一个 96x96 的隐藏区域, 让 Scene 渲染到那
-            //    简单做法: 改 Scene 大小到 96x96, 触发一次重绘, 然后从 framebuffer 读
-            //    但 LDLib2 的 Scene 是通过 layout 定位, 改 size 不一定立即生效
-            //
-            //    更稳妥: 直接从 framebuffer 读 Scene 当前位置的内容
-            //    Minecraft 默认 framebuffer 是屏幕的 (guiScale 缩放后), 我们的屏幕坐标跟
-            //    framebuffer 坐标在 guiScale 下不同. 但 Scene 渲染时, PoseStack 的 translate
-            //    已经把屏幕坐标转换成 MC GUI 坐标了. 我们读 framebuffer 时用 (sceneScreenX,
-            //    sceneScreenY) 即可, 因为 glReadPixels 接受窗口坐标.
-            //
-            // 3. 实际上 glReadPixels 是从 framebuffer 当前 framebuffer 读, 坐标是相对于
-            //    framebuffer 的左下角. Minecraft 的 main framebuffer 大小 = 实际像素 (不是 GUI 单位).
-            //    我们需要 guiScale 缩放系数.
-            //
-            //    简单方案: 用 1.21.1 的 Minecraft.getInstance().getMainRenderTarget() 拿到 framebuffer,
-            //    然后用它的尺寸 + 我们的 GUI 坐标算出像素位置.
-
-            int mcWinW = Minecraft.getInstance().getWindow().getWidth();
-            int mcWinH = Minecraft.getInstance().getWindow().getHeight();
-            int guiScale = Minecraft.getInstance().options.guiScale().get();
-            if (guiScale == 0) guiScale = 1;
-            int fbW = mcWinW;
-            int fbH = mcWinH;
-            // framebuffer 坐标 = 屏幕坐标 * (实际像素 / 屏幕 GUI 像素)
-            // GUI 单位下 width=Minecraft.getInstance().getWindow().getGuiScaledWidth()
-            int guiW = Minecraft.getInstance().getWindow().getGuiScaledWidth();
-            int guiH = Minecraft.getInstance().getWindow().getGuiScaledHeight();
-            double scaleX = (double) fbW / guiW;
-            double scaleY = (double) fbH / guiH;
-            int px = (int) (sceneScreenX * scaleX);
-            int py_fb = (int) ((guiH - sceneScreenY - sceneScreenH) * scaleY);  // GL 是从下往上
-            int pw = (int) (sceneScreenW * scaleX);
-            int ph = (int) (sceneScreenH * scaleY);
-
-            // 截屏 scene 区域
-            java.nio.ByteBuffer buf = org.lwjgl.BufferUtils.createByteBuffer(pw * ph * 4);
-            org.lwjgl.opengl.GL11.glReadPixels(px, py_fb, pw, ph,
-                org.lwjgl.opengl.GL11.GL_RGBA, org.lwjgl.opengl.GL11.GL_UNSIGNED_BYTE, buf);
-
-            // 缩放到 96x96 (直接用 Java 缩放, 简单)
-            com.mojang.blaze3d.platform.NativeImage fullImg =
-                new com.mojang.blaze3d.platform.NativeImage(pw, ph, false);
-            byte[] row = new byte[pw * 4];
-            for (int y = 0; y < ph; y++) {
-                buf.position((ph - 1 - y) * pw * 4);
-                buf.get(row);
-                for (int x = 0; x < pw; x++) {
-                    int r = row[x * 4] & 0xFF;
-                    int g = row[x * 4 + 1] & 0xFF;
-                    int b = row[x * 4 + 2] & 0xFF;
-                    int a = row[x * 4 + 3] & 0xFF;
-                    int abgr = (a << 24) | (b << 16) | (g << 8) | r;
-                    fullImg.setPixelRGBA(x, y, abgr);
-                }
-            }
-            // Resize 到 96x96
-            int targetSize = 96;
-            com.mojang.blaze3d.platform.NativeImage thumb =
-                new com.mojang.blaze3d.platform.NativeImage(targetSize, targetSize, false);
-            for (int ty = 0; ty < targetSize; ty++) {
-                int sy = (int) ((double) ty / targetSize * ph);
-                for (int tx = 0; tx < targetSize; tx++) {
-                    int sx = (int) ((double) tx / targetSize * pw);
-                    thumb.setPixelRGBA(tx, ty, fullImg.getPixelRGBA(sx, sy));
-                }
-            }
-            fullImg.close();
-
-            // 写盘
-            java.nio.file.Path dir = com.prefab.addon.client.ThumbnailCache.getCacheDir();
-            java.nio.file.Files.createDirectories(dir);
-            java.nio.file.Path file = dir.resolve(
-                com.prefab.addon.client.ThumbnailCache.fingerprint(currentConstruction) + ".png");
-            thumb.writeToFile(file);
-            thumb.close();
-            com.prefab.addon.client.ThumbnailCache.notifyCompleted(
-                com.prefab.addon.client.ThumbnailCache.fingerprint(currentConstruction));
-            showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.thumb_saved", file.getFileName().toString()), 0x55FF55, 60);
-        } catch (Throwable t) {
-            PrefabCustomAddon.LOGGER.warn("[DETAIL] captureThumbnail failed: {}", t.getMessage(), t);
-            showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.screenshot_fail", t.getMessage()), 0xFF5555, 60);
+        int sceneScreenX = (int) renderScene.getPositionX();
+        int sceneScreenY = (int) renderScene.getPositionY();
+        int sceneScreenW = (int) renderScene.getSizeWidth();
+        int sceneScreenH = (int) renderScene.getSizeHeight();
+        if (sceneScreenW <= 0 || sceneScreenH <= 0) {
+            showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.thumb_not_drawn"), 0xFF5555, 60);
+            return;
+        }
+        // 共用截图: 坐标换算 + glReadPixels + box-filter 缩放到 256px + 写盘 + notifyCompleted
+        boolean ok = com.prefab.addon.client.ThumbnailCache.captureRegion(
+            sceneScreenX, sceneScreenY, sceneScreenW, sceneScreenH, currentConstruction, 256);
+        if (ok) {
+            showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.thumb_saved",
+                com.prefab.addon.client.ThumbnailCache.getCacheFile(currentConstruction)
+                    .getFileName().toString()), 0x55FF55, 60);
+        } else {
+            showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.screenshot_fail", "capture"),
+                0xFF5555, 60);
         }
     }
 
@@ -1417,17 +1334,29 @@ public final class GuiConstructionDetail {
 
     /**
      * 二次确认弹窗: 玩家点底部「删除建筑」后, 弹出这个小窗.
-     * 确认后调 {@link #doDeleteBuilding(ConstructionInfo)} 实际删.
-     * 静态方法: 内部 lambda 从 createUI() 里调, createUI 是 static, 这边也必须 static.
+     * 确认后调 {@link #doDeleteBuilding(ConstructionInfo, ItemStack, BlockPos)} 实际删.
+     * 详情页入口 (无蓝图上下文): 删除成功后回普通浏览器.
      */
-    private static void confirmDeleteBuilding(ConstructionInfo construction) {
+    public static void confirmDeleteBuilding(ConstructionInfo construction) {
+        confirmDeleteBuildingInternal(construction, ItemStack.EMPTY, null);
+    }
+
+    /**
+     * CustomStructureGui 入口: 携带蓝图上下文.
+     * 删除成功后回浏览器蓝图模式 (点建筑卡片直跳 CustomStructureGui, 不经过详情页).
+     */
+    public static void confirmDeleteBuildingFromGui(ConstructionInfo construction, ItemStack blueprint, BlockPos openPos) {
+        confirmDeleteBuildingInternal(construction, blueprint, openPos);
+    }
+
+    private static void confirmDeleteBuildingInternal(ConstructionInfo construction, ItemStack blueprint, BlockPos openPos) {
         String title = com.prefab.addon.PrefabCustomAddon.tr("gui.detail.delete_confirm_title",
             construction.getName());
 
         com.lowdragmc.lowdraglib2.gui.holder.ModularUIScreen screen =
             new com.lowdragmc.lowdraglib2.gui.holder.ModularUIScreen(
                 com.lowdragmc.lowdraglib2.gui.ui.ModularUI.of(
-                    com.lowdragmc.lowdraglib2.gui.ui.UI.of(buildDeleteConfirmRoot(construction),
+                    com.lowdragmc.lowdraglib2.gui.ui.UI.of(buildDeleteConfirmRoot(construction, blueprint, openPos),
                         com.lowdragmc.lowdraglib2.gui.ui.style.StylesheetManager.INSTANCE
                             .getStylesheetSafe(com.lowdragmc.lowdraglib2.gui.ui.style.StylesheetManager.MC))),
                 net.minecraft.network.chat.Component.literal(title));
@@ -1436,7 +1365,7 @@ public final class GuiConstructionDetail {
     }
 
     /** 构造二次确认弹窗的 root 节点. */
-    private static com.lowdragmc.lowdraglib2.gui.ui.UIElement buildDeleteConfirmRoot(ConstructionInfo construction) {
+    private static com.lowdragmc.lowdraglib2.gui.ui.UIElement buildDeleteConfirmRoot(ConstructionInfo construction, ItemStack blueprint, BlockPos openPos) {
         com.lowdragmc.lowdraglib2.gui.ui.UIElement root = new com.lowdragmc.lowdraglib2.gui.ui.UIElement();
         root.layout(l -> l.width(280).height(140)
             .flexDirection(dev.vfyjxf.taffy.style.FlexDirection.COLUMN));
@@ -1491,7 +1420,7 @@ public final class GuiConstructionDetail {
             "§c§l" + com.prefab.addon.PrefabCustomAddon.tr("gui.detail.delete_ok")));
         btnOk.layout(l -> l.width(100).height(20));
         btnOk.setOnClick(e -> {
-            doDeleteBuilding(construction);
+            doDeleteBuilding(construction, blueprint, openPos);
         });
         btnRow.addChild(btnOk);
 
@@ -1499,8 +1428,13 @@ public final class GuiConstructionDetail {
         return root;
     }
 
-    /** 实际执行删除: 单文件建筑 (本地有 .nbt/.txt/.png 的情况) 一律放行; 真没本地文件且是 zip 包内才拒绝. */
-    private static void doDeleteBuilding(ConstructionInfo construction) {
+    /**
+     * 实际执行删除: 单文件建筑 (本地有 .nbt/.txt/.png 的情况) 一律放行; 真没本地文件且是 zip 包内才拒绝.
+     *
+     * @param blueprint 蓝图上下文 (CustomStructureGui 入口传入): 非空时删除成功后回浏览器蓝图模式
+     * @param openPos 蓝图打开位置 (配合 blueprint 使用)
+     */
+    private static void doDeleteBuilding(ConstructionInfo construction, ItemStack blueprint, BlockPos openPos) {
         // 关闭确认弹窗
         Minecraft.getInstance().setScreen(null);
         Minecraft mc = Minecraft.getInstance();
@@ -1554,8 +1488,13 @@ public final class GuiConstructionDetail {
                 try {
                     ExtensionPackManager.getInstance().forceReload();
                 } catch (Throwable ignored) {}
-                // 打开浏览器
-                GuiExtensionPackBrowser.open();
+                // 打开浏览器: 有蓝图上下文 (CustomStructureGui 入口) 时回蓝图模式,
+                // 点建筑卡片直跳 CustomStructureGui; 详情页入口则回普通浏览器
+                if (blueprint != null && !blueprint.isEmpty()) {
+                    GuiExtensionPackBrowser.openForBlueprint(blueprint, openPos);
+                } else {
+                    GuiExtensionPackBrowser.open();
+                }
 
                 if (mc.player != null) {
                     mc.player.sendSystemMessage(Component.literal(

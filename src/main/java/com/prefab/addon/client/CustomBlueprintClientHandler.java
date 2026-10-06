@@ -34,7 +34,7 @@ import net.neoforged.neoforge.event.entity.player.PlayerInteractEvent;
  *   - 玩家右键物品 (空气):  {@link #onRightClickItem} 拦截, 打开 GUI, 取消事件
  *   - 玩家右键方块:        {@link #onRightClickBlock} 拦截, 打开 GUI, 取消事件
  *   - 已绑定的蓝图 → CustomStructureGui (Prefab 原生预览+建造界面)
- *   - 未绑定的蓝图 → GuiCustomStructureSelection (拓展包/建筑选择界面)
+ *   - 未绑定的蓝图 → GuiExtensionPackBrowser 蓝图模式 (点卡片直跳 CustomStructureGui)
  *
  * 位置 (BlockPos) 处理:
  *   - 右键空气: 用玩家脚上方 1 格
@@ -197,10 +197,12 @@ public class CustomBlueprintClientHandler {
                 player.sendSystemMessage(msg);
             }
         } else {
-            // 未绑定 → 打开新版"拓展包/建筑管理"浏览器 (左侧 5 个 tab, 右侧卡片列表)
-            // 不再直接进 detail 界面, 让玩家先选要建造的建筑
-            PrefabCustomAddon.LOGGER.info("[USE-DEBUG] ClientHandler: no bound, opening GuiExtensionPackBrowser");
-            GuiExtensionPackBrowser.open();
+            // 未绑定 → 打开建筑浏览器 (blueprint 模式):
+            // 点建筑卡片直接进 CustomStructureGui (生存=提交材料 / 创造=预览), 跳过浏览器详情页,
+            // 也不再需要 [选择]/[选择并锁定] 绑定 + 再次右键.
+            // 非 blueprint 路径 (Z 键等) 打开的浏览器行为完全不变 (含详情页的 选择/选择并锁定).
+            PrefabCustomAddon.LOGGER.info("[USE-DEBUG] ClientHandler: no bound, opening GuiExtensionPackBrowser (blueprint mode)");
+            GuiExtensionPackBrowser.openForBlueprint(stack, pos);
         }
     }
 

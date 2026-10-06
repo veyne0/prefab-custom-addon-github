@@ -33,6 +33,7 @@ import com.prefab.addon.extension.ConstructionInfo;
 import com.prefab.addon.extension.ExtensionPackManager;
 import com.prefab.addon.extension.LocalBuilding;
 import com.prefab.addon.extension.LocalBuildingScanner;
+import com.prefab.addon.work.FolderOpener;
 import com.prefab.addon.work.RegionSelector;
 import dev.vfyjxf.taffy.style.AlignContent;
 import dev.vfyjxf.taffy.style.AlignItems;
@@ -58,6 +59,7 @@ import org.lwjgl.PointerBuffer;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.util.tinyfd.TinyFileDialogs;
 
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
@@ -201,6 +203,17 @@ public final class TerminalGui {
             } else {
                 appTabs.put("recycle", recycleTab);
                 recycleTab.addChild(createTabCloseButton(recycleTab, null, "recycle"));
+            }
+        }
+
+        // 存储软件同回收站: common 常驻 tab, 未卸载时登记 + 挂 × 关闭按钮
+        Tab storageTab = ctx.storageTab();
+        if (storageTab != null) {
+            if (uninstalledApps.contains("storage")) {
+                tabView.removeTab(storageTab);
+            } else {
+                appTabs.put("storage", storageTab);
+                storageTab.addChild(createTabCloseButton(storageTab, null, "storage"));
             }
         }
 
@@ -647,6 +660,10 @@ public final class TerminalGui {
             // 回收站 common tab 在本次会话中被 × 关闭: 槽位注册只在开终端时双侧执行, 无法就地重建
             return createRecycleClosedContent();
         }
+        if (app.id().equals("storage")) {
+            // 存储软件 common tab 在本次会话中被 × 关闭: 槽位注册只在开终端时双侧执行, 无法就地重建
+            return createStorageClosedContent();
+        }
         if (app.id().equals("appstore")) {
             return createAppStoreContent();
         }
@@ -675,6 +692,22 @@ public final class TerminalGui {
         content.addChild(title);
         Label note = new Label();
         note.setText(I18n.get("gui.modern_terminal.recycle.closed"), false);
+        note.textStyle(t -> t.textAlignHorizontal(Horizontal.CENTER));
+        content.addChild(note);
+        return content;
+    }
+
+    /** 存储软件 common tab 被关闭后的占位内容: 提示重开终端恢复. */
+    private static UIElement createStorageClosedContent() {
+        UIElement content = new UIElement();
+        content.layout(l -> l.flexDirection(FlexDirection.COLUMN).alignItems(AlignItems.CENTER).justifyContent(AlignContent.CENTER)
+                .widthPercent(100.0f).heightPercent(100.0f).gapAll(4.0f));
+        Label title = new Label();
+        title.setText(I18n.get("gui.modern_terminal.app.storage"), false);
+        title.textStyle(t -> t.textAlignHorizontal(Horizontal.CENTER));
+        content.addChild(title);
+        Label note = new Label();
+        note.setText(I18n.get("gui.modern_terminal.storage.closed"), false);
         note.textStyle(t -> t.textAlignHorizontal(Horizontal.CENTER));
         content.addChild(note);
         return content;
@@ -1032,6 +1065,17 @@ public final class TerminalGui {
             refresh.layout(l -> l.width(44.0f).height(14.0f));
             refresh.setOnClick(e -> rebuildRoot[0].run());
             toolbar.addChild(refresh);
+            // 打开相册文件夹: 直接在系统文件管理器里看照片 PNG
+            Button openFolder = new Button().setText(I18n.get("gui.modern_terminal.album.open_folder"), false);
+            openFolder.layout(l -> l.width(64.0f).height(14.0f));
+            openFolder.setOnClick(e -> {
+                try {
+                    Files.createDirectories(TerminalPhotoStore.photosDir()); // 没拍过照片也能直接开
+                } catch (IOException ignored) {
+                }
+                FolderOpener.openInOS(TerminalPhotoStore.photosDir());
+            });
+            toolbar.addChild(openFolder);
             content.addChild(toolbar);
 
             UIElement body = new UIElement();
@@ -2267,22 +2311,7 @@ public final class TerminalGui {
         // 材料规则提示: 挑战模式开关已移除, 生存/冒险固定消耗材料, 创造免费
         addSettingsHint(panel, I18n.get("gui.modern_terminal.settings.material_rule_hint"), false);
 
-        // 打开建筑时自动检测依赖
-        Button deps = new Button().setText(I18n.get("gui.modern_terminal.settings.building.deps")
-                + ": " + (p.autoDepCheckOnOpen ? "ON" : "OFF"), false);
-        deps.buttonStyle(s -> s.baseTexture(Sprites.RECT_DARK)
-                .hoverTexture(Sprites.RECT_LIGHT).pressedTexture(Sprites.RECT_DARK));
-        deps.layout(l -> l.widthPercent(100.0f).height(16.0f));
-        deps.setOnClick(e -> {
-            p.autoDepCheckOnOpen = !p.autoDepCheckOnOpen;
-            p.save();
-            settingsMsg = I18n.get(p.autoDepCheckOnOpen
-                    ? "gui.modern_terminal.settings.deps_on" : "gui.modern_terminal.settings.deps_off");
-            settingsColor = 0x55FF55;
-            rebuild.run();
-        });
-        panel.addChild(deps);
-        addSettingsHint(panel, I18n.get("gui.modern_terminal.settings.building.deps.hint"), false);
+        // (删除: "打开建筑时自动检测依赖" 开关 — 进入建筑选择界面时自动检测, 不再有开关)
 
         // 建造动画模式 (4 状态循环: OFF → FALL → RAIN → THROW)
         BuildAnimationMode mode = p.getBuildAnimationMode();
@@ -2309,7 +2338,6 @@ public final class TerminalGui {
         reset.setOnClick(e -> {
             try {
                 p.favoriteKeys = new java.util.ArrayList<>();
-                p.autoDepCheckOnOpen = false;
                 p.buildAnimationMode = BuildAnimationMode.OFF;
                 p.save();
                 settingsMsg = I18n.get("gui.modern_terminal.settings.reset_ok");

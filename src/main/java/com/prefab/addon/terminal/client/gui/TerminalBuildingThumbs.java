@@ -21,6 +21,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * 建筑缩略图纹理加载 (纯客户端): PNG 字节 → 工作线程解码 → 主线程上传 DynamicTexture → 缓存 RL.
@@ -28,15 +29,24 @@ import java.util.concurrent.CompletableFuture;
  * 加载/上传模式照抄主模组 GuiExtensionPackBrowser (ensurePreviewTextureLoaded / uploadIconTexture),
  * 区别是这里异步执行 (主模组在渲染线程同步读文件, 大量建筑时进界面会卡顿),
  * 并按建筑 id 缓存空值避免对无图建筑反复重试.
+ *
+ * <h2>失效检测</h2>
+ * 缓存条目记录加载时 ThumbnailCache 磁盘文件的 mtime: 玩家 (重)生成缩略图后 mtime 变化,
+ * 下次 get 自动失效重载 —— 包括之前缓存了"确认无图"的建筑 (生成前没图, 生成后必须能显示).
  */
 public final class TerminalBuildingThumbs {
 
-    /** 建筑 id → 纹理 RL; value=null 表示确认无图/加载失败 (空值也缓存, 避免反复重试). */
-    private static final Map<String, ResourceLocation> CACHE = new HashMap<>();
+    /** 缓存条目: 纹理 RL (null=确认无图) + 加载时 ThumbnailCache 文件的 mtime. */
+    private record Entry(@Nullable ResourceLocation rl, long thumbMtime) {}
+
+    /** 建筑 id → 缓存条目 (含"确认无图", 避免反复重试). */
+    private static final Map<String, Entry> CACHE = new HashMap<>();
     /** 正在异步加载的 id 集合 (防重复触发). */
     private static final Set<String> PENDING = new HashSet<>();
     /** 纹理就绪监听 (建筑选择面板用它触发刷新); 终端 GUI 关闭时统一清空. */
     private static final List<Runnable> LISTENERS = new ArrayList<>();
+    /** 纹理注册名生成计数: (重)生成后注册全新纹理, 避免同名注册命中 TextureManager 里的旧纹理. */
+    private static final AtomicInteger TEX_GEN = new AtomicInteger();
 
     private TerminalBuildingThumbs() {
     }
@@ -53,20 +63,24 @@ public final class TerminalBuildingThumbs {
     /**
      * 取缩略图 RL. 未就绪时触发异步加载并返回 null (UI 先显示占位底),
      * 加载完成后在主线程通知 {@link #LISTENERS} 刷新.
+     *
+     * <p>磁盘缩略图 mtime 与缓存条目不一致 (生成/重新生成过) → 失效重载.</p>
      */
     public static @Nullable ResourceLocation get(ConstructionInfo c) {
         String key = c.getId();
-        if (CACHE.containsKey(key)) {
-            return CACHE.get(key);
+        long mtime = ThumbnailCache.lastModified(c);
+        Entry e = CACHE.get(key);
+        if (e != null && e.thumbMtime() == mtime) {
+            return e.rl();
         }
         if (PENDING.add(key)) {
-            loadAsync(c);
+            loadAsync(c, mtime);
         }
         return null;
     }
 
     /** 工作线程: 收集 PNG 字节 (pngData → 本地预览图 → ThumbnailCache 磁盘缓存) 并解码. */
-    private static void loadAsync(ConstructionInfo c) {
+    private static void loadAsync(ConstructionInfo c, long thumbMtime) {
         String key = c.getId();
         CompletableFuture.supplyAsync(() -> {
             byte[] data = c.getPngData();
@@ -100,13 +114,13 @@ public final class TerminalBuildingThumbs {
                         // 建筑 id 可能含 ResourceLocation 非法字符, 注册名清洗一次 (缓存键仍用原 id)
                         String safe = key.toLowerCase().replaceAll("[^a-z0-9_.\\-/]", "_");
                         rl = Minecraft.getInstance().getTextureManager()
-                                .register("terminal_building_" + safe, tex);
+                                .register("terminal_building_" + safe + "_" + TEX_GEN.incrementAndGet(), tex);
                     }
                 } catch (Exception ignored) {
                     // 上传失败按无图处理
                 }
             }
-            CACHE.put(key, rl);
+            CACHE.put(key, new Entry(rl, thumbMtime));
             PENDING.remove(key);
             for (Runnable r : List.copyOf(LISTENERS)) {
                 r.run();

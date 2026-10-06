@@ -380,15 +380,17 @@ public final class GuiMultiblockDetail {
             return;
         }
         UUID uuid = mc.player.getUUID();
-        // 创造模式免材料: 进度区只显示"创造免费", 不再要求提交
-        if (mc.player.isCreative()) {
+        // 创造模式免材料 + 免材料模式豁免: 进度区直接显示可建造, 不再要求提交
+        if (mc.player.isCreative() || com.prefab.addon.work.FreeBuildMode.isEnabled()) {
+            String label = mc.player.isCreative() ? "创造免费" : "免材料";
             for (Map.Entry<String, TextElement> e : matProgressEls.entrySet()) {
                 int req = GuiMultiblockDetail.currentMatList.required.getOrDefault(e.getKey(), 0);
-                e.getValue().setText("\u521b\u9020\u514d\u8d39 (" + req + " \u5757)");
+                e.getValue().setText(label + " (" + req + " \u5757)");
                 e.getValue().textStyle(t -> t.textColor(-11141291));
             }
             if (gateEl != null) {
-                gateEl.setText("\u2713 \u521b\u9020\u6a21\u5f0f\u514d\u6750\u6599 \u00b7 " + PackBrowserKeyHandler.buildKeyName() + " \u53ef\u5efa\u9020");
+                gateEl.setText("\u2713 " + (mc.player.isCreative() ? "\u521b\u9020\u6a21\u5f0f\u514d\u6750\u6599" : "\u670d\u52a1\u5668\u514d\u6750\u6599\u6a21\u5f0f")
+                        + " \u00b7 " + PackBrowserKeyHandler.buildKeyName() + " \u53ef\u5efa\u9020");
                 gateEl.textStyle(t -> t.textColor(-11141291));
             }
             return;

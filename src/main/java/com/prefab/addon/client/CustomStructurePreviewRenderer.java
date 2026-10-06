@@ -1,7 +1,14 @@
 package com.prefab.addon.client;
 
+import com.mojang.blaze3d.systems.RenderSystem;
+import com.mojang.blaze3d.vertex.BufferBuilder;
+import com.mojang.blaze3d.vertex.DefaultVertexFormat;
+import com.mojang.blaze3d.vertex.MeshData;
 import com.mojang.blaze3d.vertex.PoseStack;
+import com.mojang.blaze3d.vertex.Tesselator;
+import com.mojang.blaze3d.vertex.VertexBuffer;
 import com.mojang.blaze3d.vertex.VertexConsumer;
+import com.mojang.blaze3d.vertex.VertexFormat;
 import com.prefab.PrefabBase;
 import com.prefab.addon.PrefabCustomAddon;
 import com.prefab.structures.base.BuildBlock;
@@ -9,8 +16,10 @@ import com.prefab.structures.base.Structure;
 import com.prefab.structures.config.StructureConfiguration;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.renderer.GameRenderer;
 import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.client.renderer.RenderType;
+import net.minecraft.client.renderer.ShaderInstance;
 import net.minecraft.client.renderer.block.BlockRenderDispatcher;
 import net.minecraft.client.renderer.block.model.BakedQuad;
 import net.minecraft.client.renderer.blockentity.BlockEntityRenderer;
@@ -28,6 +37,7 @@ import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.client.event.RenderLevelStageEvent;
+import org.joml.Matrix4f;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -49,10 +59,13 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * 我们的自定义建筑 24x20x26, 玩家站在地面打开 GUI 时, 建筑大部分方块跟地面/树/墙重叠,
  * prefab 全部跳过 → 什么都不显示.
  *
- * <h2>为啥不缓存 VertexBuffer</h2>
- * 每帧重新烘焙所有 BuildBlock quads 写入 MultiBufferSource.
- * 2877 块 × ~20 quads = 57540 quads/帧, CPU 成本 5-10ms, 接受 (20 TPS 渲染可承受).
- * 不缓存避免: 1) VertexBuffer API 复杂, 跨版本易错; 2) 状态管理 (pos/facing 变化时清空); 3) Shader/RenderSystem 状态污染.
+ * <h2>VBO 缓存 (掉帧修复)</h2>
+ * 之前每帧重新烘焙所有 BuildBlock quads 写入 MultiBufferSource:
+ * 2877 块 × ~20 quads = 57540 quads/帧, CPU 5-10ms, 大建筑直接掉帧.
+ * 现在整体烘焙进一个静态 {@link VertexBuffer}, 每帧只做 1 次 translate + 1 次 draw call (~0.1ms).
+ * 重烘焙只发生在: 换建筑 (Structure 引用变) 或旋转 (houseFacing 变);
+ * 方向键移动只改 cfg.pos, 顶点是相对 cfg.pos 的局部坐标, 无需重烘焙.
+ * 烘焙失败时退回旧的逐帧路径 (保底能显示, 只是慢).
  *
  * <h2>闪烁问题</h2>
  * 用 {@code RenderType.entityCutout(LOCATION_BLOCKS)} 走 alpha-test 路径, 严格 depth-test
@@ -60,7 +73,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * 这是 prefab 原版预览的同一个 trade-off (prefab 也用 entityCutout 系).
  *
  * <h2>缓存 hit 检测</h2>
- * {@code lastRenderedStructure / Pos / Facing} 变化时记录日志 (调试用), 但不需清缓存 (无缓存).
+ * {@code lastRenderedStructure / Pos / Facing} 变化时记录日志 (调试用).
  */
 @EventBusSubscriber(modid = "prefab_custom_addon", value = Dist.CLIENT)
 public class CustomStructurePreviewRenderer {
@@ -91,6 +104,15 @@ public class CustomStructurePreviewRenderer {
      */
     private static final Map<BlockState, Integer> COLOR_CACHE = new ConcurrentHashMap<>();
 
+    // === 静态 VBO 缓存 (掉帧修复) ===
+
+    /** 烘焙好的预览顶点 (相对 cfg.pos 的局部坐标). null = 未烘焙 / 烘焙失败 (走逐帧 fallback). */
+    private static VertexBuffer previewBuffer = null;
+    /** VBO 对应的结构引用 (引用比较) — 换建筑才重烘焙. */
+    private static Structure bakedStructure = null;
+    /** VBO 对应的朝向 — 旋转才重烘焙. 移动 (pos 变化) 顶点是局部坐标, 不需要. */
+    private static Direction bakedFacing = null;
+
     @SubscribeEvent
     public static void onRenderLevel(RenderLevelStageEvent event) {
         if (event.getStage() != RenderLevelStageEvent.Stage.AFTER_BLOCK_ENTITIES) return;
@@ -100,7 +122,11 @@ public class CustomStructurePreviewRenderer {
         StructureConfiguration currentConfiguration =
             com.prefab.addon.client.gui.CustomStructureGui.getAddonPreviewConfig();
 
-        if (currentStructure == null || currentConfiguration == null) return;
+        if (currentStructure == null || currentConfiguration == null) {
+            // 预览结束 (clearAddonPreviewFlag) → 释放烘焙显存
+            freePreviewBuffer();
+            return;
+        }
         if (currentConfiguration.pos == null) return;
 
         // pos/facing 变化时记日志, 调试 "为啥预览不跟手" 用
@@ -136,19 +162,6 @@ public class CustomStructurePreviewRenderer {
         Camera camera = event.getCamera();
         Vec3 camPos = camera.getPosition();
 
-        // entityCutout 走 alpha-test, depth-test 严格, 不闪烁.
-        // 玻璃/灯笼等 alpha<0.5 半透明方块会透明消失 (跟 prefab 原版预览的 trade-off 一致).
-        VertexConsumer buf = buffers.getBuffer(RenderType.entityCutout(
-            net.minecraft.client.renderer.texture.TextureAtlas.LOCATION_BLOCKS));
-
-        List<BuildBlock> blocks = currentStructure.getBlocks();
-        if (blocks == null) return;
-
-        int drawn = 0;
-        int skipped = 0;
-        BlockPos firstBadPos = null;
-        String firstBadReason = null;
-
         // === Edit mode 走独立分支: 直接用 EditModeController.worldBlocks 画, 完全跳过
         //     BuildBlock/PositionOffset 链路. Litematica 风格: 简单 map, 不会因为 BuildBlock
         //     缺字段而静默不显示. ===
@@ -156,6 +169,52 @@ public class CustomStructurePreviewRenderer {
             renderEditMode(event, mc, blockRenderer, buffers, poseStack, camPos);
             return;
         }
+
+        List<BuildBlock> blocks = currentStructure.getBlocks();
+        if (blocks == null) return;
+
+        // === VBO 快速路径 (掉帧修复): 结构/朝向没变 → 每帧只画烘焙好的顶点 (1 次 draw call),
+        //     不再逐方块 SetBlockState + putBulkData (2877 块 ≈ 每帧 5-10ms CPU → ~0.1ms). ===
+        if (previewBuffer == null
+                || bakedStructure != currentStructure
+                || bakedFacing != currentConfiguration.houseFacing) {
+            if (!bakePreviewBuffer(mc, currentStructure, currentConfiguration)) {
+                // 烘焙失败/空结构 → 退回旧的逐帧路径 (保底能显示, 只是慢)
+                renderPreviewPerFrame(currentStructure, currentConfiguration, event,
+                    mc, blockRenderer, buffers, poseStack, camPos, blocks);
+                return;
+            }
+        }
+        drawPreviewBuffer(currentConfiguration, event, camPos);
+
+        // 调试: 每 60 帧 (~3 秒) 记一次
+        if ((mc.player.tickCount % 60) == 0) {
+            PrefabCustomAddon.LOGGER.info(
+                "[PREVIEW-RENDER] VBO draw: blocks={} pos={} facing={}",
+                blocks.size(), currentConfiguration.pos, currentConfiguration.houseFacing);
+        }
+    }
+
+    /**
+     * 旧逐帧路径 (VBO 烘焙失败时的保底): 每帧全量 CPU 烘焙, 2877 块 ≈ 5-10ms/帧.
+     * 逻辑与原实现一致, 仅当 {@link #bakePreviewBuffer} 失败时使用.
+     */
+    private static void renderPreviewPerFrame(
+            Structure currentStructure,
+            StructureConfiguration currentConfiguration,
+            RenderLevelStageEvent event, Minecraft mc, BlockRenderDispatcher blockRenderer,
+            MultiBufferSource.BufferSource buffers, PoseStack poseStack, Vec3 camPos,
+            List<BuildBlock> blocks) {
+
+        // entityCutout 走 alpha-test, depth-test 严格, 不闪烁.
+        // 玻璃/灯笼等 alpha<0.5 半透明方块会透明消失 (跟 prefab 原版预览的 trade-off 一致).
+        VertexConsumer buf = buffers.getBuffer(RenderType.entityCutout(
+            net.minecraft.client.renderer.texture.TextureAtlas.LOCATION_BLOCKS));
+
+        int drawn = 0;
+        int skipped = 0;
+        BlockPos firstBadPos = null;
+        String firstBadReason = null;
 
         for (BuildBlock blockInfo : blocks) {
             try {
@@ -253,6 +312,168 @@ public class CustomStructurePreviewRenderer {
     }
 
     /**
+     * 把整个结构烘焙进一个静态 {@link VertexBuffer} (掉帧修复).
+     *
+     * <p>顶点用 "相对 cfg.pos 的局部坐标" (getRelativePosition 以 BlockPos.ZERO 为基准),
+     * 因此移动 (cfg.pos 变化) 不需要重烘焙 — 每帧一次 translate 就对齐.
+     * 重烘焙只在换建筑 (Structure 引用变) 或旋转 (houseFacing 变) 时发生.</p>
+     *
+     * <p>防失败循环: 同一结构+朝向已烘焙过但失败 (previewBuffer 仍为 null) → 直接返回 false
+     * 不再重试, 避免 fallback 路径下每帧重复烧一遍 CPU.</p>
+     *
+     * @return true = 烘焙成功, 可以走 VBO 快速路径
+     */
+    private static boolean bakePreviewBuffer(Minecraft mc, Structure structure, StructureConfiguration cfg) {
+        // 防失败循环: 同一结构/朝向已尝试且失败 (previewBuffer==null) → 不再重试
+        if (bakedStructure == structure && bakedFacing == cfg.houseFacing && previewBuffer == null) {
+            return false;
+        }
+        freePreviewBuffer();
+        try {
+            List<BuildBlock> blocks = structure.getBlocks();
+            if (blocks == null) {
+                bakedStructure = structure;
+                bakedFacing = cfg.houseFacing;
+                return false;
+            }
+            Tesselator tesselator = Tesselator.getInstance();
+            BufferBuilder bb = tesselator.begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.NEW_ENTITY);
+            PoseStack pose = new PoseStack();
+            int drawn = 0;
+            int quads = 0;
+            for (BuildBlock blockInfo : blocks) {
+                try {
+                    BlockState state = blockInfo.getBlockState();
+                    if (state == null) continue;
+                    if (state.getBlock() == net.minecraft.world.level.block.Blocks.AIR) continue;
+                    if (state.getRenderShape() == RenderShape.INVISIBLE) continue;
+                    // 局部偏移: 与逐帧路径同一条 prefab 公式, 只是基准点换成 ZERO
+                    BlockPos local = blockInfo.getStartingPosition().getRelativePosition(
+                            BlockPos.ZERO,
+                            structure.getClearSpace().getShape().getDirection(),
+                            cfg.houseFacing);
+                    // prefab 的 SetBlockState 处理所有 property 类型 (facing/rotation/stairs/...)
+                    BuildBlock working = BuildBlock.SetBlockState(
+                            cfg, mc.level, cfg.pos, blockInfo, state.getBlock(), state, structure);
+                    BlockState workingState = working.getBlockState();
+                    if (workingState == null
+                            || workingState.getBlock() == net.minecraft.world.level.block.Blocks.AIR
+                            || workingState.getRenderShape() == RenderShape.INVISIBLE) {
+                        continue;
+                    }
+                    var model = mc.getBlockRenderer().getBlockModel(workingState);
+                    List<BakedQuad> quadList = QUAD_CACHE.computeIfAbsent(workingState, s -> {
+                        List<BakedQuad> qs = new ArrayList<>();
+                        RandomSource rng = RandomSource.create(42L);
+                        qs.addAll(model.getQuads(s, null, rng));
+                        for (Direction dir : Direction.values()) {
+                            qs.addAll(model.getQuads(s, dir, rng));
+                        }
+                        return qs;
+                    });
+                    if (quadList.isEmpty()) continue;
+                    pose.pushPose();
+                    pose.translate(local.getX(), local.getY(), local.getZ());
+                    int color = COLOR_CACHE.computeIfAbsent(workingState, s ->
+                        mc.getBlockColors().getColor(s, mc.level, cfg.pos, 0));
+                    float r = (float) (color >> 16 & 255) / 255.0F;
+                    float g = (float) (color >> 8 & 255) / 255.0F;
+                    float b = (float) (color & 255) / 255.0F;
+                    for (BakedQuad quad : quadList) {
+                        bb.putBulkData(pose.last(), quad, r, g, b, 1.0F,
+                            0xF000F0, OverlayTexture.NO_OVERLAY, false);
+                    }
+                    pose.popPose();
+                    drawn++;
+                    quads += quadList.size();
+                } catch (Throwable ignored) {
+                    // 单个方块失败不炸整个烘焙 (跟逐帧路径的 per-block try-catch 一致)
+                }
+            }
+            MeshData mesh = bb.build();
+            if (mesh == null || drawn == 0) {
+                bakedStructure = structure;
+                bakedFacing = cfg.houseFacing;
+                return false;
+            }
+            VertexBuffer vbo = new VertexBuffer(VertexBuffer.Usage.STATIC);
+            vbo.bind();
+            vbo.upload(mesh);
+            VertexBuffer.unbind();
+            previewBuffer = vbo;
+            bakedStructure = structure;
+            bakedFacing = cfg.houseFacing;
+            PrefabCustomAddon.LOGGER.info("[PREVIEW-RENDER] VBO baked: {} blocks, {} quads (逐帧烘焙→一次性)", drawn, quads);
+            return true;
+        } catch (Throwable t) {
+            PrefabCustomAddon.LOGGER.warn("[PREVIEW-RENDER] VBO 烘焙失败, 退回逐帧路径: {}", t.toString());
+            previewBuffer = null;
+            bakedStructure = structure;
+            bakedFacing = cfg.houseFacing;
+            return false;
+        }
+    }
+
+    /**
+     * 画烘焙好的 VBO: ModelView = 相机旋转 * translate(cfg.pos - camPos), 一次 draw call.
+     * 手动复刻 {@code RenderType.entityCutout(LOCATION_BLOCKS)} 的全部渲染状态
+     * (RenderType.setupRenderState 是 protected, 外部无法直接调用).
+     *
+     * <p>矩阵约定 (1.21.1): 世界渲染的 ModelView 是"相机逆旋转"矩阵
+     * ({@code GameRenderer: new Matrix4f().rotation(camera.rotation().conjugate())}),
+     * 而 {@code event.getPoseStack()} 只是个空的单位栈 (不含旋转).
+     * 逐帧 fallback 靠 {@code RenderSystem.getModelViewMatrix()} (全局矩阵, 含旋转) 所以显示正常;
+     * VBO draw 必须自己拿 {@code event.getModelViewMatrix()} 当基底,
+     * 不然结构会被固定在视空间 → 随玩家视角转动.</p>
+     *
+     * <p>关键: 最后一次 endBatch 的 clearRenderState 会把 lightmap/overlay 的
+     * shader texture 槽位清 0 ({@code LightTexture.turnOffLightLayer} → setShaderTexture(2, 0)),
+     * 且 drawWithShader 每次都从 RenderSystem.getShaderTexture(i) 重绑 Sampler0..11.
+     * 不重新绑定 lightmap 的话 Sampler2 采样到 GL texture 0 = 全黑 → 预览变黑色剪影.</p>
+     */
+    private static void drawPreviewBuffer(StructureConfiguration cfg, RenderLevelStageEvent event, Vec3 camPos) {
+        Minecraft mc = Minecraft.getInstance();
+        ShaderInstance shader = GameRenderer.getRendertypeEntityCutoutShader();
+        if (shader == null || previewBuffer == null) return;
+        Matrix4f modelView = new Matrix4f(event.getModelViewMatrix());
+        // 顶点 = 相对 cfg.pos 的局部偏移; JOML translate 是右乘:
+        // R * (T * v) = 旋转 ( 把 v + (cfg.pos - camPos) ) → 相机相对坐标进视空间
+        modelView.translate(
+            (float)(cfg.pos.getX() - camPos.x),
+            (float)(cfg.pos.getY() - camPos.y),
+            (float)(cfg.pos.getZ() - camPos.z));
+        // 复刻 entityCutout(方块图集) 的 setupRenderState:
+        // TextureStateShard(方块图集) + OVERLAY(Sampler1) + LIGHTMAP(Sampler2) + 关 blend + LEQUAL depth
+        RenderSystem.setShaderTexture(0, net.minecraft.client.renderer.texture.TextureAtlas.LOCATION_BLOCKS);
+        mc.gameRenderer.overlayTexture().setupOverlayColor();
+        mc.gameRenderer.lightTexture().turnOnLightLayer();
+        RenderSystem.disableBlend();
+        RenderSystem.enableDepthTest();
+        try {
+            previewBuffer.bind();
+            previewBuffer.drawWithShader(modelView, event.getProjectionMatrix(), shader);
+            VertexBuffer.unbind();
+        } finally {
+            // 复刻 clearRenderState 语义, 让 shader texture 槽位保持干净
+            mc.gameRenderer.overlayTexture().teardownOverlayColor();
+            mc.gameRenderer.lightTexture().turnOffLightLayer();
+        }
+    }
+
+    /** 释放烘焙好的 VBO 显存 (预览结束 / 重新烘焙前调用). */
+    private static void freePreviewBuffer() {
+        if (previewBuffer != null) {
+            try {
+                previewBuffer.close();
+            } catch (Throwable ignored) {
+            }
+            previewBuffer = null;
+        }
+        bakedStructure = null;
+        bakedFacing = null;
+    }
+
+    /**
      * Edit mode 独立渲染分支. 遍历 {@link EditModeController#getWorldBlocks()},
      * 每个 (worldPos, BlockState) 直接画方块. 完全跳过 BuildBlock / PositionOffset /
      * SetBlockState 那套脆弱链路. 跟 prefab 原版预览的视觉一致 (entityCutout + depth-test).
@@ -321,8 +542,8 @@ public class CustomStructurePreviewRenderer {
         // 先把 baked 幽灵方块 flush 出去 (单一 entityCutout(方块图集) render type), 深度正常.
         buffers.endBatch();
 
-        // === BER pass: 箱子/床/告示牌等. 每个 renderBlockEntityGhost 内部各自 endBatch,
-        //     保证每种 entity 贴图独占一次 flush, 不跟方块图集/彼此混在 shared builder 里. ===
+        // === BER pass: 箱子/床/告示牌等. bufferSource 在 render type 切换时会自动 flush
+        //     上一个 batch, 所以这里不需要每个 BE 单独 endBatch; 循环结束后统一 flush 一次. ===
         for (BlockPos gpos : ghostBePositions) {
             BlockState gstate = worldBlocks.get(gpos);
             if (gstate == null) { skipped++; continue; }
@@ -332,6 +553,8 @@ public class CustomStructurePreviewRenderer {
                 skipped++;
             }
         }
+        // 统一 flush BER pass (替代原来逐 BE endBatch, 避免 draw call 风暴)
+        buffers.endBatch();
 
         // === 双 highlight: hoveredBlock (黄色=删除) 跟 hoveredAir (橙色=放置) 同时画 ===
         // 关键修复 1: AABB 必须转成 "相机相对" 坐标 —— RenderLevelStageEvent 的 poseStack 原点在相机,
@@ -389,7 +612,8 @@ public class CustomStructurePreviewRenderer {
             // 光照全亮 0xF000F0: 跟上面 baked 方块一致, 保证预览里始终看得清.
             ber.render(be, 1.0F, poseStack, buffers, 0xF000F0, OverlayTexture.NO_OVERLAY);
             poseStack.popPose();
-            buffers.endBatch();  // 立刻 flush 这个 BER 的 render type, 不跟下一个/方块图集混
+            // 不在这里 endBatch — bufferSource 在 render type 切换时自动 flush 上一个 batch,
+            // 循环结束后统一 flush 一次, 避免 N 个 BE = N 次 draw call 的风暴.
             return true;
         } catch (Throwable t) {
             logGhostBeOnce("BER 渲染抛异常: " + state + " → " + t);
