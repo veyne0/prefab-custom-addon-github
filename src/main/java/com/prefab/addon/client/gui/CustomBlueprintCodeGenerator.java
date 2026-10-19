@@ -113,8 +113,9 @@ public final class CustomBlueprintCodeGenerator {
         if (spec.sourceTexture == null || !Files.exists(spec.sourceTexture)) {
             throw new IllegalArgumentException("未选择贴图文件");
         }
-        if (spec.recipeItems == null || spec.recipeItems.isEmpty()) {
-            throw new IllegalArgumentException("配方至少需要 1 个材料");
+        if (spec.recipeItems == null) {
+            // 配方可选: 没填 9 宫格就生成无配方的蓝图 (物品仍可注册与使用)
+            spec.recipeItems = new ArrayList<>();
         }
         // 防 KubeJS 撞 prefab 自带物品
         if (spec.namespace.equals("prefab") || spec.namespace.equals("minecraft")) {

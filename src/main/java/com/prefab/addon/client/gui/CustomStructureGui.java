@@ -148,6 +148,8 @@ public class CustomStructureGui {
     private static MaterialCalculator.MaterialList materialList;
     private static NbtStructureParser.NbtInfo nbtInfo;
     private static boolean challengeMode;
+    /** 打开时依赖检测结果: 缺失的 modid 列表 (null/空 = 无缺失或建筑无依赖), 供提交/建造门禁用 */
+    private static List<String> depMissingIds = null;
 
     // === UI 引用 (tick handler 用) ===
     private static TextElement statusEl;
@@ -158,6 +160,13 @@ public class CustomStructureGui {
     //   - 不要求背包里有自定义蓝图 (performBuildOrPreview 跳过 hasBlueprintInInventory 检查)
     //   - 建造前不自动绑定蓝图 (没有蓝图可绑, 也不该劫持玩家已有的蓝图)
     private static boolean fromTerminal = false;
+
+    // === 蓝图广场入口标记 ===
+    // 从蓝图广场 (GuiBlueprintMarket) 点已下载建筑进来时 = true:
+    //   跟终端入口一样是"无蓝图建造" — ALT 建造跳过背包自定义蓝图检查/绑定
+    //   (下载的建筑和自定义蓝图物品无关, 不该要求玩家拿着蓝图).
+    // 与 fromTerminal 分开: 关闭行为不同 — 终端要重开终端, 广场直接关屏回世界.
+    private static boolean noBlueprintEntry = false;
 
     // === 浏览器入口标记 ===
     // 从建筑浏览器 (GuiExtensionPackBrowser) 蓝图模式点卡片直跳进来时 = true:
@@ -246,6 +255,17 @@ public class CustomStructureGui {
     }
 
     /**
+     * 从蓝图广场 (GuiBlueprintMarket) 点已下载建筑直跳打开.
+     * 无蓝图建造模式: ALT 建造不要求/不绑定自定义蓝图 (同终端入口),
+     * 关闭时直接回游戏 (不重开终端/浏览器).
+     */
+    public static void openFromMarket(ConstructionInfo construction, BlockPos openPos) {
+        open(construction, null, openPos);
+        // open() 内部 resetState() 会清标记, 这里在 setScreen 之前补上
+        noBlueprintEntry = true;
+    }
+
+    /**
      * 从建筑浏览器 (GuiExtensionPackBrowser) 蓝图模式点卡片直跳打开.
      * 与 {@link #open(ConstructionInfo, ItemStack, BlockPos)} 一致, 只是标记来源 = 浏览器:
      * 之后"关闭"/"更换建筑"按钮返回浏览器, 而不是直接回游戏.
@@ -264,6 +284,15 @@ public class CustomStructureGui {
         List<String> deps = c.getDependencies();
         // 检测 + 缓存 + 重建左侧依赖列表 (✓/✗), 与独立详情页共用逻辑
         DependencyChecker.CheckResult result = GuiConstructionDetail.checkDepsAndUpdate(c);
+        // 记录缺失列表 (供 handleMainButtonClick / performBuildOrPreview 门禁)
+        depMissingIds = new ArrayList<>();
+        for (String m : result.missing) {
+            // 防御: missing 元素理论上已是干净 modid, 这里仍截断冒号兜底
+            String clean = m;
+            int colon = clean.indexOf(':');
+            if (colon > 0) clean = clean.substring(0, colon);
+            depMissingIds.add(clean);
+        }
         if (result.missing.isEmpty()) {
             showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.dep_check_pass",
                     result.present.size(), (deps == null ? 0 : deps.size())), 0x55FF55, 200);
@@ -275,6 +304,7 @@ public class CustomStructureGui {
     /**
      * 关闭界面: 从终端打开时 (fromTerminal) 重开终端并回到"建筑选择"应用;
      * 从浏览器蓝图模式打开时 (fromBrowser) 重开建筑浏览器 (恢复之前的分页/分类状态);
+     * 从蓝图广场打开时 (noBlueprintEntry) 重开蓝图广场 (浏览位置/分类/搜索都保留);
      * 从主模组普通入口打开时只关屏回世界.
      */
     private static void closeScreen() {
@@ -286,6 +316,9 @@ public class CustomStructureGui {
         } else if (fromBrowser) {
             fromBrowser = false;
             GuiExtensionPackBrowser.open();
+        } else if (noBlueprintEntry) {
+            noBlueprintEntry = false;
+            GuiBlueprintMarket.open();
         }
     }
 
@@ -320,6 +353,7 @@ public class CustomStructureGui {
         challengeMode = false;
         fromTerminal = false;
         fromBrowser = false;
+        noBlueprintEntry = false;
     }
 
     private static void startAsyncParse(ConstructionInfo construction) {
@@ -613,48 +647,7 @@ public class CustomStructureGui {
             buttonRow.addChild(btnPreview);
         }
 
-        // 第三个按钮: 蓝图打开时为 "更换建筑" (跳建筑浏览器).
-        // 终端打开时没有第三按钮 (原 "检测依赖" 按钮已移除: 进入界面时自动检测).
-        if (!fromTerminal) {
-        // 更换建筑按钮
-        // 需求: 跳到建筑浏览器 (第1张图, 左侧 tab 栏 + 建筑卡片网格),
-        //       而不是直接进入某个建筑的详情 (之前: GuiConstructionDetail.openFirstAvailable()).
-        // 流程: 关闭当前 CustomStructureGui, 释放 3D 渲染资源, 打开建筑浏览器.
-        Button btnChange = new Button().setText(com.prefab.addon.PrefabCustomAddon.tr("gui.custom.change"));
-        btnChange.setOnClick(e -> {
-            if (renderScene != null) renderScene.releaseRendererResource();
-            // 只要带着自定义蓝图就保持蓝图直跳模式 (点卡片仍直开本界面):
-            // 不管是从浏览器直跳进来 (fromBrowser) 还是右键已绑定蓝图直接 open() 进来,
-            // 否则后者会掉进普通浏览模式, 点卡片进 GuiConstructionDetail 详情页 (界面不统一).
-            // 无蓝图 (终端入口等) 才用普通浏览模式.
-            if (currentBlueprint != null && !currentBlueprint.isEmpty()) {
-                GuiExtensionPackBrowser.openForBlueprint(currentBlueprint, currentOpenPos);
-            } else {
-                // 之前: GuiConstructionDetail.openFirstAvailable();  // 详情层 (地狱门那个 3D 预览)
-                // 现在: GuiExtensionPackBrowser.open();               // 建筑浏览器 (第1张图, 卡片网格 + tab)
-                GuiExtensionPackBrowser.open();
-            }
-        });
-        btnChange.layout(l -> l.flexGrow(1).heightPercent(100));
-        // 蓝图锁定时变灰
-        // 兼容两种来源:
-        //   - mod 原生 CustomBlueprintItem: 读它的 isLocked(stack) (locked 字段)
-        //   - KubeJS 注册的带 tag 物品: 永远禁用 (玩家自制的蓝图默认锁定, 不允许更换建筑)
-        boolean isLocked = false;
-        if (currentBlueprint != null && !currentBlueprint.isEmpty()) {
-            if (currentBlueprint.getItem() instanceof com.prefab.addon.items.CustomBlueprintItem) {
-                isLocked = com.prefab.addon.items.CustomBlueprintItem.isLocked(currentBlueprint);
-            } else if (com.prefab.addon.client.CustomBlueprintClientHandler.isHandledBlueprint(currentBlueprint)) {
-                // KubeJS 注册的玩家蓝图: 一律禁用 "更换建筑" (无论注册时 locked 是 0/1)
-                isLocked = true;
-            }
-        }
-        if (isLocked) {
-            btnChange.setActive(false);
-            btnChange.setText(com.prefab.addon.PrefabCustomAddon.tr("gui.custom.locked"));
-        }
-        buttonRow.addChild(btnChange);
-        }
+        // (原第三个按钮 "更换建筑" 已删除: 关闭后可从浏览器重新进入, 无需在详情页里跳转)
 
         // KubeJS 创建的玩家蓝图标记: 收藏/删除/缩略图按钮都不显示
         // (KubeJS 建筑资源由 KubeJS 侧管理, 无需客户端处理)
@@ -796,8 +789,19 @@ public class CustomStructureGui {
             Minecraft.getInstance().player);
     }
 
+    /** 依赖缺失时禁止提交材料与建造 (runAutoDepCheck 已在打开时跑过检测). */
+    private static boolean depMissing() {
+        return depMissingIds != null && !depMissingIds.isEmpty();
+    }
+
     /** 建造按钮 (或挑战模式下的"提交材料"/"预览"按钮) 点击处理 */
     private static void handleMainButtonClick() {
+        // 依赖缺失 → 提交材料/预览/建造全部阻止 (缺 mod 建出来也是残缺方块)
+        if (depMissing()) {
+            showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.custom.dep_missing_block",
+                    String.join(", ", depMissingIds)), 0xFF5555, 200);
+            return;
+        }
         if (challengeMode) {
             // 挑战模式: 按钮在材料未交齐时显示 "提交材料", 交齐后变成 "预览".
             // 用 checkMaterialsReady() 决定当前按下去是哪种行为.
@@ -841,6 +845,14 @@ public class CustomStructureGui {
             return;
         }
         if (structure == null || structure.getBlocks() == null || structure.getBlocks().isEmpty()) {
+            // 排查日志: 结构为空时把关键数据快照打出来 (nbt 是否拿到/转换过, 解析结果)
+            byte[] dbg = currentConstruction.getNbtData();
+            PrefabCustomAddon.LOGGER.warn(
+                "[CUSTOM-GUI-V2] 预览结构为空: '{}' nbtBytes={} structure={} blocks={}",
+                currentConstruction.getName(),
+                dbg == null ? -1 : dbg.length,
+                structure == null ? "null" : "obj",
+                structure == null || structure.getBlocks() == null ? -1 : structure.getBlocks().size());
             showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.custom.empty_structure"), 0xFFAA55, 100);
             return;
         }
@@ -931,6 +943,12 @@ public class CustomStructureGui {
     private static void performBuildOrPreview() {
         if (currentConstruction == null) return;
 
+        // 依赖缺失 → 阻止建造 (兜底: 覆盖预览 ALT 建造等其它入口)
+        if (depMissing()) {
+            showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.custom.dep_missing_block",
+                    String.join(", ", depMissingIds)), 0xFF5555, 200);
+            return;
+        }
         // 多人模式下, 服务器没有这个建筑 → 阻止
         if (!com.prefab.addon.extension.ExtensionPackManager.isBuildable(currentConstruction)) {
             showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.custom.no_server_pack"), 0xFF5555, 200);
@@ -1093,6 +1111,14 @@ public class CustomStructureGui {
     /** 本次 GUI 是否从建筑终端打开 (无蓝图建造流程, 供 ALT 建造路径判断). */
     public static boolean isOpenedFromTerminal() {
         return fromTerminal;
+    }
+
+    /**
+     * 本次 GUI 是否为"无蓝图建造"入口 (终端 或 蓝图广场).
+     * ALT 建造路径用这个判断: 跳过背包自定义蓝图检查/绑定.
+     */
+    public static boolean isBlueprintFreeEntry() {
+        return fromTerminal || noBlueprintEntry;
     }
 
     private static boolean checkMaterialsReady() {

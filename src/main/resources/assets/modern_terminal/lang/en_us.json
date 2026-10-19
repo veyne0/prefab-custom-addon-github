@@ -184,6 +184,8 @@
   "gui.modern_terminal.album.back": "Back",
   "gui.modern_terminal.album.delete": "Delete",
   "gui.modern_terminal.app.buildings": "Building Picker",
+  "gui.modern_terminal.app.material": "Materials",
+  "gui.modern_terminal.material.count": "%s building(s) submitting",
   "gui.modern_terminal.app.create": "Create Building",
   "gui.modern_terminal.create.tab.ext": "External Files",
   "gui.modern_terminal.create.tab.ingame": "In-Game Selection",

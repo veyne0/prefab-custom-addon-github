@@ -17,9 +17,21 @@ repositories {
     flatDir {
         dirs 'libs'
     }
-    // CurseMaven: 解析 curse.maven:* 依赖的官方仓库 (Jade / Xaero / 等 mod 的 jar 文件)
-    maven { url = 'https://www.cursemaven.com' }
-    maven { url = 'https://maven.aliyun.com/repository/public' }
+    // TwelveMonkeys (WebP 解码, jarJar 内嵌) 排他地从阿里云解析.
+    // 关键: jarJar 的版本范围 [3.12.0,4.0) 是动态版本, Gradle 默认会向"所有"仓库要
+    // maven-metadata.xml —— jitpack/cursemaven 对这种请求要么极慢要么挂住,
+    // 表现就是卡死在 "Resolve dependencies of :jarJar > maven-metadata.xml".
+    // 注意 content{} 过滤不是排他的 (只限制该仓库服务哪些组, 不阻止别的仓库被询问),
+    // 必须用 exclusiveContent 才能让其它仓库完全不被问询.
+    exclusiveContent {
+        forRepositories(maven { url = 'https://maven.aliyun.com/repository/public' })
+        filter { includeGroupByRegex 'com\\.twelvemonkeys.*' }
+    }
+    // CurseMaven: 只服务 curse.maven 组 (Jade / Xaero / KubeJS 等 mod 的 jar)
+    maven {
+        url = 'https://www.cursemaven.com'
+        content { includeGroupByRegex 'curse\\..*' }
+    }
     maven { url = 'https://maven.aliyun.com/repository/gradle-plugin' }
     maven { url = 'https://maven.neoforged.net/releases/' }
     maven { url = 'https://maven.parchmentmc.org' } // Parchment mappings
@@ -65,6 +77,22 @@ dependencies {
     compileOnly files('libs/prefab-neoforge-1.0.8.jar')
     compileOnly 'org.appliedenergistics.yoga:yoga:1.0.0'
     compileOnly 'dev.vfyjxf:taffy:1.1.4'
+
+    // === WebP 解码 (mcschematic.top 预览图是 webp, ImageIO 默认解不了) ===
+    // 2.6.0 之前: 用 webpBundle 配置把 5 个 jar 解包合并进 mod 本体 → 我们的模块
+    // 导出 com.twelvemonkeys.* 包, 和 YACL (yet_another_config_lib) 用 JarJar 正规内嵌的
+    // imageio-*.jar 撞包 (split package) → java.lang.module.ResolutionException, 装了 YACL 的
+    // 玩家游戏直接起不来.
+    // 现改用 NeoForge 原生 JarJar: 内嵌 jar 成为独立模块 (不再是我们的模块导出的包),
+    // 且按 GAV+版本范围跨 mod 去重 —— YACL 内嵌 3.12.0, 我们的范围内也只有 3.12.0, 只装一份.
+    // 编译期走 implementation (传递依赖带出 imageio-core/metadata + common-*).
+    implementation 'com.twelvemonkeys.imageio:imageio-webp:3.12.0'
+    jarJar group: 'com.twelvemonkeys.imageio', name: 'imageio-webp',     version: '[3.12.0,4.0)'
+    jarJar group: 'com.twelvemonkeys.imageio', name: 'imageio-core',     version: '[3.12.0,4.0)'
+    jarJar group: 'com.twelvemonkeys.imageio', name: 'imageio-metadata', version: '[3.12.0,4.0)'
+    jarJar group: 'com.twelvemonkeys.common',  name: 'common-image',     version: '[3.12.0,4.0)'
+    jarJar group: 'com.twelvemonkeys.common',  name: 'common-io',        version: '[3.12.0,4.0)'
+    jarJar group: 'com.twelvemonkeys.common',  name: 'common-lang',      version: '[3.12.0,4.0)'
 
     // === 可选联动：Jade (方块信息提示) + Xaero's World Map (航点) ===
     // 全部 compileOnly: 编译时能拿到 API 引用, 运行时不强依赖, 用户没装对应 mod 也不影响使用.
@@ -126,6 +154,8 @@ jar {
             'Implementation-Vendor': 'YourName'
         )
     }
+    // WebP 解码库不再解包合并 (撞 YACL 的模块), 改由 jarJar task 内嵌.
+    // 发布产物 = jarJar task 的输出 (见 publishing).
 }
 
 // 自动生成合法PNG贴图（避免损坏的源文件导致"Bad PNG Signature"）

@@ -2,8 +2,8 @@ package com.prefab.addon.client;
 
 import com.mojang.blaze3d.platform.InputConstants;
 import com.prefab.addon.PrefabCustomAddon;
-import com.prefab.addon.client.gui.GuiExtensionPackBrowser;
 import com.prefab.addon.client.gui.GuiExtensionPackEditor;
+import com.prefab.addon.client.gui.GuiBlueprintMarket;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
 import net.neoforged.api.distmarker.Dist;
@@ -16,8 +16,8 @@ import net.neoforged.bus.api.EventPriority;
 
 /**
  * 键盘绑定:
- *   Z 键 → 打开建筑浏览器 (浏览/下载)
  *   X 键 → 打开建筑制作界面 (创建/编辑本地工作区)
+ *   I 键 → 蓝图广场
  *
  * 用了 Minecraft 标准的 KeyMapping, 所以这些键会出现在
  * Options → Controls → Prefab Custom Addon 分组里, 玩家可以改键.
@@ -27,8 +27,8 @@ public class PackBrowserKeyHandler {
 
     public static final String KEY_CATEGORY = "key.categories.prefab_custom_addon";
 
-    public static KeyMapping OPEN_BROWSER;  // Z 默认
     public static KeyMapping OPEN_CREATOR;  // X 默认
+    public static KeyMapping OPEN_MCS_MARKET; // I 默认 → 蓝图广场 (mcschematic.top)
     /** 预览模式下建造键 (默认左 ALT). 注册成 KeyMapping 后玩家可在
      *  选项→控制→按键绑定 里改键 (玩家反馈: ALT 被硬占用且改不了). */
     public static KeyMapping BUILD_AT_PREVIEW;
@@ -51,15 +51,15 @@ public class PackBrowserKeyHandler {
 
     /** 构造, 在 mod 启动时调用 */
     public static void register() {
-        OPEN_BROWSER = new KeyMapping(
-            "key.prefab_custom_addon.open_browser",
-            InputConstants.Type.KEYSYM,
-            GLFW.GLFW_KEY_Z,
-            KEY_CATEGORY);
         OPEN_CREATOR = new KeyMapping(
             "key.prefab_custom_addon.open_creator",
             InputConstants.Type.KEYSYM,
             GLFW.GLFW_KEY_X,
+            KEY_CATEGORY);
+        OPEN_MCS_MARKET = new KeyMapping(
+            "key.prefab_custom_addon.open_mcs_market",
+            InputConstants.Type.KEYSYM,
+            GLFW.GLFW_KEY_I,
             KEY_CATEGORY);
         BUILD_AT_PREVIEW = new KeyMapping(
             "key.prefab_custom_addon.build_at_preview",
@@ -168,9 +168,9 @@ public class PackBrowserKeyHandler {
     /** NeoForge 会在合适时机调用这个把 key mapping 注册到 Controls 菜单 */
     @SubscribeEvent(priority = EventPriority.NORMAL)
     public static void onRegisterKeyMappings(RegisterKeyMappingsEvent event) {
-        if (OPEN_BROWSER == null) register();
-        event.register(OPEN_BROWSER);
+        if (OPEN_CREATOR == null) register();
         event.register(OPEN_CREATOR);
+        event.register(OPEN_MCS_MARKET);
         event.register(BUILD_AT_PREVIEW);
         event.register(PREVIEW_FORWARD);
         event.register(PREVIEW_BACK);
@@ -195,18 +195,18 @@ public class PackBrowserKeyHandler {
         if (mc.level == null) return;
         if (mc.screen != null) return;  // 已有 GUI 打开时不响应
 
-        if (OPEN_BROWSER == null) return;  // 还没注册
-
-        // Z 键 → 建筑浏览器 (浏览/下载) - 现有 6 tab 浏览器
-        while (OPEN_BROWSER.consumeClick()) {
-            PrefabCustomAddon.LOGGER.info("[Z-KEY] Opening building browser");
-            Minecraft.getInstance().setScreen(new GuiExtensionPackBrowser());
-        }
+        if (OPEN_CREATOR == null) return;  // 还没注册
 
         // X 键 → 独立编辑器 GUI (3 tab: 创建建筑 / 编辑建筑 / 设置)
         while (OPEN_CREATOR.consumeClick()) {
-            PrefabCustomAddon.LOGGER.info("[X-KEY] Opening building creator (3-tab)");
-            Minecraft.getInstance().setScreen(new GuiExtensionPackEditor());
+            PrefabCustomAddon.LOGGER.info("[X-KEY] Opening building creator (LDLib2)");
+            GuiExtensionPackEditor.open();
+        }
+
+        // I 键 → 蓝图广场 (mcschematic.top 浏览/搜索/下载)
+        while (OPEN_MCS_MARKET.consumeClick()) {
+            PrefabCustomAddon.LOGGER.info("[I-KEY] Opening blueprint market (mcschematic.top)");
+            GuiBlueprintMarket.open();
         }
     }
 }

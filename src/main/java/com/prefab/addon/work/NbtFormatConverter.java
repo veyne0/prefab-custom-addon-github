@@ -59,6 +59,8 @@ public class NbtFormatConverter {
                     mods.add(ns);
                 }
             }
+            // 依赖只看 palette (建造实际消费的方块); 箱子/展示框里的 mod 物品只是装饰性
+            // BE 数据, 不参与建造与材料计算, 刻意不识别以免依赖误报
         } catch (Throwable t) {
             PrefabCustomAddon.LOGGER.warn("[NBT-DEBUG] extractModIds 失败 (非致命): {}", t.getMessage());
         }

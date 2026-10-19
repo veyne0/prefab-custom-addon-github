@@ -141,14 +141,62 @@ public class CustomStructurePreviewRenderer {
             lastRenderedFacing = currentConfiguration.houseFacing;
         }
 
+        // === 帧耗时剖析 (定位预览掉帧): 记录相邻两次本事件的间隔 (= 真实帧时间) 和 renderPreview 耗时,
+        //     每 60 tick 汇总一次. avgFrame≈renderAvg → 时间花在我们渲染里;
+        //     avgFrame 高但 renderAvg 低 → 时间花在别处 (tick 逻辑/GC/其他 mod/vanilla);
+        //     maxFrame 远大于 avgFrame → 周期性卡顿 (每 tick/每 N tick 的高开销操作). ===
+        long profNow = System.nanoTime();
+        if (profLastFrameNano != 0L) {
+            long gap = profNow - profLastFrameNano;
+            if (gap > 0 && gap < 1_000_000_000L) {  // 忽略 >1s 的异常间隔 (切窗口/断点)
+                profFrameNanoSum += gap;
+                profFrameCount++;
+                if (gap > profFrameNanoMax) profFrameNanoMax = gap;
+            }
+        }
+        profLastFrameNano = profNow;
+
         try {
+            long t0 = System.nanoTime();
             renderPreview(currentStructure, currentConfiguration, event);
+            long renderNano = System.nanoTime() - t0;
+            profRenderNanoSum += renderNano;
+            if (renderNano > profRenderNanoMax) profRenderNanoMax = renderNano;
         } catch (Throwable t) {
             if (firstErrorLogged.compareAndSet(false, true)) {
                 PrefabCustomAddon.LOGGER.error("[PREVIEW-RENDER] fatal render exception", t);
             }
         }
+
+        Minecraft profMc = Minecraft.getInstance();
+        // 异常时才输出 (正常 avgFrame≈5ms): 下次"预览掉帧"复现时日志会自动抓到现场
+        if (profMc.player != null && (profMc.player.tickCount % 60) == 0 && profLogTick != profMc.player.tickCount) {
+            profLogTick = profMc.player.tickCount;
+            if (profFrameCount > 0 && profFrameNanoSum / (double) profFrameCount > 25.0e6) {
+                PrefabCustomAddon.LOGGER.warn(
+                    "[PREVIEW-PROF] 预览帧率异常: frames={} avgFrame={}ms maxFrame={}ms | renderAvg={}ms renderMax={}ms",
+                    profFrameCount,
+                    String.format("%.2f", profFrameNanoSum / (double) profFrameCount / 1.0e6),
+                    String.format("%.2f", profFrameNanoMax / 1.0e6),
+                    String.format("%.2f", profRenderNanoSum / (double) profFrameCount / 1.0e6),
+                    String.format("%.2f", profRenderNanoMax / 1.0e6));
+            }
+            profFrameNanoSum = 0L;
+            profFrameNanoMax = 0L;
+            profFrameCount = 0;
+            profRenderNanoSum = 0L;
+            profRenderNanoMax = 0L;
+        }
     }
+
+    // === 帧剖析累积器 ===
+    private static long profLastFrameNano = 0L;
+    private static long profFrameNanoSum = 0L;
+    private static long profFrameNanoMax = 0L;
+    private static int profFrameCount = 0;
+    private static long profRenderNanoSum = 0L;
+    private static long profRenderNanoMax = 0L;
+    private static int profLogTick = -1;
 
     private static void renderPreview(
             Structure currentStructure,

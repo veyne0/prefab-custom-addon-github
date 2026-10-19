@@ -2,7 +2,9 @@ package com.prefab.addon.extension;
 
 import com.prefab.addon.PrefabCustomAddon;
 import com.prefab.addon.work.DependencyChecker;
-import net.minecraft.client.Minecraft;
+// 注意: 本类会被服务端 (findLocalBuildingFallback 兜底) 调用, 不能引用 Minecraft 类,
+// gameDir 统一用 FMLPaths.GAMEDIR (客户端与服务端取值一致).
+import net.neoforged.fml.loading.FMLPaths;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -37,19 +39,24 @@ public class LocalBuildingScanner {
 
     /** 获取 prefab-download/ 根目录 (位于 .minecraft/prefab-download/). */
     public static Path getDownloadRoot() {
-        Path gameDir = Minecraft.getInstance().gameDirectory.toPath();
+        Path gameDir = FMLPaths.GAMEDIR.get();
         return gameDir.resolve("prefab-download");
+    }
+
+    /** 获取蓝图广场下载目录 (prefab-mcs/, 与 McsApiClient.downloadDir() 一致). */
+    public static Path getMcsRoot() {
+        return FMLPaths.GAMEDIR.get().resolve("prefab-mcs");
     }
 
     /** 获取老拓展包工作区根目录 (prefab-work/), 兼容旧版本. */
     public static Path getWorkRoot() {
-        Path gameDir = Minecraft.getInstance().gameDirectory.toPath();
+        Path gameDir = FMLPaths.GAMEDIR.get();
         return gameDir.resolve("prefab-work");
     }
 
     /** 获取 prefab-extension/ 根目录. 优先 .minecraft/prefab-extension/, 找不到时回退到 versions/<ver>/prefab-extension/. */
     public static Path getExtensionRoot() {
-        Path gameDir = Minecraft.getInstance().gameDirectory.toPath();
+        Path gameDir = FMLPaths.GAMEDIR.get();
         Path rootExt = gameDir.resolve("prefab-extension");
         if (Files.exists(rootExt)) return rootExt;
         Path versionsDir = gameDir.resolve("versions");
@@ -204,26 +211,35 @@ public class LocalBuildingScanner {
     }
 
     /**
-     * 扫描并合并 prefab-extension/ + prefab-download/ (用于"建筑" tab).
+     * 扫描并合并 prefab-extension/ + prefab-download/ + prefab-mcs/ (用于"建筑" tab).
      * 同 id 时优先用 prefab-extension/ 里的 (玩家本地副本优先).
      *
      * <p>兼容老版本: 也扫 prefab-work/&lt;packId&gt;/construction/ 下的旧拓展包建筑.</p>
+     * <p>服务端 ALT 建造兜底查找 (findLocalBuildingFallback) 也走这里 —
+     * 必须把蓝图广场的 prefab-mcs/ 算进来, 否则广场下载的建筑 "找不到建筑".</p>
      */
     public static List<LocalBuilding> scanAll() {
         Map<String, LocalBuilding> byId = new HashMap<>();
         // 先扫 prefab-extension/ (本地的优先, 后扫会被覆盖, 所以先扫)
         Path extRoot = getExtensionRoot();
         Path dlRoot = getDownloadRoot();
+        Path mcsRoot = getMcsRoot();
         Path workRoot = getWorkRoot();
-        PrefabCustomAddon.LOGGER.info("[DIAG-LBS] 扫描 extension root = {}, download root = {}, work root = {}",
-            extRoot, dlRoot, workRoot);
-        PrefabCustomAddon.LOGGER.info("[DIAG-LBS]   extRoot 存在? {}, dlRoot 存在? {}, workRoot 存在? {}",
-            Files.exists(extRoot), Files.exists(dlRoot), Files.exists(workRoot));
+        PrefabCustomAddon.LOGGER.info("[DIAG-LBS] 扫描 extension root = {}, download root = {}, mcs root = {}, work root = {}",
+            extRoot, dlRoot, mcsRoot, workRoot);
+        PrefabCustomAddon.LOGGER.info("[DIAG-LBS]   extRoot 存在? {}, dlRoot 存在? {}, mcsRoot 存在? {}, workRoot 存在? {}",
+            Files.exists(extRoot), Files.exists(dlRoot), Files.exists(mcsRoot), Files.exists(workRoot));
         for (LocalBuilding lb : scanDir(extRoot, "extension")) {
             byId.put(lb.id, lb);
         }
         for (LocalBuilding lb : scanDir(dlRoot, "download")) {
             // prefab-extension 里已有同名建筑, 跳过
+            if (!byId.containsKey(lb.id)) {
+                byId.put(lb.id, lb);
+            }
+        }
+        // 蓝图广场下载目录 (prefab-mcs/, 同样单文件三件套)
+        for (LocalBuilding lb : scanDir(mcsRoot, "mcs")) {
             if (!byId.containsKey(lb.id)) {
                 byId.put(lb.id, lb);
             }

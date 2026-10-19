@@ -58,6 +58,15 @@ public class PrefabCustomAddon {
         }
     }
 
+    /**
+     * 服务端→客户端聊天消息专用: 返回未解析的 TranslatableComponent, 由玩家客户端按自己的语言显示.
+     * <p>不要在服务端用 {@link #tr} 后再 literal() 发出去 —— 专用服务器上 tr() 只能解析到
+     * 服务端默认语言 (en_us), 玩家看到的永远是英文.</p>
+     */
+    public static net.minecraft.network.chat.MutableComponent trc(String key, Object... args) {
+        return net.minecraft.network.chat.Component.translatable(key, args);
+    }
+
     public static final DeferredRegister.Items ITEMS = DeferredRegister.createItems(MOD_ID);
     // 自定义创造栏（让玩家和 JEI 都能找到我们的自定义蓝图）
     public static final DeferredRegister<CreativeModeTab> CREATIVE_TABS =
@@ -86,6 +95,12 @@ public class PrefabCustomAddon {
             () -> new com.prefab.addon.items.MiniBuildingBlockItem(
                 com.prefab.addon.blocks.PrefabBlockEntities.MINI_BUILDING_BLOCK.get(),
                 new Item.Properties().stacksTo(1)));
+
+    // 缺失方块 ("?" 方块) 的物品形态: 创造栏可拿, 方便服主手动替换/演示
+    public static final DeferredItem<Item> MISSING_BLOCK_ITEM = ITEMS.register("missing_block",
+            () -> new net.minecraft.world.item.BlockItem(
+                com.prefab.addon.blocks.PrefabBlockEntities.MISSING_BLOCK.get(),
+                new Item.Properties()));
 
     // 操作手杖 (Operation Wand) — 移动/复制模式, 无耐久
     public static final DeferredItem<Item> OPERATION_WAND = ITEMS.register("operation_wand",
@@ -323,6 +338,7 @@ public class PrefabCustomAddon {
             event.accept(OPERATION_WAND.get());
             event.accept(MULTIBLOCK_BLUEPRINT.get());
             event.accept(TerminalRegistry.TERMINAL.get());
+            event.accept(MISSING_BLOCK_ITEM.get());
             // 8 个外包建筑蓝图(每个 Item 硬编码了 buildingId,直接 accept 即可)
             for (DeferredItem<Item> b : OUTSOURCE_BLUEPRINTS) {
                 event.accept(b.get());
@@ -333,6 +349,8 @@ public class PrefabCustomAddon {
     public void onServerStarting(final ServerStartingEvent event) {
         LOGGER.info("Initializing extension pack manager");
         ExtensionPackManager.getInstance().initialize(event.getServer());
+        // 建筑管理: 加载玩家上传权限表 (config/prefab_custom_addon/upload_perms.json)
+        com.prefab.addon.network.BuildingManageServer.getInstance().loadPerms();
         // 云端建筑: 注入 server 实例, 后续 saveToDisk 拿 worldDir 拼路径
         CloudBuildingManager.getInstance().setServer(event.getServer());
         // 外包建筑: 扫描 <serverDir>/prefab-outsource/ 下的 .zip
@@ -436,15 +454,13 @@ public class PrefabCustomAddon {
             //   - 联机: 服务端 onPlayerJoin 走 setServer + 读盘 + 推 sync
             //   - 单机: getInstance() 是同一份, 客户端 cache 在收到 sync 后填充
             CloudBuildingManager.getInstance().onPlayerJoin(sp);
-
-            // === 欢迎消息 (服务端路径, 整合服/专用服的玩家) ===
-            sp.sendSystemMessage(net.minecraft.network.chat.Component.literal(tr("welcome.thanks")));
         }
     }
 
     public void onPlayerLoggedOut(final PlayerEvent.PlayerLoggedOutEvent event) {
         if (event.getEntity() instanceof ServerPlayer sp) {
             ServerPackSyncServer.getInstance().onPlayerLeave(sp);
+            com.prefab.addon.network.BuildingUploadServer.getInstance().onPlayerLeave(sp);
         }
     }
 

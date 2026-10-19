@@ -29,7 +29,7 @@ public class GuiBlueprintBuildingPicker extends Screen {
 
     private static Consumer<LocalBuilding> pendingCallback = null;
     /** 父 Editor 引用 — 点完建筑后回到父, 不会丢失 tab 状态. */
-    private static GuiExtensionPackEditor pendingParent = null;
+    private static Screen pendingParent = null;
 
     private final List<LocalBuilding> all = new ArrayList<>();
     private List<LocalBuilding> filtered = new ArrayList<>();
@@ -47,7 +47,7 @@ public class GuiBlueprintBuildingPicker extends Screen {
      * 静态入口: 父界面调用这个, 进入子屏; 点完建筑后回调, 然后回到父界面.
      * 父 Editor 引用会记下, 选完直接 setScreen(parent) 还原, tab 状态不丢.
      */
-    public static void open(GuiExtensionPackEditor parent, Consumer<LocalBuilding> cb) {
+    public static void open(Screen parent, Consumer<LocalBuilding> cb) {
         pendingCallback = cb;
         pendingParent = parent;
         Minecraft.getInstance().setScreen(new GuiBlueprintBuildingPicker());
@@ -240,12 +240,12 @@ public class GuiBlueprintBuildingPicker extends Screen {
         }
         pendingCallback = null;
         // 回到父 Editor (保留原 tab 状态), 没有父就新开一个
-        GuiExtensionPackEditor parent = pendingParent;
+        Screen parent = pendingParent;
         pendingParent = null;
         if (parent != null) {
             Minecraft.getInstance().setScreen(parent);
         } else {
-            Minecraft.getInstance().setScreen(new GuiExtensionPackEditor());
+            GuiExtensionPackEditor.open();
         }
     }
 }

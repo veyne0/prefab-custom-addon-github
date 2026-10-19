@@ -111,6 +111,9 @@ public final class GuiConstructionDetail {
     private static volatile List<BlockData> parseResult;
     private static volatile boolean parseComplete;
     private static volatile boolean parseFailed;
+    // 尺寸栏回填: 解析完成后把左侧信息面板的 尺寸 从文件大小换成真实方块尺寸
+    private static TextElement sizeValueEl;
+    private static boolean sizeUpdated;
     private static final Object parseLock = new Object();
 
     // === 增量渲染状态 ===
@@ -330,6 +333,9 @@ public final class GuiConstructionDetail {
             parseResult = null;
             parseComplete = false;
             parseFailed = false;
+            // 尺寸回填状态 (解析完成后把 "13 kB" 之类文件大小换成真实方块尺寸)
+            sizeValueEl = null;
+            sizeUpdated = false;
             renderScene = null;
             renderWorld = null;
             renderBlocks = null;
@@ -888,6 +894,15 @@ public final class GuiConstructionDetail {
             }
 
             // 5b) parse 完成后, 初始化 render (一次)
+            if (parseComplete && !sizeUpdated) {
+                sizeUpdated = true;
+                int[] dims = computeSize(parseResult);
+                if (dims != null) {
+                    String s = dims[0] + "x" + dims[1] + "x" + dims[2];
+                    construction.setSize(s);
+                    if (sizeValueEl != null) sizeValueEl.setText(s);
+                }
+            }
             if (parseComplete && !parseFailed && renderScene == null && !renderActive && !renderDone) {
                 PrefabCustomAddon.LOGGER.info("[DETAIL] tick#{} 调用 initRender", tickNum);
                 initRender();
@@ -1028,7 +1043,8 @@ public final class GuiConstructionDetail {
         } else {
             sizeStr = com.prefab.addon.PrefabCustomAddon.tr("gui.detail.unknown");
         }
-        addField(content, com.prefab.addon.PrefabCustomAddon.tr("gui.detail.size"), sizeStr);
+        // 持引用: 异步解析完成后 (tick 5b) 把文件大小 "13 kB" 换成真实方块尺寸 "25x36x18"
+        sizeValueEl = addField(content, com.prefab.addon.PrefabCustomAddon.tr("gui.detail.size"), sizeStr);
 
         // 蓝图格式: 用 construction.format (创建建筑时填的, 保存到 construction/<id>.txt).
         //   - 创建过的建筑 (有 "蓝图格式:" 行): 显示用户填的 (nbt / litematic / schem)
@@ -1061,8 +1077,42 @@ public final class GuiConstructionDetail {
         descEl.setText((desc == null || desc.isEmpty())
             ? com.prefab.addon.PrefabCustomAddon.tr("gui.detail.desc_empty") : desc);
         descEl.textStyle(t -> t.textColor(0xCCCCCC).textWrap(TextWrap.WRAP));
-        descEl.layout(l -> l.widthPercent(100).height(50));
+        // 高度按真实换行行数计算 (固定 50px 长描述会溢出压到下面的链接按钮).
+        // 估宽必须用左栏真实可用宽度: infoScroller 140 - paddingL10 - paddingR6 - 滚动条8 ≈ 116.
+        // 之前用 280 估算导致行数偏少 → 描述框偏矮 → 文字溢出到滚动区浅灰底色上 (左下角空白块).
+        String descText = (desc == null || desc.isEmpty())
+            ? com.prefab.addon.PrefabCustomAddon.tr("gui.detail.desc_empty") : desc;
+        int descLines = net.minecraft.client.Minecraft.getInstance().font
+            .split(net.minecraft.network.chat.Component.literal(descText), 116).size();
+        final int descH = Math.max(14, descLines * 10 + 2);
+        descEl.layout(l -> l.widthPercent(100).height(descH));
         content.addChild(descEl);
+
+        // 描述里的 URL → 可点击按钮 (点击后用系统浏览器打开)
+        if (desc != null && !desc.isEmpty()) {
+            java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("https?://[^\\s]+").matcher(desc);
+            int linkIdx = 0;
+            while (m.find() && linkIdx < 3) {
+                String url = m.group();
+                // 去掉常见尾随标点 (中文句号/逗号/括号)
+                url = url.replaceAll("[。，）)\\]】.]+$", "");
+                String label = url.length() > 42 ? url.substring(0, 39) + "..." : url;
+                final String linkUrl = url;
+                Button linkBtn = new Button().setText(label, false);
+                linkBtn.textStyle(t -> t.textColor(0x66AAFF));
+                linkBtn.layout(l -> l.widthPercent(100).height(12).marginTop(1));
+                linkBtn.setOnClick(e -> {
+                    try {
+                        net.minecraft.Util.getPlatform().openUri(java.net.URI.create(linkUrl));
+                    } catch (Exception ex) {
+                        com.prefab.addon.PrefabCustomAddon.LOGGER.warn("[DETAIL] 打开链接失败: {}", linkUrl, ex);
+                    }
+                });
+                content.addChild(linkBtn);
+                linkIdx++;
+            }
+        }
 
         scroller.addScrollViewChild(content);
         return scroller;
@@ -1091,8 +1141,22 @@ public final class GuiConstructionDetail {
             int colon = cleanId.indexOf(':');
             if (colon > 0) cleanId = cleanId.substring(0, colon);
             if (hasCheckResult && lastMissingMods.contains(cleanId)) {
-                // 缺失 - 红色 + 红叉
-                addValueLine(depListContainer, com.prefab.addon.PrefabCustomAddon.tr("gui.detail.dep_missing", d), 0xFF5555);
+                // 缺失 - 红色 + 红叉 + [🔍] Modrinth 搜索按钮
+                final String depId = cleanId;
+                UIElement row = new UIElement();
+                row.layout(l -> l.flexDirection(dev.vfyjxf.taffy.style.FlexDirection.ROW)
+                        .widthPercent(100).height(12).gapAll(2));
+                depListContainer.addChild(row);
+                TextElement miss = new TextElement();
+                miss.setText(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.dep_missing", d));
+                miss.textStyle(t -> t.textColor(0xFF5555));
+                miss.layout(l -> l.flexGrow(1).height(12).minWidth(0));
+                row.addChild(miss);
+                com.lowdragmc.lowdraglib2.gui.ui.elements.Button search =
+                        new com.lowdragmc.lowdraglib2.gui.ui.elements.Button().setText("🔍", false);
+                search.layout(l -> l.width(18).height(12));
+                search.setOnClick(e -> GuiModrinthSearch.open(depId));
+                row.addChild(search);
             } else if (hasCheckResult) {
                 // 已安装 - 绿色 + 绿勾
                 addValueLine(depListContainer, com.prefab.addon.PrefabCustomAddon.tr("gui.detail.dep_present", d), 0x55FF55);
@@ -1103,9 +1167,9 @@ public final class GuiConstructionDetail {
         }
     }
 
-    private static void addField(UIElement parent, String label, String value) {
+    private static TextElement addField(UIElement parent, String label, String value) {
         addFieldLabel(parent, label);
-        addValueLine(parent, value != null ? value : "", 0xFFFFFF);
+        return addValueLine(parent, value != null ? value : "", 0xFFFFFF);
     }
 
     private static void addFieldLabel(UIElement parent, String label) {
@@ -1116,12 +1180,13 @@ public final class GuiConstructionDetail {
         parent.addChild(lbl);
     }
 
-    private static void addValueLine(UIElement parent, String text, int color) {
+    private static TextElement addValueLine(UIElement parent, String text, int color) {
         TextElement val = new TextElement();
         val.setText(text);
         val.textStyle(t -> t.textColor(color));
         val.layout(l -> l.widthPercent(100).height(12));
         parent.addChild(val);
+        return val;
     }
 
     // === 计算尺寸 ===

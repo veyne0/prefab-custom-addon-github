@@ -798,12 +798,14 @@ public final class GuiCreateBuildingInfo {
         UIElement selectRow = new UIElement();
         selectRow.layout(l -> l.widthPercent(100).height(20)
             .flexDirection(FlexDirection.ROW).gapAll(4).marginTop(2));
-        Button btnChooseNbt = new Button().setText(com.prefab.addon.PrefabCustomAddon.tr("gui.create_building.choose_nbt"));
+        Button btnChooseNbt = new Button().setText(com.prefab.addon.PrefabCustomAddon.tr(nbtData != null
+            ? "gui.create_building.rechoose_nbt" : "gui.create_building.choose_nbt"));
         btnChooseNbt.setOnClick(e -> openNbtChooser());
         btnChooseNbt.layout(l -> l.flexGrow(1).heightPercent(100));
         selectRow.addChild(btnChooseNbt);
 
-        Button btnPickInWorld = new Button().setText(com.prefab.addon.PrefabCustomAddon.tr("gui.create_building.pick_in_world"));
+        Button btnPickInWorld = new Button().setText(com.prefab.addon.PrefabCustomAddon.tr(nbtData != null
+            ? "gui.create_building.repick_in_world" : "gui.create_building.pick_in_world"));
         btnPickInWorld.setOnClick(e -> startInWorldPicking());
         btnPickInWorld.layout(l -> l.flexGrow(1).heightPercent(100));
         selectRow.addChild(btnPickInWorld);
@@ -1573,13 +1575,8 @@ public final class GuiCreateBuildingInfo {
                 fieldDescValue = "";
                 if (descTf != null) descTf.setText("");
             }
-            // 依赖
+            // 依赖: 只取新建筑的 NBT 模组 (换建筑时不能残留上一个的依赖)
             java.util.LinkedHashSet<String> depSet = new java.util.LinkedHashSet<>();
-            if (fieldDepsValue != null && !fieldDepsValue.trim().isEmpty()) {
-                for (String d : fieldDepsValue.split("[,，;；\\s]+")) {
-                    if (!d.isEmpty()) depSet.add(d.trim());
-                }
-            }
             for (String m : info.modIds) depSet.add(m);
             depSet.add("prefab");
             depSet.remove("minecraft");
@@ -1672,14 +1669,8 @@ public final class GuiCreateBuildingInfo {
             }
             if (sizeEl != null) sizeEl.setText(fieldSizeValue);
 
-            // 合并依赖: 已有 deps + nbtInfo modIds + prefab
+            // 依赖: 只取本次选区的模组 (重新选区=换建筑, 不能残留上一次的依赖)
             java.util.LinkedHashSet<String> depSet = new java.util.LinkedHashSet<>();
-            String preservedDeps = preserved == null ? "" : preserved.deps;
-            if (preservedDeps != null && !preservedDeps.trim().isEmpty()) {
-                for (String d : preservedDeps.split("[,，;；\\s]+")) {
-                    if (!d.isEmpty()) depSet.add(d.trim());
-                }
-            }
             if (nbtInfo != null) for (String m : nbtInfo.modIds) depSet.add(m);
             if (modIds != null) for (String m : modIds) depSet.add(m);
             depSet.add("prefab");

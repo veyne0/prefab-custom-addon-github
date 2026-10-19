@@ -257,11 +257,23 @@ public class DependencyChecker {
         }
     }
 
+    /** modid 模糊归一化: 小写并去掉下划线/连字符, 用于命名空间与 modid 差个分隔符的匹配. */
+    private static String normalizeId(String id) {
+        if (id == null) return "";
+        return id.toLowerCase(Locale.ROOT).replace("_", "").replace("-", "");
+    }
+
     /**
      * 检查依赖列表 (modid) 哪些缺失, 哪些已存在。
      */
     public static CheckResult check(List<String> dependencies) {
         Set<String> scanned = scanInstalledModIds();
+        // 模糊索引: modid 去掉下划线/连字符 → 实际 modid
+        // (建筑 NBT 里的方块命名空间常与 jar modid 差个下划线: create_connected vs createconnected)
+        Map<String, String> normIndex = new HashMap<>();
+        for (String id : scanned) {
+            normIndex.putIfAbsent(normalizeId(id), id);
+        }
         // 用 cleanDepList 去重 + 清理 (去掉作者注释等)
         List<String> deps = cleanDepList(dependencies);
         List<String> missing = new ArrayList<>();
@@ -289,6 +301,14 @@ public class DependencyChecker {
                     if (e.getValue().contains(key) && scanned.contains(e.getKey())) {
                         hit = true; break;
                     }
+                }
+            }
+            // 4) 模糊命中: 忽略下划线/连字符 (create_connected == createconnected)
+            if (!hit) {
+                String mapped = normIndex.get(normalizeId(key));
+                if (mapped != null) {
+                    hit = true;
+                    PrefabCustomAddon.LOGGER.info("[DEPS] fuzzy match: '{}' -> installed '{}'", key, mapped);
                 }
             }
             if (hit) {

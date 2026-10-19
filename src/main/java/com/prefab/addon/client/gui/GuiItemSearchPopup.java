@@ -19,6 +19,7 @@ import com.prefab.addon.PrefabCustomAddon;
 import dev.vfyjxf.taffy.style.AlignItems;
 import dev.vfyjxf.taffy.style.FlexDirection;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
@@ -54,7 +55,7 @@ public final class GuiItemSearchPopup {
     /** 单行高. */
     private static final int ROW_H = 18;
 
-    private static GuiExtensionPackEditor pendingParent = null;
+    private static Screen pendingParent = null;
     private static int pendingCellIdx = -1;
     private static Consumer<String> pendingCallback = null;
     /**
@@ -72,7 +73,7 @@ public final class GuiItemSearchPopup {
     /**
      * 静态入口: 父 Editor 调这个, 选完物品后回调 item id 字符串, 然后回到 Editor.
      */
-    public static void open(GuiExtensionPackEditor parent, int cellIdx, Consumer<String> cb) {
+    public static void open(Screen parent, int cellIdx, Consumer<String> cb) {
         pendingParent = parent;
         pendingCellIdx = cellIdx;
         pendingCallback = cb;
@@ -282,7 +283,7 @@ public final class GuiItemSearchPopup {
 
     private static void returnToParent() {
         // 拍快照, 然后清空静态引用, 避免重复 commit
-        GuiExtensionPackEditor parent = pendingParent;
+        Screen parent = pendingParent;
         pendingCallback = null;
         pendingParent = null;
         pendingCellIdx = -1;

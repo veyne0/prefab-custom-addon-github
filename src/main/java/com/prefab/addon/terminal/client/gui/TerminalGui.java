@@ -1,5 +1,6 @@
 package com.prefab.addon.terminal.client.gui;
 
+import com.lowdragmc.lowdraglib2.gui.texture.ColorRectTexture;
 import com.lowdragmc.lowdraglib2.gui.texture.ItemStackTexture;
 import com.lowdragmc.lowdraglib2.gui.texture.SpriteTexture;
 import com.lowdragmc.lowdraglib2.gui.ui.UIElement;
@@ -26,6 +27,7 @@ import com.prefab.addon.client.gui.CustomStructureGui;
 import com.prefab.addon.client.gui.GuiConstructionDetail;
 import com.prefab.addon.client.gui.GuiCreateBuildingInfo;
 import com.prefab.addon.client.gui.GuiExtensionPackEditor;
+import com.prefab.addon.client.gui.SubmitMaterialIndex;
 import com.prefab.addon.config.CategoryManager;
 import com.prefab.addon.config.BuildAnimationMode;
 import com.prefab.addon.config.PlayerPreferences;
@@ -112,6 +114,8 @@ public final class TerminalGui {
     /** 相册浏览状态快照: 上次正在查看的照片文件名 (null = 网格页), 重开终端后回到查看器. */
     @Nullable
     private static String lastAlbumPhoto = null;
+    /** 相册网格分页页码 (0-based, ◀ x/y ▶; 翻页/重建后保留, 越界由渲染时 clamp 收敛). */
+    private static int albumPage = 0;
 
     /** 浏览器浏览状态快照: 最近访问的地址, 重开浏览器 tab 时恢复 (弹窗 tab 的跳转同样计入). */
     private static String lastBrowserUrl = DEFAULT_BROWSER_URL;
@@ -462,6 +466,10 @@ public final class TerminalGui {
     /** 应用中心: 所有应用的卡片列表, 每张卡片可安装/卸载 (应用中心自身不可卸载). */
     /** 应用中心: 当前页码 (0 起, 每页 6 个) */
     private static int appStorePage = 0;
+    /** "下载建筑"应用列表页码 (0 起) */
+    private static int webGetPage = 0;
+    /** "材料"应用列表页码 (0 起) */
+    private static int materialPage = 0;
 
     private static UIElement createAppStoreContent() {
         UIElement content = new UIElement();
@@ -635,6 +643,9 @@ public final class TerminalGui {
         if (app.id().equals("buildings")) {
             return createBuildingsContent();
         }
+        if (app.id().equals("material")) {
+            return createMaterialContent();
+        }
         if (app.id().equals("create")) {
             return createCreateBuildingContent();
         }
@@ -799,13 +810,51 @@ public final class TerminalGui {
             scroll.viewContainer.layout(l -> l.flexDirection(FlexDirection.COLUMN).gapAll(10.0f));
             final int cols = 2;
             var list = webGetList;
-            for (int i = 0; i < list.size(); i += cols) {
+            // 分页: 每页 = 2 列 × N 行 (卡片 50 高 + 行距 10; 预留工具栏/状态行 + 分页条)
+            int rowsPerPage = Math.max(2, (Minecraft.getInstance().getWindow().getGuiScaledHeight() - 120) / 60);
+            int perPage = cols * rowsPerPage;
+            int totalPages = (list.size() + perPage - 1) / perPage;
+            if (webGetPage >= totalPages) webGetPage = totalPages - 1;
+            if (webGetPage < 0) webGetPage = 0;
+            int from = webGetPage * perPage;
+            int to = Math.min(from + perPage, list.size());
+            for (int i = from; i < to; i += cols) {
                 UIElement row = new UIElement();
                 row.layout(l -> l.flexDirection(FlexDirection.ROW).gapAll(10.0f));
-                for (int j = i; j < Math.min(i + cols, list.size()); j++) {
+                for (int j = i; j < Math.min(i + cols, to); j++) {
                     row.addChild(webGetCard(list.get(j), rebuild[0]));
                 }
                 scroll.addScrollViewChild(row);
+            }
+            // 翻页条 (只有一页时不显示; 列表无输入框, 整体重建不打断任何东西)
+            if (totalPages > 1) {
+                UIElement pageBar = new UIElement();
+                pageBar.layout(l -> l.flexDirection(FlexDirection.ROW).widthPercent(100.0f).height(14.0f).gapAll(4.0f));
+                Button prev = new Button().setText(I18n.get("gui.modern_terminal.page.prev"), false);
+                prev.layout(l -> l.width(40.0f).heightPercent(100.0f));
+                prev.setOnClick(e -> {
+                    if (webGetPage > 0) {
+                        webGetPage--;
+                        rebuild[0].run();
+                    }
+                });
+                pageBar.addChild(prev);
+                Label pageLabel = new Label();
+                pageLabel.setText(I18n.get("gui.modern_terminal.page.info",
+                        webGetPage + 1, totalPages), false);
+                pageLabel.textStyle(t -> t.textAlignHorizontal(Horizontal.CENTER).textColor(0xAAAAAA));
+                pageLabel.layout(l -> l.flexGrow(1.0f).heightPercent(100.0f));
+                pageBar.addChild(pageLabel);
+                Button next = new Button().setText(I18n.get("gui.modern_terminal.page.next"), false);
+                next.layout(l -> l.width(40.0f).heightPercent(100.0f));
+                next.setOnClick(e -> {
+                    if (webGetPage < totalPages - 1) {
+                        webGetPage++;
+                        rebuild[0].run();
+                    }
+                });
+                pageBar.addChild(next);
+                listHost.addChild(pageBar);
             }
         };
 
@@ -1093,23 +1142,37 @@ public final class TerminalGui {
             }
 
             // 缩略图网格 (wrap 换行)
+            UIElement gridCol = new UIElement();
+            gridCol.layout(l -> l.flexDirection(FlexDirection.COLUMN).flexGrow(1.0f).heightPercent(100.0f).gapAll(4.0f));
+            body.addChild(gridCol);
             ScrollerView scroll = new ScrollerView();
             scroll.style(s -> s.backgroundTexture(Sprites.RECT_DARK));
-            scroll.layout(l -> l.flexGrow(1.0f).heightPercent(100.0f));
-            body.addChild(scroll);
+            // 只用 flexGrow 撑满剩余高度 (gridCol = 100% 高度列, 下面还要放分页条);
+            // 若再叠 heightPercent(100), 基准尺寸先占满, 分页条会被挤出去裁掉
+            scroll.layout(l -> l.flexGrow(1.0f).minHeight(0.0f));
+            gridCol.addChild(scroll);
             // viewContainer 宽度不定 (ScrollerView 按内容算), flexWrap 在这里永远不触发;
             // 改为手动按每行 3 张分行走 ROW 布局, 确定性换行 (96*3+gap6*2=300, 最窄面板也放得下)
             scroll.viewContainer.layout(l -> l.flexDirection(FlexDirection.COLUMN).gapAll(6.0f));
 
             final int cols = 3;
-            for (int i = 0; i < list.size(); i += cols) {
+            // 分页: 每页 = 3 列 × N 行 (行数按窗口高度自适应, 缩略图 54 高 + 行距 6; 预留工具栏+分页条高度)
+            int rowsPerPage = Math.max(2, (Minecraft.getInstance().getWindow().getGuiScaledHeight() - 130) / 60);
+            int perPage = cols * rowsPerPage;
+            int totalPages = (list.size() + perPage - 1) / perPage;
+            if (albumPage >= totalPages) albumPage = totalPages - 1;
+            if (albumPage < 0) albumPage = 0;
+            int from = albumPage * perPage;
+            int to = Math.min(from + perPage, list.size());
+            for (int i = from; i < to; i += cols) {
                 UIElement row = new UIElement();
                 row.layout(l -> l.flexDirection(FlexDirection.ROW).gapAll(6.0f));
-                for (int j = i; j < Math.min(i + cols, list.size()); j++) {
+                for (int j = i; j < Math.min(i + cols, to); j++) {
                     String name = list.get(j);
                     Button cell = new Button();
                     // Button 的贴图走 buttonStyle (base/hover/pressed), 通用 style().backgroundTexture 会被忽略
-                    var photo = SpriteTexture.of(TerminalPhotoStore.texture(name));
+                    // 网格用缩略图纹理 (解码一次 + 缩小常驻缓存), 全尺寸只在查看器里加载 — 否则照片一多就卡
+                    var photo = SpriteTexture.of(TerminalPhotoStore.thumbnail(name));
                     cell.buttonStyle(s -> s.baseTexture(photo).hoverTexture(photo).pressedTexture(photo));
                     cell.noText();
                     cell.layout(l -> l.width(96.0f).height(54.0f));
@@ -1117,6 +1180,38 @@ public final class TerminalGui {
                     row.addChild(cell);
                 }
                 scroll.addScrollViewChild(row);
+            }
+
+            // 分页条: ◀ x/y ▶ (居中, 只有一页时不显示; 整体重建, 相册无输入框不怕打断)
+            if (totalPages > 1) {
+                UIElement pager = new UIElement();
+                pager.layout(l -> l.flexDirection(FlexDirection.ROW).widthPercent(100.0f).height(14.0f).gapAll(4.0f)
+                        .alignItems(AlignItems.CENTER).justifyContent(AlignContent.CENTER));
+                Button prev = new Button().setText("◀", false);
+                prev.layout(l -> l.width(20.0f).height(14.0f));
+                prev.setOnClick(e -> {
+                    if (albumPage > 0) {
+                        albumPage--;
+                        rebuildRoot[0].run();
+                    }
+                });
+                pager.addChild(prev);
+                Label pageLbl = new Label();
+                pageLbl.setText((albumPage + 1) + " / " + totalPages, false);
+                pageLbl.textStyle(t -> t.textColor(0xAAAAAA));
+                pageLbl.layout(l -> l.width(40.0f).height(14.0f).alignItems(AlignItems.CENTER)
+                        .justifyContent(AlignContent.CENTER));
+                pager.addChild(pageLbl);
+                Button next = new Button().setText("▶", false);
+                next.layout(l -> l.width(20.0f).height(14.0f));
+                next.setOnClick(e -> {
+                    if (albumPage < totalPages - 1) {
+                        albumPage++;
+                        rebuildRoot[0].run();
+                    }
+                });
+                pager.addChild(next);
+                gridCol.addChild(pager);
             }
 
             // 浏览状态保留: 上次正在查看的照片仍存在 → 直接回到查看器
@@ -1404,6 +1499,161 @@ public final class TerminalGui {
         return s.length() > max ? s.substring(0, max) + "…" : s;
     }
 
+    // ==================== "材料" 应用 (提交材料进度) ====================
+
+    /**
+     * "材料"应用: 与浏览器"提交材料" tab 同源 —— 列出交了一点但没交完的建筑,
+     * 进度条 + 已交/需求; 交齐提示可以建造. 点卡片进建筑详情 (返回时回到本应用).
+     */
+    private static UIElement createMaterialContent() {
+        UIElement content = new UIElement();
+        content.layout(l -> l.flexDirection(FlexDirection.COLUMN).widthPercent(100.0f).heightPercent(100.0f).gapAll(4.0f).paddingAll(4.0f));
+        Runnable[] rebuildRoot = {null};
+        rebuildRoot[0] = () -> {
+            content.clearAllChildren();
+            var player = Minecraft.getInstance().player;
+            List<SubmitMaterialIndex.Entry> entries = player == null ? List.of()
+                    : SubmitMaterialIndex.collect(collectBuildings(), player.getUUID());
+
+            UIElement toolbar = new UIElement();
+            toolbar.layout(l -> l.flexDirection(FlexDirection.ROW).widthPercent(100.0f).height(14.0f).gapAll(4.0f));
+            Label count = new Label();
+            count.setText(I18n.get("gui.modern_terminal.material.count", entries.size()), false);
+            count.textStyle(t -> t.textColor(0xAAAAAA).textShadow(false).fontSize(6.5f));
+            count.layout(l -> l.flexGrow(1.0f).heightPercent(100.0f));
+            toolbar.addChild(count);
+            Button refresh = new Button().setText(I18n.get("gui.modern_terminal.album.refresh"), false);
+            refresh.layout(l -> l.width(44.0f).height(14.0f));
+            refresh.setOnClick(e -> rebuildRoot[0].run());
+            toolbar.addChild(refresh);
+            content.addChild(toolbar);
+
+            if (entries.isEmpty()) {
+                Label empty = new Label();
+                empty.setText(I18n.get("submit.empty.title"), false);
+                empty.textStyle(t -> t.textAlignHorizontal(Horizontal.CENTER).textColor(0xAAAAAA).textShadow(false).fontSize(6.5f));
+                empty.layout(l -> l.alignItems(AlignItems.CENTER).justifyContent(AlignContent.CENTER).widthPercent(100.0f).heightPercent(100.0f));
+                content.addChild(empty);
+                return;
+            }
+
+            // ScrollerView 的 viewContainer 宽度按内容算, 行用固定宽 (同相册 3×96 的处理)
+            ScrollerView scroll = new ScrollerView();
+            scroll.style(s -> s.backgroundTexture(Sprites.RECT_DARK));
+            // 只用 flexGrow 撑剩余高度 (下面还要放分页条; 叠 heightPercent(100) 会把分页条挤出去裁掉)
+            scroll.layout(l -> l.flexGrow(1.0f).minHeight(0.0f));
+            content.addChild(scroll);
+            scroll.viewContainer.layout(l -> l.flexDirection(FlexDirection.COLUMN).gapAll(4.0f));
+            // 分页: 每页 N 行 (行 52 高 + 行距 4; 预留工具栏 + 分页条)
+            int rowsPerPage = Math.max(2, (Minecraft.getInstance().getWindow().getGuiScaledHeight() - 110) / 56);
+            int totalPages = (entries.size() + rowsPerPage - 1) / rowsPerPage;
+            if (materialPage >= totalPages) materialPage = totalPages - 1;
+            if (materialPage < 0) materialPage = 0;
+            int from = materialPage * rowsPerPage;
+            int to = Math.min(from + rowsPerPage, entries.size());
+            for (int i = from; i < to; i++) {
+                scroll.addScrollViewChild(materialRow(entries.get(i)));
+            }
+            // 翻页条 (只有一页时不显示; 无输入框, 整体重建不打断任何东西)
+            if (totalPages > 1) {
+                UIElement pageBar = new UIElement();
+                pageBar.layout(l -> l.flexDirection(FlexDirection.ROW).widthPercent(100.0f).height(14.0f).gapAll(4.0f));
+                Button prev = new Button().setText(I18n.get("gui.modern_terminal.page.prev"), false);
+                prev.layout(l -> l.width(40.0f).heightPercent(100.0f));
+                prev.setOnClick(e -> {
+                    if (materialPage > 0) {
+                        materialPage--;
+                        rebuildRoot[0].run();
+                    }
+                });
+                pageBar.addChild(prev);
+                Label pageLabel = new Label();
+                pageLabel.setText(I18n.get("gui.modern_terminal.page.info",
+                        materialPage + 1, totalPages), false);
+                pageLabel.textStyle(t -> t.textAlignHorizontal(Horizontal.CENTER).textColor(0xAAAAAA));
+                pageLabel.layout(l -> l.flexGrow(1.0f).heightPercent(100.0f));
+                pageBar.addChild(pageLabel);
+                Button next = new Button().setText(I18n.get("gui.modern_terminal.page.next"), false);
+                next.layout(l -> l.width(40.0f).heightPercent(100.0f));
+                next.setOnClick(e -> {
+                    if (materialPage < totalPages - 1) {
+                        materialPage++;
+                        rebuildRoot[0].run();
+                    }
+                });
+                pageBar.addChild(next);
+                content.addChild(pageBar);
+            }
+        };
+        rebuildRoot[0].run();
+        return content;
+    }
+
+    /** 提交进度行: 缩略图 + 名称 + 进度条 + 状态; 点缩略图进建筑详情 (返回回到本应用). */
+    private static UIElement materialRow(SubmitMaterialIndex.Entry en) {
+        UIElement row = new UIElement();
+        row.style(s -> s.backgroundTexture(Sprites.RECT_DARK));
+        row.layout(l -> l.flexDirection(FlexDirection.ROW).width(288.0f).height(52.0f).paddingAll(3.0f).gapAll(4.0f));
+
+        Button img = new Button();
+        img.noText();
+        img.layout(l -> l.width(40.0f).height(40.0f));
+        var rl = TerminalBuildingThumbs.get(en.construction);
+        if (rl != null) {
+            var tex = SpriteTexture.of(rl);
+            img.buttonStyle(s -> s.baseTexture(tex).hoverTexture(tex).pressedTexture(tex));
+        }
+        img.setOnClick(e -> {
+            var p = Minecraft.getInstance().player;
+            if (p == null) return;
+            detailReturnAppId = "material";
+            CustomStructureGui.openFromTerminal(en.construction, p.blockPosition().below());
+        });
+        row.addChild(img);
+
+        UIElement textCol = new UIElement();
+        textCol.layout(l -> l.flexDirection(FlexDirection.COLUMN).flexGrow(1.0f).gapAll(3.0f));
+        row.addChild(textCol);
+
+        Label name = new Label();
+        name.setText(truncate(en.construction.getName(), 24), false);
+        name.textStyle(t -> t.textColor(0xFFFFFF).textShadow(false).fontSize(7f));
+        name.layout(l -> l.widthPercent(100.0f).height(9.0f));
+        textCol.addChild(name);
+
+        UIElement barOuter = new UIElement();
+        barOuter.style(s -> s.backgroundTexture(Sprites.RECT_DARK));
+        barOuter.layout(l -> l.widthPercent(100.0f).height(6.0f));
+        textCol.addChild(barOuter);
+        if (en.needTotal > 0) {
+            UIElement barFill = new UIElement();
+            int pct = Math.max(2, (int) Math.round(en.progress() * 100));
+            barFill.layout(l -> l.widthPercent(pct).heightPercent(100.0f));
+            int fillColor = en.ready ? 0x55FF55 : 0xFFAA55;
+            barFill.style(s -> s.background(new ColorRectTexture(fillColor)));
+            barOuter.addChild(barFill);
+        }
+
+        Label status = new Label();
+        String statusText;
+        int statusColor;
+        if (en.ready) {
+            statusText = I18n.get("submit.progress", en.haveTotal, en.needTotal) + " · " + I18n.get("submit.ready");
+            statusColor = 0x55FF55;
+        } else if (en.needTotal > 0) {
+            statusText = I18n.get("submit.progress", en.haveTotal, en.needTotal);
+            statusColor = 0xAAAAAA;
+        } else {
+            statusText = I18n.get("submit.unknown", en.submitted.size());
+            statusColor = 0x888888;
+        }
+        status.setText(statusText, false);
+        status.textStyle(t -> t.textColor(statusColor).textShadow(false).fontSize(6f));
+        status.layout(l -> l.widthPercent(100.0f).height(9.0f));
+        textCol.addChild(status);
+        return row;
+    }
+
     // ==================== "创建建筑" 应用 ====================
     // 移植自主模组 GuiExtensionPackEditor 的"创建建筑" tab:
     //   - 表单字段/选文件/保存全部复用 GuiCreateBuildingInfo 的静态业务逻辑 (桥接方法);
@@ -1477,6 +1727,11 @@ public final class TerminalGui {
         b.textStyle(t -> t.textAlignHorizontal(Horizontal.CENTER).fontSize(6.5f));
         b.layout(l -> l.widthPercent(100.0f).height(16.0f));
         b.setOnClick(e -> {
+            // 切到编辑建筑 tab 时重置页码: 防止 editCreatePage 残留导致
+            // 打开就停在最后一页 (玩家反馈"只显示最后几个建筑"的防御性修复)
+            if (index == 3) {
+                editCreatePage = 0;
+            }
             createTab = index;
             rebuild.run();
         });

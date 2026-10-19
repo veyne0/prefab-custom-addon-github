@@ -184,6 +184,8 @@
   "gui.modern_terminal.album.back": "返回",
   "gui.modern_terminal.album.delete": "删除",
   "gui.modern_terminal.app.buildings": "建筑选择",
+  "gui.modern_terminal.app.material": "材料",
+  "gui.modern_terminal.material.count": "共 %s 栋建筑提交中",
   "gui.modern_terminal.app.create": "创建建筑",
   "gui.modern_terminal.create.tab.ext": "外部建筑文件",
   "gui.modern_terminal.create.tab.ingame": "游戏内选择建筑",

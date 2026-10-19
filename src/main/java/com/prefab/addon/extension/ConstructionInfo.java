@@ -110,8 +110,24 @@ public class ConstructionInfo {
         // 单文件建筑: 懒加载
         if (localNbtPath != null && Files.exists(localNbtPath)) {
             try {
+                String fn = localNbtPath.getFileName().toString().toLowerCase();
+                if (fn.endsWith(".litematic")) {
+                    // 关键: .litematic 是 litematica 自己的格式 (Regions/BlockStates 打包 long array),
+                    // 不是标准结构 NBT. 直接返回原始字节 → vanilla 解析不出 size/blocks → "结构为空".
+                    // 必须先转换 (litematic NBT → 标准 structure NBT), 所有入口 (蓝图站/终端/浏览器) 统一在这里兜住.
+                    byte[] converted = LitematicaParser.parseToStandardStructureBytes(localNbtPath);
+                    com.prefab.addon.PrefabCustomAddon.LOGGER.info(
+                        "[LITEMATICA] getNbtData 转换完成: {} (原始 {} 字节 → 标准 {} 字节)",
+                        localNbtPath.getFileName(), Files.size(localNbtPath),
+                        converted == null ? -1 : converted.length);
+                    return converted;
+                }
                 return Files.readAllBytes(localNbtPath);
-            } catch (IOException e) {
+            } catch (Exception e) {
+                // 转换/读取失败: 记日志 (含异常类型+消息), 返回 null 让上层走 "结构为空" 提示
+                com.prefab.addon.PrefabCustomAddon.LOGGER.warn(
+                    "[LITEMATICA] getNbtData 读取/转换失败: {} ({}: {})", localNbtPath,
+                    e.getClass().getSimpleName(), e.getMessage());
                 return null;
             }
         }

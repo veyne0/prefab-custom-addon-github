@@ -1,47 +1,23 @@
-/*
- * Decompiled with CFR 0.152.
- * 
- * Could not load the following classes:
- *  com.mojang.blaze3d.platform.NativeImage
- *  com.mojang.blaze3d.systems.RenderSystem
- *  com.mojang.blaze3d.vertex.BufferBuilder
- *  com.mojang.blaze3d.vertex.BufferUploader
- *  com.mojang.blaze3d.vertex.DefaultVertexFormat
- *  com.mojang.blaze3d.vertex.MeshData
- *  com.mojang.blaze3d.vertex.Tesselator
- *  com.mojang.blaze3d.vertex.VertexFormat$Mode
- *  com.prefab.gui.GuiBase
- *  com.prefab.gui.controls.ExtendedButton
- *  net.minecraft.Util
- *  net.minecraft.client.Minecraft
- *  net.minecraft.client.gui.GuiGraphics
- *  net.minecraft.client.gui.components.AbstractButton
- *  net.minecraft.client.gui.components.EditBox
- *  net.minecraft.client.gui.components.events.GuiEventListener
- *  net.minecraft.client.gui.screens.Screen
- *  net.minecraft.client.renderer.GameRenderer
- *  net.minecraft.client.renderer.texture.DynamicTexture
- *  net.minecraft.core.registries.Registries
- *  net.minecraft.network.chat.Component
- *  net.minecraft.resources.ResourceKey
- *  net.minecraft.resources.ResourceLocation
- *  net.minecraft.world.level.Level
- */
 package com.prefab.addon.client.gui;
 
+import com.lowdragmc.lowdraglib2.gui.holder.ModularUIScreen;
+import com.lowdragmc.lowdraglib2.gui.texture.SpriteTexture;
+import com.lowdragmc.lowdraglib2.gui.ui.ModularUI;
+import com.lowdragmc.lowdraglib2.gui.ui.UI;
+import com.lowdragmc.lowdraglib2.gui.ui.UIElement;
+import com.lowdragmc.lowdraglib2.gui.ui.data.ScrollerMode;
+import com.lowdragmc.lowdraglib2.gui.ui.elements.Button;
+import com.lowdragmc.lowdraglib2.gui.ui.elements.Label;
+import com.lowdragmc.lowdraglib2.gui.ui.elements.ScrollerView;
+import com.lowdragmc.lowdraglib2.gui.ui.elements.TextField;
+import com.lowdragmc.lowdraglib2.gui.ui.style.StylesheetManager;
+import com.lowdragmc.lowdraglib2.gui.ui.styletemplate.Sprites;
 import com.mojang.blaze3d.platform.NativeImage;
-import com.mojang.blaze3d.systems.RenderSystem;
-import com.mojang.blaze3d.vertex.BufferBuilder;
-import com.mojang.blaze3d.vertex.BufferUploader;
-import com.mojang.blaze3d.vertex.DefaultVertexFormat;
-import com.mojang.blaze3d.vertex.MeshData;
-import com.mojang.blaze3d.vertex.Tesselator;
-import com.mojang.blaze3d.vertex.VertexFormat;
 import com.prefab.addon.PrefabCustomAddon;
 import com.prefab.addon.client.PackBrowserKeyHandler;
 import com.prefab.addon.client.ThumbnailCache;
-import com.prefab.addon.client.gui.GuiCategoryManager;
-import com.prefab.addon.client.gui.GuiConstructionDetail;
+import com.prefab.addon.work.DependencyChecker;
+import com.prefab.addon.work.NbtFormatConverter;
 import com.prefab.addon.cloud.CloudBuilding;
 import com.prefab.addon.cloud.CloudBuildingClientCache;
 import com.prefab.addon.cloud.CloudPreview;
@@ -54,16 +30,26 @@ import com.prefab.addon.extension.ExtensionPack;
 import com.prefab.addon.extension.ExtensionPackManager;
 import com.prefab.addon.extension.LocalBuilding;
 import com.prefab.addon.extension.LocalBuildingScanner;
-import com.prefab.addon.extension.ServerBuildingInfo;
 import com.prefab.addon.integration.xaero.XaeroWaypointBridge;
+import com.prefab.addon.network.BuildingUploadClient;
+import com.prefab.addon.network.ServerPackManifestPayload;
 import com.prefab.addon.network.ServerPackSyncClient;
-import com.prefab.addon.work.ChallengeSessionManager;
-import com.prefab.addon.work.DependencyChecker;
-import com.prefab.addon.work.FolderOpener;
-import com.prefab.gui.GuiBase;
-import com.prefab.gui.controls.ExtendedButton;
+import dev.vfyjxf.taffy.style.AlignContent;
+import dev.vfyjxf.taffy.style.AlignItems;
+import dev.vfyjxf.taffy.style.FlexDirection;
+import net.minecraft.Util;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.renderer.texture.DynamicTexture;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.network.chat.Component;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.Level;
+
+import javax.imageio.ImageIO;
 import java.awt.Graphics2D;
-import java.awt.Image;
 import java.awt.RenderingHints;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
@@ -71,2837 +57,2261 @@ import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.net.URI;
 import java.nio.file.Files;
-import java.nio.file.LinkOption;
-import java.nio.file.OpenOption;
 import java.nio.file.Path;
-import java.nio.file.attribute.FileAttribute;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.IntConsumer;
+import java.util.function.IntSupplier;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 import java.util.zip.ZipInputStream;
-import javax.imageio.ImageIO;
-import net.minecraft.Util;
-import net.minecraft.client.Minecraft;
-import net.minecraft.client.gui.GuiGraphics;
-import net.minecraft.client.gui.components.AbstractButton;
-import net.minecraft.client.gui.components.EditBox;
-import net.minecraft.client.gui.components.events.GuiEventListener;
-import net.minecraft.client.gui.screens.Screen;
-import net.minecraft.client.renderer.GameRenderer;
-import net.minecraft.client.renderer.texture.DynamicTexture;
-import net.minecraft.core.BlockPos;
-import net.minecraft.core.registries.Registries;
-import net.minecraft.network.chat.Component;
-import net.minecraft.network.chat.Style;
-import net.minecraft.resources.ResourceKey;
-import net.minecraft.resources.ResourceLocation;
-import net.minecraft.world.item.ItemStack;
-import net.minecraft.world.level.Level;
 
-public class GuiExtensionPackBrowser
-extends GuiBase {
-    private Tab currentTab = Tab.BUILDINGS;
-    private ExtensionPack currentDrilldownPack = null;
-    private static final int PANEL_W = 400;
-    private static final int PANEL_H = 240;
-    private static final int TABS_W = 72;
-    private static final int SEARCH_H = 18;
-    private static final int CARD_W = 92;
-    private static final int CARD_H = 80;
-    private static final int CARD_GAP = 6;
-    private static final int CARD_COLS = 3;
-    private static final int CARD_ROWS = 2;
-    private static final int CLOUD_CARD_COLS = 2;
-    private static final int CLOUD_CARD_GAP = 6;
-    private static final int CLOUD_CARD_H = 96;
-    private static final int SERVER_CARD_COLS = 2;
-    private static final int SERVER_CARD_GAP = 6;
-    private static final int SERVER_CARD_H = 56;
-    private static final int BUILDINGS_CARD_COLS = 2;
-    private static final int CAT_LIST_W = 110;
-    private static final int SEARCH_BOX_W = 110;
-    private static final int SEARCH_FULL_W = 316;
-    private String searchText = "";
-    private int scrollOffsetCards = 0;
-    private String currentCategory = null;
-    private static String rememberedCategory = null;
-    private static int rememberedPage = 0;
-    private static boolean rememberedPanelHidden = false;
+/**
+ * 建筑浏览器 (X/Z 键 / 各详情页"关闭"返回) — LDLib2 ModularUI 整体重写版.
+ *
+ * <p>布局 (整屏 100%):</p>
+ * <pre>
+ *   ┌────────┬────────────────────────────────────┐
+ *   │ 建筑    │ [搜索框.........................]   │ ← 建筑/收藏 tab 才有
+ *   │ 云端建筑│ [状态摘要........] [筛选▾][同步][网页]│ ← 各 tab 顶部行不同
+ *   │ 服务器  │ ┌─ 卡片滚动区 (动态多列) ──────────┐ │
+ *   │ 收藏    │ │ [图]名称 [图]名称 ...           │ │
+ *   │ 下载    │ │      作者/元信息/操作按钮        │ │
+ *   │ 提交材料│ └──────────────────────────────┘ │
+ *   │        │                     [分类面板(建筑)]│
+ *   └────────┴────────────────────────────────────┘
+ *   状态栏: 最近一次操作结果 (h=12)
+ * </pre>
+ *
+ * <p>与旧版 (GuiBase 手绘) 的差异:</p>
+ * <ul>
+ *   <li>整体重写为 LDLib2 ModularUI (照抄 {@link GuiBlueprintMarket} 的静态单实例模式);</li>
+ *   <li>「更新日志」tab 按需求去掉, 剩 6 个 tab;</li>
+ *   <li>建筑/收藏 tab 恢复旧版翻页浏览 (◀ 页码 ▶, 每页列数×行数按窗口大小自适应);</li>
+ *   <li>云端/服务器/下载/提交材料 tab 用滚动列表, 卡片网格按窗口宽度动态定列数;</li>
+ *   <li>旧版 pack 钻取 (drilldown) 是死代码 (无任何调用点), 已一并移除.</li>
+ * </ul>
+ *
+ * <p>数据逻辑 (扫描/分类/收藏/云端列表/服务器同步/网站下载/提交材料) 与旧版等价,
+ * 静态入口 {@link #open()} / {@link #openForBlueprint(ItemStack, BlockPos)} 签名不变.</p>
+ */
+public final class GuiExtensionPackBrowser {
+
+    // === 6 个 Tab (更新日志已按需求移除) ===
+    public enum Tab {
+        BUILDINGS("建筑"),
+        CLOUD("云端建筑"),
+        SERVERS("服务器"),
+        FAVORITES("收藏"),
+        DOWNLOAD("下载"),
+        SUBMIT("提交材料");
+        final String label;
+        Tab(String label) { this.label = label; }
+    }
+
+    // === 布局常量 ===
+    private static final int TAB_W = 62;       // 左侧 tab 列宽
+    private static final int THUMB = 48;       // 卡片缩略图边长
+    private static final int CAT_W = 104;      // 分类面板宽
+
+    // === 全局状态 (界面单实例, 重开保留) ===
+    private static Tab currentTab = Tab.BUILDINGS;
+    private static String searchText = "";
     /** 蓝图模式: 右键未绑定自定义蓝图时记录的蓝图物品 (null = 普通模式). */
     private static ItemStack blueprintStack = null;
     /** 蓝图模式: 右键未绑定自定义蓝图时记录的建造位置. */
     private static BlockPos blueprintPos = null;
-    private static final Map<Tab, TabState> TAB_STATES = new EnumMap<Tab, TabState>(Tab.class);
-    private int[] paginationBarRect = null;
-    private int[] paginationPrevRect = null;
-    private int[] paginationNextRect = null;
-    private int[][] paginationPageRects = null;
-    private final List<int[]> categoryItemRects = new ArrayList<int[]>();
-    private int[] categoryAddBtnRect = null;
-    private int[] categoryToggleBtnRect = null;
-    private boolean categoryPanelHidden = rememberedPanelHidden;
-    private int statusTick = 0;
-    private String statusMessage = null;
-    private int statusColor = 0x55FF55;
-    private final Map<String, ResourceLocation> coverTextureCache;
-    private final Map<String, ResourceLocation> previewTextureCache;
-    private ExtendedButton btnBack;
-    private ExtendedButton btnSync;
-    private ExtendedButton btnOpenFolder;
-    private ExtendedButton btnClose;
-    private EditBox searchBox;
-    private List<LocalBuilding> downloadedBuildings;
-    private final Map<String, ResourceLocation> localImageCache;
-    private final Set<String> localImageLoading;
-    private final Map<String, ResourceLocation> serverImageCache;
-    private final Map<String, int[]> serverCardSyncBtnRects;
-    private final Set<String> serverImageLoading;
-    private List<PackDownloadManager.BuildingInfo2> websiteBuildings;
-    private boolean websiteBuildingsLoading = false;
-    private String websiteBuildingsError = null;
-    private final Map<String, ResourceLocation> websiteImageCache;
-    private final Set<String> websiteImageLoading;
-    private final Set<String> websiteDownloading;
-    private final Map<String, double[]> websiteDownloadProgress;
-    private int[] lastOpenWebsiteButtonRect = null;
-    private String websiteFilter = "all";
-    private int[] websiteFilterButtonRect = null;
-    private final Map<String, int[]> websiteCardHitRects;
-    private final Map<String, int[]> websiteCardDownloadBtnRects;
-    private final Map<String, int[]> cloudCardHitRects;
-    private final Map<String, int[]> cloudCardRecallBtnRects;
-    private final Map<String, int[]> cloudCardSummonBtnRects;
-    private final Map<String, int[]> cloudCardDeleteBtnRects;
-    private final Map<String, int[]> cloudCardNavigateBtnRects;
-    private final Set<String> navigateDebugLogged;
-    private String pendingDeleteBuildingId = null;
-    private int[] deleteConfirmCancelRect = null;
-    private int[] deleteConfirmOkRect = null;
-    private long cloudTabLastEnterTickMs = 0L;
-    private final Map<String, ResourceLocation> cloudThumbCache;
-    private final Set<String> cloudThumbLoading;
-    private static final int ICON_MAX_DIM = 256;
-    private int[] lastSyncServerBtn = null;
-    private String serverFilter = "unsynced";
-    private int[][] serverFilterTabs;
-    private int[][] serverCardHitRects;
-    private int serverCardHitCount = 0;
-    private final Map<String, ResourceLocation> cachedThumbTextureCache;
+    /** 每 tab 独立的 分类/搜索/面板收起 状态 (切 tab 互不干扰). */
+    private static final Map<Tab, TabState> TAB_STATES = new EnumMap<>(Tab.class);
+    private static String currentCategory = null;
+    private static boolean categoryPanelHidden = false;
+    /** 云端删除确认 (null = 无). */
+    private static String pendingDeleteBuildingId = null;
+    private static String serverFilter = "unsynced";
+    /** 服务器 tab: 每个过滤模式 (all/unsynced/synced) 各自记住的分页页码 */
+    private static final java.util.Map<String, Integer> SERVER_PAGE_BY_FILTER = new java.util.HashMap<>();
+    /** 本地建筑扫描缓存 (每轮 rebuildList 开头清空, 同一轮内所有建筑共用一次扫描结果) */
+    private static List<LocalBuilding> localScanCache = null;
 
-    private void refreshDownloadedBuildings() {
-        this.downloadedBuildings = LocalBuildingScanner.scanDir(LocalBuildingScanner.getDownloadRoot(), "download");
-        for (LocalBuilding lb : this.downloadedBuildings) {
-            if (!lb.hasPreviewImage() || this.localImageCache.containsKey(lb.id) || this.localImageLoading.contains(lb.id)) continue;
-            this.localImageLoading.add(lb.id);
-            this.triggerLoadLocalImage(lb);
+    private static List<LocalBuilding> scanAllCached() {
+        if (localScanCache == null) {
+            localScanCache = LocalBuildingScanner.scanAll();
+        }
+        return localScanCache;
+    }
+    private static String websiteFilter = "all";
+    /** 建筑/收藏 tab 的分页页码 (0-based; 切 tab/分类/搜索时归零, 关闭界面保留). */
+    private static int constructionPage = 0;
+    /** 云端/服务器/下载/提交材料 tab 的分页页码 (切 tab/筛选时归零). */
+    private static int cloudPage = 0;
+    private static int serverPage = 0;
+    private static int websitePage = 0;
+    private static int submitPage = 0;
+
+    private static final class TabState {
+        final String category;
+        final boolean panelHidden;
+        final String search;
+        final int page;
+        /** 服务器 tab 专属: 分页页码 + 过滤模式 (切 tab/重开界面保留) */
+        int serverPage;
+        String serverFilter;
+        TabState(String category, boolean panelHidden, String search, int page) {
+            this.category = category;
+            this.panelHidden = panelHidden;
+            this.search = search;
+            this.page = page;
+            this.serverPage = 0;
+            this.serverFilter = "unsynced";
         }
     }
 
-    private void triggerLoadLocalImage(LocalBuilding lb) {
+    // === 预览图/缩略图纹理缓存 (key 见各 ensure 方法) ===
+    private static final Map<String, ResourceLocation> PREVIEW_TEX = new HashMap<>();
+    private static final Set<String> PREVIEW_LOADING = new HashSet<>();
+    private static final Map<String, ResourceLocation> CACHED_THUMB_TEX = new HashMap<>();
+    private static final Map<String, ResourceLocation> LOCAL_IMG = new HashMap<>();
+    private static final Set<String> LOCAL_IMG_LOADING = new HashSet<>();
+    private static final Map<String, ResourceLocation> WEBSITE_IMG = new HashMap<>();
+    private static final Set<String> WEBSITE_IMG_LOADING = new HashSet<>();
+    private static final Map<String, ResourceLocation> CLOUD_THUMB = new HashMap<>();
+    private static final Set<String> CLOUD_THUMB_LOADING = new HashSet<>();
+    private static final AtomicInteger TEX_GEN = new AtomicInteger();
+
+    // === 各 tab 数据 ===
+    private static List<LocalBuilding> downloadedBuildings = new ArrayList<>();
+    private static List<PackDownloadManager.BuildingInfo2> websiteBuildings = new ArrayList<>();
+    private static boolean websiteBuildingsLoading = false;
+    private static String websiteBuildingsError = null;
+    private static final Set<String> WEBSITE_DOWNLOADING = new HashSet<>();
+    private static final Map<String, double[]> WEBSITE_PROGRESS = new HashMap<>();
+    /** 进度刷新节流: 只在整数百分比变化时重建列表. */
+    private static final Map<String, Integer> WEBSITE_LAST_PCT = new HashMap<>();
+
+    // === UI 引用 (重建用, 单实例界面) ===
+    private static UIElement rootRef;
+    private static UIElement listAreaRef;
+    private static Label statusLabel;
+    /** 最近一次状态消息 (rebuild 重建 statusLabel 后用它恢复文本). */
+    private static String lastStatus;
+
+    private GuiExtensionPackBrowser() {}
+
+    // ==================== 静态入口 (签名与旧版一致) ====================
+
+    public static void open() {
+        Minecraft mc = Minecraft.getInstance();
+        // 普通模式: 清掉可能残留的蓝图状态
+        blueprintStack = null;
+        blueprintPos = null;
+        // 打开时强制重扫拓展包 (旧版构造函数行为)
+        ExtensionPackManager.getInstance().reloadIfChanged();
+        ExtensionPackManager.getInstance().forceReload();
+        // 静态单实例: 所在 tab / 分类 / 搜索 / 页码 全部跨开屏保留
+        // (从详情页"关闭"返回时回到原 tab, 不再强制回建筑 tab)
+        pendingDeleteBuildingId = null;
+        refreshDownloadedBuildings();
+
+        UIElement root = buildRoot();
+        ModularUI ui = ModularUI.of(UI.of(root,
+            StylesheetManager.INSTANCE.getStylesheetSafe(StylesheetManager.MC)), mc.player);
+        mc.setScreen(new ModularUIScreen(ui, Component.literal(
+            PrefabCustomAddon.tr("gui.prefab_custom_addon.title"))));
+    }
+
+    /**
+     * 蓝图模式打开 (右键未绑定的自定义蓝图): 记录蓝图 stack + 建造位置,
+     * 之后点建筑卡片直接 {@link CustomStructureGui#openFromBrowser}, 跳过浏览器详情页.
+     * 蓝图模式保留上次所在 tab (卡片点击处理是通用的, 任何 tab 都能选建筑).
+     */
+    public static void openForBlueprint(ItemStack stack, BlockPos pos) {
+        open();
+        blueprintStack = stack;
+        blueprintPos = pos;
+    }
+
+    // ==================== UI 构建 ====================
+
+    private static UIElement buildRoot() {
+        UIElement root = new UIElement();
+        root.layout(l -> l
+            .widthPercent(100).heightPercent(100)
+            .flexDirection(FlexDirection.COLUMN)
+            .paddingAll(4).gapAll(3)
+        );
+        root.style(s -> s.background(Sprites.BORDER));
+        root.setOverflowVisible(false);
+        rebuildAll(root);
+        return root;
+    }
+
+    /** 整体重建 (切 tab / 分类切换 / 面板收起时调用, 会重建搜索框). */
+    private static void rebuild() {
+        if (rootRef != null) {
+            rebuildAll(rootRef);
+        }
+    }
+
+    private static void rebuildAll(UIElement root) {
+        rootRef = root;
+        root.clearAllChildren();
+
+        // 主行: 左 tab 列 + 右内容列
+        UIElement main = new UIElement();
+        main.layout(l -> l.flexDirection(FlexDirection.ROW).widthPercent(100).flexGrow(1).minHeight(0).gapAll(4));
+        main.setOverflowVisible(false);
+        root.addChild(main);
+
+        // 左 tab 列
+        UIElement tabCol = new UIElement();
+        tabCol.layout(l -> l.flexDirection(FlexDirection.COLUMN).width(TAB_W).gapAll(3));
+        tabCol.setOverflowVisible(false);
+        for (Tab t : Tab.values()) {
+            Tab ft = t;
+            Button tb = new Button().setText(t.label, false);
+            tb.textStyle(s -> s.textColor(t == currentTab ? 0xFFDD66 : 0xCCCCCC));
+            tb.layout(l -> l.widthPercent(100).height(16));
+            tb.setOnClick(e -> switchTab(ft));
+            tabCol.addChild(tb);
+        }
+        main.addChild(tabCol);
+
+        // 右内容列
+        UIElement content = new UIElement();
+        content.layout(l -> l.flexDirection(FlexDirection.COLUMN).flexGrow(1).minWidth(0).gapAll(3));
+        content.setOverflowVisible(false);
+        main.addChild(content);
+
+        buildTabHeader(content);
+
+        // 卡片列表区
+        UIElement listArea = new UIElement();
+        listArea.layout(l -> l.flexDirection(FlexDirection.ROW).widthPercent(100).flexGrow(1).minHeight(0).gapAll(4));
+        listArea.setOverflowVisible(false);
+        listAreaRef = listArea;
+        content.addChild(listArea);
+
+        rebuildList(listArea);
+
+        // 状态栏 (h=12)
+        UIElement statusRow = new UIElement();
+        statusRow.layout(l -> l.widthPercent(100).height(12));
+        statusRow.style(s -> s.background(Sprites.RECT_DARK));
+        statusRow.setOverflowVisible(false);
+        root.addChild(statusRow);
+        statusLabel = new Label();
+        statusLabel.setText(lastStatus == null ? "" : lastStatus, false);
+        statusLabel.textStyle(t -> t.textColor(0xAAAAAA));
+        statusLabel.layout(l -> l.heightPercent(100).paddingLeft(3));
+        statusRow.addChild(statusLabel);
+    }
+
+    /** 各 tab 顶部行 (搜索框 / 状态摘要 / 操作按钮), 最后建好 listAreaRef 供 rebuildList 填充. */
+    private static void buildTabHeader(UIElement content) {
+        switch (currentTab) {
+            case BUILDINGS -> {
+                content.addChild(searchRow(tr("browser.search.placeholder_buildings")));
+            }
+            case FAVORITES -> {
+                content.addChild(searchRow(tr("browser.search.placeholder_favorites")));
+            }
+            case CLOUD -> {
+                List<CloudBuilding> list = CloudBuildingClientCache.getInstance().getAll();
+                Label summary = new Label();
+                summary.setText(cloudSummary(list), false);
+                summary.textStyle(t -> t.textColor(0x88BBFF));
+                summary.layout(l -> l.widthPercent(100).height(12));
+                content.addChild(summary);
+            }
+            case SERVERS -> {
+                // 与建筑 tab 同一份列表 → 给同样的搜索框
+                content.addChild(searchRow(tr("browser.search.placeholder_buildings")));
+                // 只显示上传状态 (服务器清单在进服时自动收, 不再要手动"同步服务器"按钮)
+                UIElement row = new UIElement();
+                row.layout(l -> l.flexDirection(FlexDirection.ROW).widthPercent(100).height(14).gapAll(3));
+                content.addChild(row);
+                Label st = new Label();
+                st.setText(serverStatusText(), false);
+                st.textStyle(t -> t.textColor(serverStatusColor()));
+                st.layout(l -> l.flexGrow(1).heightPercent(100));
+                row.addChild(st);
+            }
+            case DOWNLOAD -> {
+                refreshDownloadedBuildings();
+                if (websiteBuildings.isEmpty() && !websiteBuildingsLoading) {
+                    refreshWebsiteBuildings();
+                }
+                UIElement row = new UIElement();
+                row.layout(l -> l.flexDirection(FlexDirection.ROW).widthPercent(100).height(14).gapAll(3));
+                content.addChild(row);
+                Label st = new Label();
+                st.setText(websiteStatusText(), false);
+                st.textStyle(t -> t.textColor(websiteStatusColor()));
+                st.layout(l -> l.flexGrow(1).heightPercent(100));
+                row.addChild(st);
+                // 筛选循环按钮: 全部 → 已下载 → 未下载
+                String filtLabel = "all".equals(websiteFilter) ? tr("website.filter.all")
+                    : ("downloaded".equals(websiteFilter) ? tr("website.filter.downloaded")
+                    : tr("website.filter.not_downloaded"));
+                Button filt = new Button().setText("▼ " + filtLabel, false);
+                filt.layout(l -> l.width(70).height(14));
+                filt.setOnClick(e -> {
+                    websiteFilter = "all".equals(websiteFilter) ? "downloaded"
+                        : ("downloaded".equals(websiteFilter) ? "not_downloaded" : "all");
+                    websitePage = 0;
+                    rebuild();
+                });
+                row.addChild(filt);
+                Button web = new Button().setText(tr("website.button.open"), false);
+                web.layout(l -> l.width(48).height(14));
+                web.setOnClick(e -> openWebsiteHome());
+                row.addChild(web);
+                // MCS 蓝图站入口 (I 键同款界面)
+                Button mcs = new Button().setText("MCS蓝图站", false);
+                mcs.layout(l -> l.width(64).height(14));
+                mcs.setOnClick(e -> GuiBlueprintMarket.open());
+                row.addChild(mcs);
+            }
+            case SUBMIT -> {
+                // 无顶部行 (与旧版一致: 搜索框只在建筑/收藏 tab 显示, 但仍按共享搜索词过滤)
+            }
+        }
+    }
+
+    private static UIElement searchRow(String placeholder) {
+        UIElement row = new UIElement();
+        row.layout(l -> l.flexDirection(FlexDirection.ROW).widthPercent(100).height(16).gapAll(3));
+        row.setOverflowVisible(false);
+        TextField search = new TextField();
+        search.setText(searchText);
+        search.setAnyString();
+        search.setTextValidator(s -> s == null || s.length() <= 64);
+        search.textFieldStyle(s -> s.textColor(0xFFFFFF).textShadow(false));
+        search.layout(l -> l.flexGrow(1).height(16).minHeight(16));
+        search.setTextResponder(s -> {
+            if (!Objects.equals(searchText, s)) {
+                searchText = s == null ? "" : s;
+                constructionPage = 0;
+                serverPage = 0;
+                submitPage = 0;
+                rebuildList();
+            }
+        });
+        row.addChild(search);
+        Label hint = new Label();
+        hint.setText(placeholder, false);
+        hint.textStyle(t -> t.textColor(0x666666));
+        hint.layout(l -> l.width(70).height(16).alignItems(AlignItems.CENTER));
+        row.addChild(hint);
+        return row;
+    }
+
+    /** 仅重建卡片列表 (搜索/纹理加载/下载完成时调用, 不打断搜索框输入). */
+    private static void rebuildList() {
+        if (listAreaRef != null) {
+            rebuildList(listAreaRef);
+        }
+    }
+
+    private static void rebuildList(UIElement listArea) {
+        listArea.clearAllChildren();
+        // 翻页/切过滤会整页重建卡片: 清掉本地扫描缓存, 本轮 rebuild 内只扫一次磁盘
+        // (之前 resolveUploadSource 对每个建筑各扫一遍, N+1 全盘扫描是翻页卡顿的根源)
+        localScanCache = null;
+        // 缩略图缓存批次更新时清掉派生纹理 (与旧版 tick 轮询等价, 挪到重建时机)
+        ThumbnailCache.pollCompleted();
+
+        if (currentTab == Tab.BUILDINGS) {
+            if (categoryPanelHidden) {
+                buildCategoryCollapsed(listArea);
+            } else {
+                buildCategoryPanel(listArea);
+            }
+            buildBuildingsGrid(listArea);
+        } else if (currentTab == Tab.CLOUD) {
+            if (pendingDeleteBuildingId != null) {
+                buildDeleteConfirm(listArea);
+            } else {
+                buildCloudGrid(listArea);
+            }
+        } else if (currentTab == Tab.SERVERS) {
+            buildServersGrid(listArea);
+        } else if (currentTab == Tab.FAVORITES) {
+            List<ConstructionInfo> favs = ExtensionPackManager.getInstance().getFavoriteConstructions();
+            buildConstructionGrid(listArea, filterBySearch(favs, searchText), favs.isEmpty());
+        } else if (currentTab == Tab.DOWNLOAD) {
+            buildDownloadGrid(listArea);
+        } else if (currentTab == Tab.SUBMIT) {
+            List<SubmitMaterialIndex.Entry> entries = getSubmitEntries();
+            buildSubmitGrid(listArea, entries);
+        }
+    }
+
+    // ==================== Tab: 建筑 ====================
+
+    /** 分类面板 (右侧, 可收起) + 建筑卡片网格; 两者都塞进 listArea 行里. */
+    private static void buildBuildingsGrid(UIElement listArea) {
+        List<ConstructionInfo> all = getMergedConstructionsForBuildingsTab();
+        List<ConstructionInfo> byCat = filterByCategory(all, currentCategory);
+        List<ConstructionInfo> filtered = filterBySearch(byCat, searchText);
+        UIElement grid = new UIElement();
+        grid.layout(l -> l.flexDirection(FlexDirection.ROW).flexGrow(1).minWidth(0));
+        grid.setOverflowVisible(false);
+        listArea.addChild(grid);
+        fillConstructionGrid(grid, filtered, emptyTitleFor(all.isEmpty()), emptyHintFor(all.isEmpty()));
+    }
+
+    private static String emptyTitleFor(boolean noBuildings) {
+        if (currentCategory != null) return tr("browser.category.empty_in_category", currentCategory);
+        if (searchText != null && !searchText.isEmpty()) return tr("browser.empty.no_match");
+        return noBuildings ? tr("browser.empty.no_buildings") : tr("browser.empty.no_match");
+    }
+
+    private static String emptyHintFor(boolean noBuildings) {
+        if (currentCategory != null) return tr("browser.category.empty_in_category_hint");
+        if (searchText != null && !searchText.isEmpty()) return tr("browser.empty.try_clear_search");
+        return noBuildings ? tr("browser.empty.no_buildings_hint") : tr("browser.empty.try_clear_search");
+    }
+
+    /** 右侧分类列表: 全部 / 未分类 / 自定义分类(跳过 CategoryManager 首项, 与旧版一致) + 管理按钮. */
+    private static void buildCategoryPanel(UIElement listArea) {
+        UIElement panel = new UIElement();
+        panel.layout(l -> l.flexDirection(FlexDirection.COLUMN).width(CAT_W).gapAll(2));
+        panel.style(s -> s.background(Sprites.RECT_DARK));
+        panel.setOverflowVisible(false);
+        listArea.addChild(panel);
+
+        // 标题 + 收起按钮
+        UIElement head = new UIElement();
+        head.layout(l -> l.flexDirection(FlexDirection.ROW).widthPercent(100).height(14).gapAll(2));
+        head.setOverflowVisible(false);
+        panel.addChild(head);
+        Label title = new Label();
+        title.setText(tr("browser.category.title"), false);
+        title.textStyle(t -> t.textColor(0xFFFFFF));
+        title.layout(l -> l.flexGrow(1).heightPercent(100).paddingLeft(2));
+        head.addChild(title);
+        Button tg = new Button().setText("◀", false);
+        tg.textStyle(s -> s.textColor(0xCCCCCC));
+        tg.layout(l -> l.width(16).height(14));
+        tg.setOnClick(e -> {
+            categoryPanelHidden = true;
+            rebuild();
+        });
+        head.addChild(tg);
+
+        // 分类项
+        ScrollerView scroll = new ScrollerView();
+        scroll.scrollerStyle(s -> s.mode(ScrollerMode.VERTICAL));
+        scroll.verticalScroller(v -> v.setScrollBarSize(5f));
+        scroll.layout(l -> l.flexGrow(1).widthPercent(100).minHeight(0));
+        panel.addChild(scroll);
+        UIElement list = new UIElement();
+        list.layout(l -> l.flexDirection(FlexDirection.COLUMN).widthPercent(100).paddingAll(2).gapAll(2));
+        scroll.addScrollViewChild(list);
+
+        list.addChild(categoryItem(tr("browser.category.all"), currentCategory == null, () -> toggleCategory(null)));
+        list.addChild(categoryItem("未分类", "未分类".equals(currentCategory), () -> toggleCategory("未分类")));
+        List<String> all = CategoryManager.get().getCategories();
+        for (int i = 1; i < all.size(); i++) {
+            String name = all.get(i);
+            list.addChild(categoryItem(name, name.equals(currentCategory), () -> toggleCategory(name)));
+        }
+
+        // 管理分类
+        Button manage = new Button().setText("+ " + tr("browser.category.manage"), false);
+        manage.textStyle(s -> s.textColor(0xCCCCCC));
+        manage.layout(l -> l.widthPercent(100).height(14));
+        manage.setOnClick(e -> GuiCategoryManager.openStandalone());
+        panel.addChild(manage);
+    }
+
+    /** 分类收起时的窄条 + 展开按钮 (建筑 tab). */
+    private static void buildCategoryCollapsed(UIElement listArea) {
+        UIElement panel = new UIElement();
+        panel.layout(l -> l.flexDirection(FlexDirection.COLUMN).width(20).gapAll(2));
+        panel.style(s -> s.background(Sprites.RECT_DARK));
+        panel.setOverflowVisible(false);
+        listArea.addChild(panel);
+        Button tg = new Button().setText("▶", false);
+        tg.textStyle(s -> s.textColor(0xCCCCCC));
+        tg.layout(l -> l.widthPercent(100).height(14));
+        tg.setOnClick(e -> {
+            categoryPanelHidden = false;
+            rebuild();
+        });
+        panel.addChild(tg);
+    }
+
+    private static UIElement categoryItem(String label, boolean selected, Runnable onClick) {
+        Button item = new Button().setText(truncateW(label, CAT_W - 14), false);
+        item.textStyle(s -> s.textColor(selected ? 0xFFFF88 : 0xBBBBBB));
+        item.buttonStyle(s -> s.baseTexture(selected ? Sprites.RECT_LIGHT : Sprites.RECT_DARK)
+            .hoverTexture(Sprites.RECT_LIGHT).pressedTexture(Sprites.RECT_DARK));
+        item.layout(l -> l.widthPercent(100).height(14));
+        item.setOnClick(e -> onClick.run());
+        return item;
+    }
+
+    private static void toggleCategory(String cat) {
+        currentCategory = Objects.equals(cat, currentCategory) ? null : cat;
+        constructionPage = 0;
+        rebuild();
+    }
+
+    // ==================== Tab: 云端建筑 ====================
+
+    private static String cloudSummary(List<CloudBuilding> list) {
+        if (list.isEmpty()) return tr("cloud.status.empty");
+        int placed = 0;
+        for (CloudBuilding b : list) {
+            if (b.placed) placed++;
+        }
+        return tr("cloud.status.summary", String.valueOf(list.size()),
+            String.valueOf(placed), String.valueOf(list.size() - placed));
+    }
+
+    private static void buildCloudGrid(UIElement listArea) {
+        List<CloudBuilding> list = CloudBuildingClientCache.getInstance().getAll();
+        UIElement grid = new UIElement();
+        grid.layout(l -> l.flexDirection(FlexDirection.ROW).flexGrow(1).minWidth(0));
+        grid.setOverflowVisible(false);
+        listArea.addChild(grid);
+        if (list.isEmpty()) {
+            fillEmpty(grid, tr("cloud.empty.title"), tr("cloud.empty.hint"));
+            return;
+        }
+        ScrollerView scroller = scroller(grid);
+        UIElement col = new UIElement();
+        col.layout(l -> l.flexDirection(FlexDirection.COLUMN).widthPercent(100).paddingAll(2).gapAll(4));
+        scroller.addScrollViewChild(col);
+        int cw = wideCardW();
+        int c = wideCols();
+        int perPage = Math.max(1, c * rowsPerPageFor(92));
+        int totalPages = (list.size() + perPage - 1) / perPage;
+        cloudPage = clampPage(cloudPage, totalPages);
+        int from = cloudPage * perPage;
+        int to = Math.min(from + perPage, list.size());
+        for (int i = from; i < to; i += c) {
+            UIElement row = new UIElement();
+            row.layout(l -> l.flexDirection(FlexDirection.ROW).gapAll(4));
+            for (int j = i; j < Math.min(i + c, to); j++) {
+                row.addChild(cloudCard(list.get(j), cw));
+            }
+            col.addChild(row);
+        }
+        if (totalPages > 1) {
+            col.addChild(pager(totalPages, () -> cloudPage, p -> cloudPage = p));
+        }
+    }
+
+    /** 云端建筑卡片: 缩略图 + 名称/状态/元信息 + 收回/放出/导航/删除 (卡片本体不可点, 与旧版一致). */
+    private static UIElement cloudCard(CloudBuilding b, int cw) {
+        UIElement card = new UIElement();
+        card.layout(l -> l.flexDirection(FlexDirection.COLUMN).width(cw).height(92)
+            .paddingAll(3).gapAll(2));
+        card.style(s -> s.background(Sprites.RECT_DARK));
+        card.setOverflowVisible(false);
+
+        // 上部: 缩略图 + 信息列 + 右上角导航/删除
+        UIElement top = new UIElement();
+        top.layout(l -> l.flexDirection(FlexDirection.ROW).widthPercent(100).gapAll(4));
+        top.setOverflowVisible(false);
+        card.addChild(top);
+
+        UIElement thumb = new UIElement();
+        thumb.layout(l -> l.width(THUMB).height(THUMB));
+        ResourceLocation tex = CLOUD_THUMB.get(b.id);
+        if (tex == null && b.thumbnailPng != null && b.thumbnailPng.length > 0) {
+            tex = ensureCloudThumbLoaded(b);
+        }
+        ResourceLocation ftex = tex;
+        if (ftex != null) {
+            thumb.style(s -> s.backgroundTexture(SpriteTexture.of(ftex)));
+        } else {
+            thumb.style(s -> s.backgroundTexture(Sprites.RECT_DARK));
+            if (b.name != null && !b.name.isEmpty() && !CLOUD_THUMB_LOADING.contains(b.id)) {
+                CLOUD_THUMB_LOADING.add(b.id);
+                triggerLoadCloudThumb(b);
+            }
+        }
+        top.addChild(thumb);
+
+        UIElement info = new UIElement();
+        info.layout(l -> l.flexDirection(FlexDirection.COLUMN).flexGrow(1).gapAll(1).minWidth(0));
+        top.addChild(info);
+        int textW = cw - THUMB - 16 - 14;
+        info.addChild(cardLabel(truncateW(displayName(b.name, tr("cloud.card.unnamed")), textW), 0xFFFFFF, 10));
+        info.addChild(cardLabel(b.placed ? tr("cloud.card.placed") : tr("cloud.card.recalled"),
+            b.placed ? 0x55FF77 : 0x888888, 9));
+        info.addChild(cardLabel(truncateW(cloudMeta(b), textW), 0x999999, 9));
+        info.addChild(cardLabel(truncateW(b.placed ? "点收回清理" : "点放出预览", textW), 0x666666, 9));
+
+        UIElement topBtns = new UIElement();
+        topBtns.layout(l -> l.flexDirection(FlexDirection.COLUMN).gapAll(2));
+        topBtns.setOverflowVisible(false);
+        top.addChild(topBtns);
+        // 导航按钮 (Xaero 可用且有真实位置才显示, 与旧版一致)
+        if (xaeroNavigable(b)) {
+            Button nav = new Button().setText("⚑", false);
+            nav.textStyle(s -> s.textColor(0x66CCFF));
+            nav.layout(l -> l.width(14).height(11));
+            nav.setOnClick(e -> cloudNavigate(b));
+            topBtns.addChild(nav);
+        }
+        Button del = new Button().setText("✕", false);
+        del.textStyle(s -> s.textColor(0xFF7777));
+        del.layout(l -> l.width(14).height(11));
+        del.setOnClick(e -> cloudRequestDelete(b));
+        topBtns.addChild(del);
+
+        // 底部按钮行: 收回 / 放出
+        UIElement btns = new UIElement();
+        btns.layout(l -> l.flexDirection(FlexDirection.ROW).widthPercent(100).flexGrow(1).gapAll(4));
+        btns.setOverflowVisible(false);
+        card.addChild(btns);
+        Button recall = new Button().setText(tr("cloud.button.recall"), false);
+        recall.textStyle(s -> s.textColor(b.placed ? 0xFFFFFF : 0x666666));
+        recall.layout(l -> l.widthPercent(50).heightPercent(100));
+        recall.setActive(b.placed);
+        recall.setOnClick(e -> cloudRecall(b));
+        btns.addChild(recall);
+        Button summon = new Button().setText(tr("cloud.button.summon"), false);
+        summon.textStyle(s -> s.textColor(!b.placed ? 0xFFFFFF : 0x666666));
+        summon.layout(l -> l.widthPercent(50).heightPercent(100));
+        summon.setActive(!b.placed);
+        summon.setOnClick(e -> cloudSummon(b));
+        btns.addChild(summon);
+        return card;
+    }
+
+    private static String displayName(String name, String fallback) {
+        return name == null || name.isEmpty() ? fallback : name;
+    }
+
+    private static String cloudMeta(CloudBuilding b) {
+        String facing;
+        if (b.facing == null) {
+            facing = "?";
+        } else {
+            switch (b.facing.getName()) {
+                case "north" -> facing = "北";
+                case "south" -> facing = "南";
+                case "east" -> facing = "东";
+                case "west" -> facing = "西";
+                default -> facing = b.facing.getName();
+            }
+        }
+        String relTime = formatRelativeTime(b.timestamp)
+            .replace("分钟", "分").replace("小时", "时");
+        String meta = b.placed && b.placedAt != null
+            ? b.blocks.size() + " · " + b.placedAt.toShortString() + " · " + relTime
+            : b.blocks.size() + " · " + facing + " · " + relTime;
+        return meta + "  " + b.sizeX + "×" + b.sizeY + "×" + b.sizeZ;
+    }
+
+    private static boolean xaeroNavigable(CloudBuilding b) {
+        boolean hasRealPlacedAt = b.placedAt != null
+            && (b.placedAt.getX() != 0 || b.placedAt.getY() != 0 || b.placedAt.getZ() != 0);
+        return XaeroWaypointBridge.isAvailable() && hasRealPlacedAt;
+    }
+
+    /** 导航: 有航点则移除, 没有则添加 (与旧版逻辑一致). */
+    private static void cloudNavigate(CloudBuilding b) {
+        ResourceKey<Level> dim;
+        try {
+            if (b.dimensionId != null && !b.dimensionId.isEmpty()) {
+                dim = ResourceKey.create(Registries.DIMENSION, ResourceLocation.parse(b.dimensionId));
+            } else {
+                dim = Minecraft.getInstance().level != null
+                    ? Minecraft.getInstance().level.dimension()
+                    : ResourceKey.create(Registries.DIMENSION, ResourceLocation.withDefaultNamespace("overworld"));
+            }
+        } catch (Throwable t) {
+            dim = ResourceKey.create(Registries.DIMENSION, ResourceLocation.withDefaultNamespace("overworld"));
+        }
+        String wpName = b.placed ? "→ " + b.name : "→ " + b.name + " (已收回)";
+        String otherWpName = b.placed ? "→ " + b.name + " (已收回)" : "→ " + b.name;
+        boolean exists = XaeroWaypointBridge.hasWaypoint(wpName) || XaeroWaypointBridge.hasWaypoint(otherWpName);
+        if (exists) {
+            boolean removed = XaeroWaypointBridge.removeWaypoint(wpName);
+            if (!removed) removed = XaeroWaypointBridge.removeWaypoint(otherWpName);
+            if (removed) {
+                setStatus("✗ 已取消航点: " + b.name);
+            } else {
+                setStatus("✗ 找到航点但无法删除 (Xaero remove API 不兼容?)");
+            }
+        } else {
+            boolean ok = XaeroWaypointBridge.addWaypoint(dim, b.placedAt, wpName, 0xFF5533DD);
+            if (ok) {
+                setStatus("📍 已标航点: " + b.name + " @ " + b.placedAt.toShortString()
+                    + (b.placed ? "" : " (已收回, 历史位置)"));
+            } else {
+                String reason = XaeroWaypointBridge.consumeLastAddError();
+                setStatus("✗ 标航点失败: " + (reason == null || reason.isEmpty() ? "Xaero 不可用" : reason));
+            }
+        }
+    }
+
+    private static void cloudRequestDelete(CloudBuilding b) {
+        if (b == null) {
+            setStatus("✗ 找不到该云端建筑");
+            return;
+        }
+        if (b.placed) {
+            setStatus("建筑已放出, 请先收回再删除");
+            return;
+        }
+        pendingDeleteBuildingId = b.id;
+        rebuildList();
+    }
+
+    private static void cloudRecall(CloudBuilding b) {
+        if (!b.placed) {
+            setStatus("该建筑已经是收回状态");
+            return;
+        }
+        CloudBuildingClientCache.getInstance().requestRecall(b.id);
+        setStatus("↩ 收回中: " + b.name);
+    }
+
+    private static void cloudSummon(CloudBuilding b) {
+        if (b.placed) {
+            setStatus("已放出 @ " + (b.placedAt == null ? "?" : b.placedAt.toShortString()) + ", 先收回再放出");
+            return;
+        }
+        boolean ok = CloudPreview.start(b.id);
+        if (ok) {
+            setStatus("☁ 云端预览: " + b.name + " ("
+                + PackBrowserKeyHandler.keyName(PackBrowserKeyHandler.PREVIEW_FORWARD, "↑")
+                + PackBrowserKeyHandler.keyName(PackBrowserKeyHandler.PREVIEW_BACK, "↓")
+                + PackBrowserKeyHandler.keyName(PackBrowserKeyHandler.PREVIEW_LEFT, "←")
+                + PackBrowserKeyHandler.keyName(PackBrowserKeyHandler.PREVIEW_RIGHT, "→")
+                + " 移动, " + PackBrowserKeyHandler.keyName(PackBrowserKeyHandler.PREVIEW_ROTATE, "CTRL")
+                + " 旋转, " + PackBrowserKeyHandler.buildKeyName() + " 放出, "
+                + PackBrowserKeyHandler.keyName(PackBrowserKeyHandler.CANCEL_PREVIEW, "右键") + " 取消)");
+        } else {
+            setStatus("✗ 开启云端预览失败");
+        }
+    }
+
+    /** 云端删除确认面板 (替换卡片列表). */
+    private static void buildDeleteConfirm(UIElement listArea) {
+        CloudBuilding b = CloudBuildingClientCache.getInstance().getById(pendingDeleteBuildingId);
+        String name = b != null ? b.name : "?";
+        UIElement grid = new UIElement();
+        grid.layout(l -> l.flexDirection(FlexDirection.ROW).flexGrow(1).minWidth(0));
+        grid.setOverflowVisible(false);
+        listArea.addChild(grid);
+
+        UIElement box = new UIElement();
+        box.layout(l -> l.flexDirection(FlexDirection.COLUMN).width(200).paddingAll(8).gapAll(6)
+            .alignItems(AlignItems.CENTER).justifyContent(AlignContent.CENTER));
+        box.style(s -> s.background(Sprites.RECT_LIGHT));
+        box.setOverflowVisible(false);
+        grid.addChild(box);
+
+        Label title = new Label();
+        title.setText(tr("delete.title"), false);
+        title.textStyle(t -> t.textColor(0xFF5555));
+        title.layout(l -> l.widthPercent(100).height(10).alignItems(AlignItems.CENTER));
+        box.addChild(title);
+        Label nameL = new Label();
+        nameL.setText(truncate(name, 28), false);
+        nameL.textStyle(t -> t.textColor(0xFFFFFF));
+        nameL.layout(l -> l.widthPercent(100).height(10).alignItems(AlignItems.CENTER));
+        box.addChild(nameL);
+        Label body = new Label();
+        body.setText(tr("delete.body"), false);
+        body.textStyle(t -> t.textColor(0xAAAAAA));
+        body.layout(l -> l.widthPercent(100).height(10).alignItems(AlignItems.CENTER));
+        box.addChild(body);
+
+        UIElement btns = new UIElement();
+        btns.layout(l -> l.flexDirection(FlexDirection.ROW).widthPercent(100).height(16).gapAll(8)
+            .alignItems(AlignItems.CENTER).justifyContent(AlignContent.CENTER));
+        btns.setOverflowVisible(false);
+        box.addChild(btns);
+        Button cancel = new Button().setText(tr("delete.cancel"), false);
+        cancel.layout(l -> l.width(72).height(16));
+        cancel.setOnClick(e -> {
+            pendingDeleteBuildingId = null;
+            setStatus("已取消删除");
+            rebuildList();
+        });
+        btns.addChild(cancel);
+        Button ok = new Button().setText(tr("delete.confirm"), false);
+        ok.textStyle(s -> s.textColor(0xFF8888));
+        ok.layout(l -> l.width(72).height(16));
+        ok.setOnClick(e -> {
+            String id = pendingDeleteBuildingId;
+            pendingDeleteBuildingId = null;
+            CloudBuildingClientCache.getInstance().requestDelete(id);
+            setStatus("✗ 删除中: " + name);
+            rebuildList();
+        });
+        btns.addChild(ok);
+    }
+
+    // ==================== Tab: 服务器 ====================
+
+    private static String serverStatusText() {
+        // 只反映上传状态 (服务器清单同步是进服自动的后台行为, 不再显示)
+        BuildingUploadClient up = BuildingUploadClient.getInstance();
+        return switch (up.getState()) {
+            case UPLOADING, DONE, ERROR -> up.getStatusMessage();
+            default -> tr("server.status.upload_hint");
+        };
+    }
+
+    private static int serverStatusColor() {
+        BuildingUploadClient up = BuildingUploadClient.getInstance();
+        return switch (up.getState()) {
+            case UPLOADING -> 0x55AAFF;
+            case DONE -> 0x55FF55;
+            case ERROR -> 0xFF5555;
+            default -> 0xAAAAAA;
+        };
+    }
+
+    // ==================== Tab: 服务器 (本地建筑上传) ====================
+
+    /** 上传判定结果 */
+    private static final int UP_MISSING = 0;  // 服务器还没有
+    private static final int UP_STALE = 1;    // 服务器有但内容旧 (zip 包可比 SHA-1)
+    private static final int UP_SYNCED = 2;   // 已上传 (可建造)
+    private static final int UP_NA = 3;       // 找不到可上传的源文件
+
+    /** 本地 zip SHA-1 缓存: path|mtime|size → sha1 (避免每次重建列表都全量读盘算哈希) */
+    private static final Map<String, String> ZIP_SHA1_CACHE = new HashMap<>();
+
+    /** 本次游戏内已成功上传的 packName 集合 (manifest 还没推到/没匹配上时的兜底判定) */
+    private static final Set<String> LOCALLY_UPLOADED = new HashSet<>();
+
+    /** 上传成功回调 (BuildingUploadClient 在收到服务器最终 ACK 后调用) */
+    public static void markUploaded(String fileName) {
+        if (fileName != null && fileName.toLowerCase().endsWith(".zip")) {
+            LOCALLY_UPLOADED.add(fileName.substring(0, fileName.length() - 4));
+        }
+    }
+
+    /** 可上传源: packZip != null → 整个 zip 原样上传; 否则 standalone != null → 现场打包 建筑文件+.txt */
+    private record UploadSource(Path packZip, LocalBuilding standalone) {}
+
+    /** 服务器 tab 一行数据: 建筑 + 上传源 + 上传状态 */
+    private record ServerUploadEntry(ConstructionInfo c, UploadSource src, int state) {}
+
+    /** 解析一个建筑的可上传源; null = 不可上传 (zip 文件丢失/单文件建筑缺 nbt) */
+    private static UploadSource resolveUploadSource(ConstructionInfo c) {
+        if (c.getPack() != null) {
+            ExtensionPack p = c.getPack();
+            // __standalone__ 虚拟包: 建筑本体是磁盘上的单文件 (.nbt/.schem/...),
+            // 不是 zip, 不能在 zip 分支判定 —— 落到下面的 scanAll 按文件查找
+            if (!ExtensionPackManager.STANDALONE_PACKAGE.equals(p.getPackageName())) {
+                String fp = p.getFilePath();
+                String fn = p.getFileName();
+                if (fp != null && fn != null && fn.toLowerCase().endsWith(".zip")) {
+                    Path zip = Paths.get(fp);
+                    return Files.exists(zip) ? new UploadSource(zip, null) : null;
+                }
+                // 非 zip 的单文件包 (.litematic/.schem 独立建筑): 同样落到下面 scanAll 按文件查找
+            }
+        }
+        if (c.getLocalNbtPath() != null) {
+            for (LocalBuilding lb : scanAllCached()) {
+                if (c.getId().equals(lb.id) && lb.filePath != null) {
+                    return new UploadSource(null, lb);
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 从建筑文件的 NBT 调色板提取依赖 modid (上传前校验的兜底):
+     * 信息 txt 缺失或漏写依赖时, 方块 id 的 namespace 就是要装的模组.
+     * 独立建筑读单文件; zip 包建筑扫描包内全部结构文件取并集.
+     */
+    private static java.util.List<String> collectPaletteDeps(UploadSource src) {
+        java.util.TreeSet<String> mods = new java.util.TreeSet<>();
+        try {
+            if (src.standalone() != null && src.standalone().filePath != null) {
+                mods.addAll(NbtFormatConverter.extractModIds(Files.readAllBytes(src.standalone().filePath)));
+            } else if (src.packZip() != null) {
+                try (java.util.zip.ZipFile zf = new java.util.zip.ZipFile(src.packZip().toFile())) {
+                    var entries = zf.entries();
+                    while (entries.hasMoreElements()) {
+                        java.util.zip.ZipEntry ze = entries.nextElement();
+                        if (ze.isDirectory()) continue;
+                        String n = ze.getName().toLowerCase();
+                        if (n.endsWith(".nbt") || n.endsWith(".litematic")
+                            || n.endsWith(".schem") || n.endsWith(".schematic")) {
+                            mods.addAll(NbtFormatConverter.extractModIds(zf.getInputStream(ze).readAllBytes()));
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            PrefabCustomAddon.LOGGER.warn("[BUILD-UPLOAD] 解析建筑依赖 (palette) 失败 (非致命): {}", e.getMessage());
+        }
+        return new java.util.ArrayList<>(mods);
+    }
+
+    /** 本地 zip 的 SHA-1 (带 mtime+size 缓存) */
+    private static String cachedZipSha1(Path zip) {
+        try {
+            String key = zip + "|" + Files.getLastModifiedTime(zip).toMillis() + "|" + Files.size(zip);
+            return ZIP_SHA1_CACHE.computeIfAbsent(key, k -> ExtensionPackManager.computeSha1Hex(zip));
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** 判定一个建筑的同步状态: 与服务端 manifest (packName+buildingId) 匹配, zip 包再比 SHA-1 */
+    private static int uploadState(ConstructionInfo c, UploadSource src) {
+        if (src == null) return UP_NA;
+        String buildingId = c.getId();
+        String packName;
+        String localSha1 = null;
+        if (src.packZip() != null) {
+            String fn = src.packZip().getFileName().toString();
+            packName = fn.substring(0, fn.length() - 4);
+            localSha1 = cachedZipSha1(src.packZip());
+        } else {
+            // 独立建筑: 上传后 zip 名 = <id>.zip, packName = id
+            packName = buildingId;
+        }
+        for (ServerPackManifestPayload.Entry e :
+                ServerPackSyncClient.getInstance().getServerManifestSnapshot()) {
+            if (!buildingId.equals(e.buildingId())) continue;
+            if (packName == null || !packName.equals(e.packName())) continue;
+            if (localSha1 != null && e.sha1() != null && !e.sha1().isEmpty()) {
+                return e.sha1().equalsIgnoreCase(localSha1) ? UP_SYNCED : UP_STALE;
+            }
+            // 独立建筑: zip 是现场打包的, 只按 manifest 存在性判定
+            return UP_SYNCED;
+        }
+        // manifest 兜底: 刚上传成功、服务器清单还没刷新到时, 按本地成功记录判定
+        if (LOCALLY_UPLOADED.contains(packName)) return UP_SYNCED;
+        return UP_MISSING;
+    }
+
+    /** 服务器 tab 全量数据: 与「建筑」tab 同一份列表 (含搜索过滤), 逐个算上传源和状态 */
+    private static List<ServerUploadEntry> collectServerUploadEntries() {
+        List<ConstructionInfo> all = filterBySearch(getMergedConstructionsForBuildingsTab(), searchText);
+        List<ServerUploadEntry> out = new ArrayList<>(all.size());
+        for (ConstructionInfo c : all) {
+            UploadSource src = resolveUploadSource(c);
+            out.add(new ServerUploadEntry(c, src, uploadState(c, src)));
+        }
+        return out;
+    }
+
+    private static List<ServerUploadEntry> filterServerUploads(List<ServerUploadEntry> all) {
+        List<ServerUploadEntry> filtered = new ArrayList<>();
+        for (ServerUploadEntry e : all) {
+            if ("unsynced".equals(serverFilter) && e.state() != UP_MISSING && e.state() != UP_STALE) continue;
+            if ("synced".equals(serverFilter) && e.state() != UP_SYNCED) continue;
+            filtered.add(e);
+        }
+        return filtered;
+    }
+
+    private static void buildServersGrid(UIElement listArea) {
+        UIElement grid = new UIElement();
+        grid.layout(l -> l.flexDirection(FlexDirection.ROW).flexGrow(1).minWidth(0).gapAll(4));
+        grid.setOverflowVisible(false);
+        listArea.addChild(grid);
+
+        if (Minecraft.getInstance().getCurrentServer() == null) {
+            fillEmpty(grid, tr("server.only_multiplayer.title"), tr("server.only_multiplayer.hint"));
+            return;
+        }
+        List<ServerUploadEntry> all = collectServerUploadEntries();
+
+        // 中列: 过滤 tab + 卡片列表 (和「建筑」tab 同一份内容, 卡片多一个上传按钮)
+        UIElement mid = new UIElement();
+        mid.layout(l -> l.flexDirection(FlexDirection.COLUMN).flexGrow(1).minWidth(0).gapAll(3));
+        mid.setOverflowVisible(false);
+        grid.addChild(mid);
+
+        int syncedCount = 0;
+        int missingCount = 0;
+        for (ServerUploadEntry e : all) {
+            if (e.state() == UP_SYNCED) syncedCount++;
+            else if (e.state() != UP_NA) missingCount++;
+        }
+        UIElement filters = new UIElement();
+        filters.layout(l -> l.flexDirection(FlexDirection.ROW).widthPercent(100).height(14).gapAll(4));
+        filters.setOverflowVisible(false);
+        mid.addChild(filters);
+        String[] modes = {"all", "unsynced", "synced"};
+        String[] labels = {
+            tr("server.filter.all", String.valueOf(all.size())),
+            tr("server.filter.unsynced", String.valueOf(missingCount)),
+            tr("server.filter.synced", String.valueOf(syncedCount))};
+        // 管理按钮仅 OP 可见 (有权限打开管理界面: 删除建筑 / 玩家上传权限)
+        boolean isOp = Minecraft.getInstance().player != null
+                && Minecraft.getInstance().player.hasPermissions(2);
+        for (int i = 0; i < 3; i++) {
+            final String mode = modes[i];
+            Button f = new Button().setText(labels[i], false);
+            f.textStyle(s -> s.textColor(mode.equals(serverFilter) ? 0xFFFF88 : 0xBBBBBB));
+            f.buttonStyle(s -> s.baseTexture(mode.equals(serverFilter) ? Sprites.RECT_LIGHT : Sprites.RECT_DARK)
+                .hoverTexture(Sprites.RECT_LIGHT).pressedTexture(Sprites.RECT_DARK));
+            if (isOp) {
+                f.layout(l -> l.flexGrow(1).height(14).minWidth(0));
+            } else {
+                f.layout(l -> l.widthPercent(33).height(14));
+            }
+            f.setOnClick(e -> {
+                // 切过滤: 记住当前过滤的页码, 恢复目标过滤的页码 (来回切不丢分页)
+                SERVER_PAGE_BY_FILTER.put(serverFilter, serverPage);
+                serverFilter = mode;
+                serverPage = SERVER_PAGE_BY_FILTER.getOrDefault(mode, 0);
+                rebuild();
+            });
+            filters.addChild(f);
+        }
+        if (isOp) {
+            Button manage = new Button().setText("管理", false);
+            manage.textStyle(s -> s.textColor(0xFFCC66));
+            manage.buttonStyle(s -> s.baseTexture(Sprites.RECT_DARK)
+                .hoverTexture(Sprites.RECT_LIGHT).pressedTexture(Sprites.RECT_DARK));
+            manage.layout(l -> l.width(36).height(14));
+            manage.setOnClick(e -> GuiServerManage.open());
+            filters.addChild(manage);
+        }
+
+        if (all.isEmpty()) {
+            fillEmpty(mid, tr("server.empty.title"), tr("server.empty.hint"));
+            return;
+        }
+
+        List<ServerUploadEntry> filtered = filterServerUploads(all);
+        if (filtered.isEmpty()) {
+            String emptyTitle = "unsynced".equals(serverFilter) ? tr("server.filter.empty_synced")
+                : ("synced".equals(serverFilter) ? tr("server.filter.empty_unsynced") : tr("msg.no_match"));
+            String emptyHint = "unsynced".equals(serverFilter) ? tr("server.filter.empty_synced_hint")
+                : ("synced".equals(serverFilter) ? tr("server.filter.empty_unsynced_hint") : tr("msg.try_filter"));
+            fillEmpty(mid, emptyTitle, emptyHint);
+            return;
+        }
+        ScrollerView scroller = scroller(mid);
+        UIElement col = new UIElement();
+        col.layout(l -> l.flexDirection(FlexDirection.COLUMN).widthPercent(100).paddingAll(2).gapAll(4));
+        scroller.addScrollViewChild(col);
+        int cw = wideCardW();
+        int c = wideCols();
+        int perPage = Math.max(1, c * rowsPerPageFor(84));
+        int totalPages = (filtered.size() + perPage - 1) / perPage;
+        serverPage = clampPage(serverPage, totalPages);
+        int from = serverPage * perPage;
+        int to = Math.min(from + perPage, filtered.size());
+        for (int i = from; i < to; i += c) {
+            UIElement row = new UIElement();
+            row.layout(l -> l.flexDirection(FlexDirection.ROW).gapAll(4));
+            for (int j = i; j < Math.min(i + c, to); j++) {
+                row.addChild(serverUploadCard(filtered.get(j), cw));
+            }
+            col.addChild(row);
+        }
+        if (totalPages > 1) {
+            col.addChild(pager(totalPages, () -> serverPage, p -> serverPage = p));
+        }
+    }
+
+    /** 服务器 tab 卡片: 缩略图+名称+状态; 底部 = 上传按钮 / 已同步标签; 已同步点卡片直接进详情. */
+    private static UIElement serverUploadCard(ServerUploadEntry e, int cw) {
+        ConstructionInfo c = e.c();
+        Button card = new Button().noText();
+        card.buttonStyle(s -> s.baseTexture(Sprites.RECT_DARK)
+            .hoverTexture(Sprites.RECT_LIGHT).pressedTexture(Sprites.RECT_DARK));
+        card.layout(l -> l.flexDirection(FlexDirection.COLUMN).width(cw).height(84)
+            .paddingAll(3).gapAll(2));
+        card.setOverflowVisible(false);
+
+        // 上部: 缩略图 (60px) + 名称/大小
+        UIElement top = new UIElement();
+        top.layout(l -> l.flexDirection(FlexDirection.ROW).widthPercent(100).height(60).gapAll(4));
+        top.setOverflowVisible(false);
+        card.addChild(top);
+
+        UIElement thumb = new UIElement();
+        thumb.layout(l -> l.width(60).height(60));
+        ResourceLocation tex = null;
+        if (c.hasPreviewImage()) {
+            tex = ensurePreviewTextureLoaded(c);
+        }
+        if (tex == null && ThumbnailCache.hasCached(c)) {
+            byte[] pngData = ThumbnailCache.read(c);
+            if (pngData != null) {
+                tex = ensureCachedThumbnailTextureLoaded(c, pngData);
+            }
+        }
+        ResourceLocation ftex = tex;
+        thumb.style(s -> s.backgroundTexture(ftex != null ? SpriteTexture.of(ftex) : Sprites.RECT_DARK));
+        top.addChild(thumb);
+
+        UIElement info = new UIElement();
+        info.layout(l -> l.flexDirection(FlexDirection.COLUMN).flexGrow(1).gapAll(1).minWidth(0));
+        top.addChild(info);
+        int textW = cw - 60 - 14;
+        info.addChild(cardLabel(truncateW(c.getName(), textW), 0xFFFFFF, 10));
+        long srcSize = e.src() != null && e.src().packZip() != null
+            ? cachedZipSize(e.src().packZip()) : 0;
+        String sizeText = srcSize > 0 ? formatFileSize(srcSize)
+            : (e.src() != null && e.src().standalone() != null
+                ? formatFileSize(e.src().standalone().fileSize) : "-");
+        info.addChild(cardLabel(truncateW(c.getFormat() + " · " + sizeText, textW), 0x777777, 9));
+
+        // 底部: 状态按钮
+        BuildingUploadClient up = BuildingUploadClient.getInstance();
+        if (e.state() == UP_SYNCED) {
+            UIElement tag = new UIElement();
+            tag.layout(l -> l.widthPercent(100).height(16).alignItems(AlignItems.CENTER).justifyContent(AlignContent.CENTER));
+            tag.style(s -> s.backgroundTexture(Sprites.RECT_LIGHT));
+            tag.setOverflowVisible(false);
+            card.addChild(tag);
+            Label lbl = new Label();
+            lbl.setText(tr("server.badge.synced"), false);
+            lbl.textStyle(t -> t.textColor(0x55FF77));
+            lbl.layout(l -> l.widthPercent(100).heightPercent(100).alignItems(AlignItems.CENTER)
+                .justifyContent(AlignContent.CENTER));
+            tag.addChild(lbl);
+            // 已上传: 点卡片 → 打开服务器副本详情 (建造走服务端 packName)
+            card.setOnClick(ev -> openServerBuildingDetail(e));
+        } else if (e.state() == UP_NA) {
+            info.addChild(cardLabel(tr("server.badge.na"), 0x666666, 10));
+        } else {
+            boolean stale = e.state() == UP_STALE;
+            Button act = new Button().setText(tr(stale ? "server.button.reupload" : "server.button.upload"), false);
+            act.layout(l -> l.widthPercent(100).height(16));
+            act.setActive(!up.isUploading());
+            act.setOnClick(ev -> {
+                BuildingUploadClient client = BuildingUploadClient.getInstance();
+                if (client.isUploading()) {
+                    setStatus(tr("upload.err.busy"));
+                    return;
+                }
+                // 依赖缺失的建筑禁止上传: 传上去别人也建不了 (服务端同样缺依赖时解析会失败)
+                // txt 里的依赖 + 直接解析建筑文件 NBT palette 的依赖 (txt 缺失/漏记时兜底)
+                java.util.LinkedHashSet<String> depSet = new java.util.LinkedHashSet<>();
+                if (e.c().getDependencies() != null) {
+                    depSet.addAll(e.c().getDependencies());
+                }
+                depSet.addAll(collectPaletteDeps(e.src()));
+                if (!depSet.isEmpty()) {
+                    DependencyChecker.CheckResult cr = DependencyChecker.check(new java.util.ArrayList<>(depSet));
+                    if (!cr.missing.isEmpty()) {
+                        setStatus(tr("server.upload.err.deps", String.join(", ", cr.missing)));
+                        return;
+                    }
+                }
+                UploadSource src = e.src();
+                if (src.packZip() != null) {
+                    client.startPack(src.packZip());
+                } else {
+                    client.startStandalone(src.standalone());
+                }
+            });
+            card.addChild(act);
+        }
+        return card;
+    }
+
+    /** zip 文件大小 (失败返回 -1) */
+    private static long cachedZipSize(Path zip) {
+        try {
+            return Files.size(zip);
+        } catch (Exception e) {
+            return -1;
+        }
+    }
+
+    /** 已上传建筑 → 点开详情. 直接用本地建筑数据 (预览/详情读本地文件, 不需要任何副本):
+     *  <ul>
+     *    <li>zip 包建筑: 本地包名与服务端一致 (同一个 zip), 建造 payload 直接命中服务端</li>
+     *    <li>独立建筑: payload 带 STANDALONE_PACKAGE, 服务端 findConstruction 按建筑 id
+     *        去 server-cache 的上传 zip 里兜底查找</li>
+     *  </ul> */
+    private static void openServerBuildingDetail(ServerUploadEntry e) {
+        openConstructionDetail(e.c());
+    }
+
+    /** BuildingUploadClient 状态回调 (主线程): 刷新状态栏; structural=true 时重建列表 (按钮状态变化) */
+    public static void onUploadProgress(boolean structural) {
+        BuildingUploadClient up = BuildingUploadClient.getInstance();
+        setStatus(up.getStatusMessage());
+        if (structural && currentTab == Tab.SERVERS) {
+            rebuildList();
+        }
+    }
+
+    // ==================== Tab: 收藏 / 建筑 共用卡片网格 ====================
+
+    /** 通用建筑卡片网格 (建筑 tab 的分类过滤已经做完; favorites 传收藏列表). */
+    private static void buildConstructionGrid(UIElement listArea, List<ConstructionInfo> filtered, boolean sourceEmpty) {
+        UIElement grid = new UIElement();
+        grid.layout(l -> l.flexDirection(FlexDirection.ROW).flexGrow(1).minWidth(0));
+        grid.setOverflowVisible(false);
+        listArea.addChild(grid);
+        String emptyTitle = sourceEmpty && filtered.isEmpty() && (searchText == null || searchText.isEmpty())
+            ? tr("favorites.empty.title") : emptyTitleFor(false);
+        String emptyHint = sourceEmpty && filtered.isEmpty() && (searchText == null || searchText.isEmpty())
+            ? tr("favorites.empty.hint") : emptyHintFor(false);
+        fillConstructionGrid(grid, filtered, emptyTitle, emptyHint);
+    }
+
+    /** 建筑/收藏共用分页网格: 每页 cols×rowsPerPage 张卡片, 底部 ◀ 页码 ▶. */
+    private static void fillConstructionGrid(UIElement area, List<ConstructionInfo> list, String emptyTitle, String emptyHint) {
+        if (list.isEmpty()) {
+            fillEmpty(area, emptyTitle, emptyHint);
+            return;
+        }
+        boolean withCat = currentTab == Tab.BUILDINGS && !categoryPanelHidden;
+        int c = cols(withCat);
+        int cw = cardW(withCat);
+        int perPage = Math.max(1, c * rowsPerPage());
+        int totalPages = (list.size() + perPage - 1) / perPage;
+        constructionPage = clampPage(constructionPage, totalPages);
+        int from = constructionPage * perPage;
+        int to = Math.min(from + perPage, list.size());
+
+        UIElement pageCol = new UIElement();
+        pageCol.layout(l -> l.flexDirection(FlexDirection.COLUMN).flexGrow(1).minWidth(0).gapAll(3));
+        pageCol.setOverflowVisible(false);
+        area.addChild(pageCol);
+
+        UIElement rowsWrap = new UIElement();
+        rowsWrap.layout(l -> l.flexDirection(FlexDirection.COLUMN).widthPercent(100)
+            .flexGrow(1).minHeight(0).gapAll(4));
+        rowsWrap.setOverflowVisible(false);
+        pageCol.addChild(rowsWrap);
+        for (int i = from; i < to; i += c) {
+            UIElement row = new UIElement();
+            row.layout(l -> l.flexDirection(FlexDirection.ROW).gapAll(4));
+            for (int j = i; j < Math.min(i + c, to); j++) {
+                row.addChild(constructionCard(list.get(j), cw));
+            }
+            rowsWrap.addChild(row);
+        }
+
+        // 分页条: ◀ 页码/总页数 ▶ (只有一页时不显示)
+        if (totalPages > 1) {
+            pageCol.addChild(pager(totalPages, () -> constructionPage, p -> constructionPage = p));
+        }
+    }
+
+    /** 建筑卡片: 缩略图占满上部 + 收藏星 + 名称; 点卡片进 CustomStructureGui 详情. */
+    private static UIElement constructionCard(ConstructionInfo c, int cw) {
+        Button card = new Button().noText();
+        card.buttonStyle(s -> s.baseTexture(Sprites.RECT_DARK)
+            .hoverTexture(Sprites.RECT_LIGHT).pressedTexture(Sprites.RECT_DARK));
+        card.layout(l -> l.flexDirection(FlexDirection.COLUMN).width(cw).height(84));
+        card.setOverflowVisible(false);
+
+        UIElement thumb = new UIElement();
+        thumb.layout(l -> l.widthPercent(100).height(64));
+        ResourceLocation tex = null;
+        if (c.hasPreviewImage()) {
+            tex = ensurePreviewTextureLoaded(c);
+        }
+        if (tex == null && ThumbnailCache.hasCached(c)) {
+            byte[] pngData = ThumbnailCache.read(c);
+            if (pngData != null) {
+                tex = ensureCachedThumbnailTextureLoaded(c, pngData);
+            }
+        }
+        ResourceLocation ftex = tex;
+        if (ftex != null) {
+            thumb.style(s -> s.backgroundTexture(SpriteTexture.of(ftex)));
+        } else {
+            thumb.style(s -> s.backgroundTexture(Sprites.RECT_DARK));
+        }
+        card.addChild(thumb);
+
+        String packKey = c.getPack() == null ? "__standalone__" : c.getPack().getPackageName();
+        boolean isFav = PlayerPreferences.get().isFavorite(packKey, c.getId());
+        Label name = new Label();
+        name.setText((isFav ? "★ " : "") + truncate(c.getName(), 10), false);
+        name.textStyle(t -> t.textColor(isFav ? 0xFFFF44 : 0xFFFFFF));
+        name.layout(l -> l.widthPercent(100).height(12).alignItems(AlignItems.CENTER)
+            .justifyContent(AlignContent.CENTER));
+        card.addChild(name);
+
+        card.setOnClick(e -> openConstructionDetail(c));
+        return card;
+    }
+
+    // ==================== Tab: 下载 ====================
+
+    private static String websiteStatusText() {
+        if (websiteBuildingsLoading) return tr("website.status.loading");
+        if (websiteBuildingsError != null) return tr("website.status.failed", truncate(websiteBuildingsError, 16));
+        if (websiteBuildings.isEmpty()) return tr("website.status.empty");
+        return tr("website.status.summary", String.valueOf(websiteBuildings.size()));
+    }
+
+    private static int websiteStatusColor() {
+        if (websiteBuildingsLoading) return 0x55AAFF;
+        if (websiteBuildingsError != null) return 0xFF5555;
+        return 0xAAAAAA;
+    }
+
+    private static List<PackDownloadManager.BuildingInfo2> filteredWebsiteBuildings() {
+        List<PackDownloadManager.BuildingInfo2> result = new ArrayList<>();
+        for (PackDownloadManager.BuildingInfo2 b : websiteBuildings) {
+            if (b == null || b.id == null) continue;
+            boolean downloaded = PackDownloadManager.getInstance().isBuildingDownloaded(b);
+            if ("all".equals(websiteFilter)
+                || ("downloaded".equals(websiteFilter) && downloaded)
+                || ("not_downloaded".equals(websiteFilter) && !downloaded)) {
+                result.add(b);
+            }
+        }
+        result.sort((a, b2) -> {
+            boolean da = PackDownloadManager.getInstance().isBuildingDownloaded(a);
+            boolean db = PackDownloadManager.getInstance().isBuildingDownloaded(b2);
+            if (da != db) return da ? -1 : 1;
+            return 0;
+        });
+        return result;
+    }
+
+    private static void buildDownloadGrid(UIElement listArea) {
+        UIElement grid = new UIElement();
+        grid.layout(l -> l.flexDirection(FlexDirection.ROW).flexGrow(1).minWidth(0));
+        grid.setOverflowVisible(false);
+        listArea.addChild(grid);
+        if (websiteBuildings.isEmpty()) {
+            String emptyTitle;
+            String emptyHint;
+            if (websiteBuildingsError != null) {
+                emptyTitle = tr("website.empty.failed");
+                emptyHint = tr("website.empty.failed_hint");
+            } else if (websiteBuildingsLoading) {
+                emptyTitle = tr("website.empty.loading");
+                emptyHint = tr("website.empty.loading_hint");
+            } else {
+                emptyTitle = tr("website.empty.empty");
+                emptyHint = tr("website.empty.empty_hint");
+            }
+            fillEmpty(grid, emptyTitle, emptyHint);
+            return;
+        }
+        List<PackDownloadManager.BuildingInfo2> filtered = filteredWebsiteBuildings();
+        if (filtered.isEmpty()) {
+            String emptyTitle;
+            String emptyHint;
+            if ("not_downloaded".equals(websiteFilter)) {
+                emptyTitle = tr("website.empty.all_downloaded");
+                emptyHint = tr("website.empty.all_downloaded_hint");
+            } else if ("downloaded".equals(websiteFilter)) {
+                emptyTitle = tr("website.empty.no_downloaded");
+                emptyHint = tr("website.empty.no_downloaded_hint");
+            } else {
+                emptyTitle = tr("website.empty.empty");
+                emptyHint = tr("website.empty.empty_hint");
+            }
+            fillEmpty(grid, emptyTitle, emptyHint);
+            return;
+        }
+        ScrollerView scroller = scroller(grid);
+        UIElement col = new UIElement();
+        col.layout(l -> l.flexDirection(FlexDirection.COLUMN).widthPercent(100).paddingAll(2).gapAll(4));
+        scroller.addScrollViewChild(col);
+        int cw = wideCardW();
+        int c = wideCols();
+        int perPage = Math.max(1, c * rowsPerPageFor(72));
+        int totalPages = (filtered.size() + perPage - 1) / perPage;
+        websitePage = clampPage(websitePage, totalPages);
+        int from = websitePage * perPage;
+        int to = Math.min(from + perPage, filtered.size());
+        for (int i = from; i < to; i += c) {
+            UIElement row = new UIElement();
+            row.layout(l -> l.flexDirection(FlexDirection.ROW).gapAll(4));
+            for (int j = i; j < Math.min(i + c, to); j++) {
+                row.addChild(websiteCard(filtered.get(j), cw));
+            }
+            col.addChild(row);
+        }
+        if (totalPages > 1) {
+            col.addChild(pager(totalPages, () -> websitePage, p -> websitePage = p));
+        }
+    }
+
+    /** 网站建筑卡片: 已下载 → 点卡片进详情 (底部"已下载"标签); 未下载 → 底部"下载"按钮. */
+    private static UIElement websiteCard(PackDownloadManager.BuildingInfo2 b, int cw) {
+        boolean downloaded = isWebsiteBuildingDownloaded(b);
+        boolean downloading = WEBSITE_DOWNLOADING.contains(b.id);
+        // 卡片本体用 Button (纯 UIElement 没有 setOnClick); 未下载分支有子按钮, 不给卡片设 onClick
+        Button card = new Button().noText();
+        card.buttonStyle(s -> s.baseTexture(Sprites.RECT_DARK)
+            .hoverTexture(Sprites.RECT_LIGHT).pressedTexture(Sprites.RECT_DARK));
+        card.layout(l -> l.flexDirection(FlexDirection.COLUMN).width(cw).height(72)
+            .paddingAll(3).gapAll(2));
+        card.setOverflowVisible(false);
+
+        UIElement top = new UIElement();
+        top.layout(l -> l.flexDirection(FlexDirection.ROW).widthPercent(100).gapAll(4));
+        top.setOverflowVisible(false);
+        card.addChild(top);
+
+        UIElement thumb = new UIElement();
+        thumb.layout(l -> l.width(36).height(36));
+        ResourceLocation tex = WEBSITE_IMG.get(b.id);
+        if (tex != null) {
+            thumb.style(s -> s.backgroundTexture(SpriteTexture.of(tex)));
+        } else {
+            thumb.style(s -> s.backgroundTexture(Sprites.RECT_DARK));
+        }
+        top.addChild(thumb);
+
+        UIElement info = new UIElement();
+        info.layout(l -> l.flexDirection(FlexDirection.COLUMN).flexGrow(1).gapAll(1).minWidth(0));
+        top.addChild(info);
+        int textW = cw - 36 - 14;
+        info.addChild(cardLabel(truncateW(displayName(b.name, b.id), textW), 0xFFFFFF, 10));
+        info.addChild(cardLabel(truncateW("by " + (b.author == null || b.author.isEmpty()
+            ? tr("website.author.unknown") : b.author), textW), 0x888888, 9));
+        String meta = (b.fileExt == null || b.fileExt.isEmpty() ? ".nbt" : b.fileExt)
+            + " · " + formatFileSize(b.fileSize) + (b.downloads > 0 ? " · ↓" + b.downloads : "");
+        info.addChild(cardLabel(truncateW(meta, textW), 0x777777, 9));
+
+        if (downloading) {
+            double[] prog = WEBSITE_PROGRESS.get(b.id);
+            String label = prog != null ? tr("website.badge.downloading", String.valueOf((int) prog[2]))
+                : tr("website.status.loading");
+            UIElement tag = new UIElement();
+            tag.layout(l -> l.widthPercent(100).height(16).alignItems(AlignItems.CENTER)
+                .justifyContent(AlignContent.CENTER));
+            tag.style(s -> s.backgroundTexture(Sprites.RECT_LIGHT));
+            tag.setOverflowVisible(false);
+            card.addChild(tag);
+            Label lbl = new Label();
+            lbl.setText(label, false);
+            lbl.textStyle(t -> t.textColor(0xAAAAAA));
+            lbl.layout(l -> l.widthPercent(100).heightPercent(100).alignItems(AlignItems.CENTER)
+                .justifyContent(AlignContent.CENTER));
+            tag.addChild(lbl);
+        } else if (downloaded) {
+            UIElement tag = new UIElement();
+            tag.layout(l -> l.widthPercent(100).height(16).alignItems(AlignItems.CENTER)
+                .justifyContent(AlignContent.CENTER));
+            tag.style(s -> s.backgroundTexture(Sprites.RECT_LIGHT));
+            tag.setOverflowVisible(false);
+            card.addChild(tag);
+            Label lbl = new Label();
+            lbl.setText(tr("website.badge.downloaded"), false);
+            lbl.textStyle(t -> t.textColor(0x55FF55));
+            lbl.layout(l -> l.widthPercent(100).heightPercent(100).alignItems(AlignItems.CENTER)
+                .justifyContent(AlignContent.CENTER));
+            tag.addChild(lbl);
+            card.setOnClick(e -> openDownloadedBuildingDetail(b));
+        } else {
+            Button dl = new Button().setText(tr("website.button.download"), false);
+            dl.layout(l -> l.widthPercent(100).height(16));
+            dl.setOnClick(e -> startWebsiteDownload(b));
+            card.addChild(dl);
+        }
+        return card;
+    }
+
+    // ==================== Tab: 提交材料 ====================
+
+    /** 提交材料条目列表 (含搜索词过滤): "交了一点但没交完"的建筑. */
+    private static List<SubmitMaterialIndex.Entry> getSubmitEntries() {
+        var pl = Minecraft.getInstance().player;
+        List<SubmitMaterialIndex.Entry> entries = pl == null ? List.of()
+            : SubmitMaterialIndex.collect(getMergedConstructionsForBuildingsTab(), pl.getUUID());
+        if (!searchText.isEmpty()) {
+            String q = searchText.toLowerCase();
+            List<SubmitMaterialIndex.Entry> filtered = new ArrayList<>(entries.size());
+            for (SubmitMaterialIndex.Entry en : entries) {
+                if (en.construction.getName().toLowerCase().contains(q)) {
+                    filtered.add(en);
+                }
+            }
+            entries = filtered;
+        }
+        return entries;
+    }
+
+    private static void buildSubmitGrid(UIElement listArea, List<SubmitMaterialIndex.Entry> entries) {
+        UIElement grid = new UIElement();
+        grid.layout(l -> l.flexDirection(FlexDirection.ROW).flexGrow(1).minWidth(0));
+        grid.setOverflowVisible(false);
+        listArea.addChild(grid);
+        if (entries.isEmpty()) {
+            fillEmpty(grid, tr("submit.empty.title"), tr("submit.empty.hint"));
+            return;
+        }
+        ScrollerView scroller = scroller(grid);
+        UIElement col = new UIElement();
+        col.layout(l -> l.flexDirection(FlexDirection.COLUMN).widthPercent(100).paddingAll(2).gapAll(4));
+        scroller.addScrollViewChild(col);
+        int cw = cardW(false);
+        int c = cols(false);
+        int perPage = Math.max(1, c * rowsPerPageFor(84));
+        int totalPages = (entries.size() + perPage - 1) / perPage;
+        submitPage = clampPage(submitPage, totalPages);
+        int from = submitPage * perPage;
+        int to = Math.min(from + perPage, entries.size());
+        for (int i = from; i < to; i += c) {
+            UIElement row = new UIElement();
+            row.layout(l -> l.flexDirection(FlexDirection.ROW).gapAll(4));
+            for (int j = i; j < Math.min(i + c, to); j++) {
+                row.addChild(submitCard(entries.get(j), cw));
+            }
+            col.addChild(row);
+        }
+        if (totalPages > 1) {
+            col.addChild(pager(totalPages, () -> submitPage, p -> submitPage = p));
+        }
+    }
+
+    /** 提交进度卡片: 缩略图 + 名称 + 进度 + 状态; 交齐绿框提示可建造. */
+    private static UIElement submitCard(SubmitMaterialIndex.Entry en, int cw) {
+        Button card = new Button().noText();
+        card.buttonStyle(s -> s.baseTexture(Sprites.RECT_DARK)
+            .hoverTexture(Sprites.RECT_LIGHT).pressedTexture(Sprites.RECT_DARK));
+        card.layout(l -> l.flexDirection(FlexDirection.COLUMN).width(cw).height(84).paddingAll(3).gapAll(2));
+        card.setOverflowVisible(false);
+
+        UIElement top = new UIElement();
+        top.layout(l -> l.flexDirection(FlexDirection.ROW).widthPercent(100).gapAll(4));
+        top.setOverflowVisible(false);
+        card.addChild(top);
+
+        // 缩略图 (预览图 → 缩略图缓存, 与建筑卡片同源)
+        UIElement thumb = new UIElement();
+        thumb.layout(l -> l.width(40).height(40));
+        ResourceLocation tex = null;
+        if (en.construction.hasPreviewImage()) {
+            tex = ensurePreviewTextureLoaded(en.construction);
+        }
+        if (tex == null && ThumbnailCache.hasCached(en.construction)) {
+            byte[] pngData = ThumbnailCache.read(en.construction);
+            if (pngData != null) {
+                tex = ensureCachedThumbnailTextureLoaded(en.construction, pngData);
+            }
+        }
+        ResourceLocation ftex = tex;
+        if (ftex != null) {
+            thumb.style(s -> s.backgroundTexture(SpriteTexture.of(ftex)));
+        } else {
+            thumb.style(s -> s.backgroundTexture(Sprites.RECT_DARK));
+        }
+        top.addChild(thumb);
+
+        UIElement info = new UIElement();
+        info.layout(l -> l.flexDirection(FlexDirection.COLUMN).flexGrow(1).gapAll(1).minWidth(0));
+        top.addChild(info);
+        info.addChild(cardLabel(truncate(en.construction.getName(), 8), 0xFFFFFF, 10));
+        if (en.needTotal > 0) {
+            info.addChild(cardLabel(en.haveTotal + "/" + en.needTotal, 0xAAAAAA, 9));
+        } else {
+            info.addChild(cardLabel("已提 " + en.haveTotal, 0x888888, 9));
+        }
+
+        // 进度条 (底部横条): fill 作为 bar 的子元素, 按百分比填充
+        if (en.needTotal > 0) {
+            UIElement bar = new UIElement();
+            bar.layout(l -> l.widthPercent(100).height(6));
+            bar.style(s -> s.backgroundTexture(Sprites.RECT_DARK));
+            bar.setOverflowVisible(false);
+            card.addChild(bar);
+            UIElement fill = new UIElement();
+            int pct = Math.max(2, Math.round(en.progress() * 100.0f));
+            fill.layout(l -> l.widthPercent(pct).heightPercent(100));
+            fill.style(s -> s.backgroundTexture(en.ready ? Sprites.RECT_LIGHT : Sprites.RECT_LIGHT));
+            bar.addChild(fill);
+        }
+
+        String status;
+        int statusColor;
+        if (en.ready) {
+            status = "✓ " + tr("submit.ready");
+            statusColor = 0x55FF55;
+        } else if (en.needTotal > 0) {
+            status = tr("submit.remaining", String.valueOf(en.needTotal - en.haveTotal));
+            statusColor = 0xFFAA55;
+        } else {
+            status = tr("submit.unknown", String.valueOf(en.submitted.size()));
+            statusColor = 0x888888;
+        }
+        card.addChild(cardLabel(status, statusColor, 9));
+
+        card.setOnClick(e -> openConstructionDetail(en.construction));
+        return card;
+    }
+
+    // ==================== 通用小部件 ====================
+
+    private static ScrollerView scroller(UIElement parent) {
+        ScrollerView scroll = new ScrollerView();
+        scroll.scrollerStyle(s -> s.mode(ScrollerMode.VERTICAL));
+        scroll.verticalScroller(v -> v.setScrollBarSize(6f));
+        scroll.layout(l -> l.flexGrow(1).widthPercent(100).minHeight(0));
+        parent.addChild(scroll);
+        return scroll;
+    }
+
+    private static void fillEmpty(UIElement area, String title, String hint) {
+        UIElement box = new UIElement();
+        box.layout(l -> l.flexDirection(FlexDirection.COLUMN).flexGrow(1).widthPercent(100)
+            .alignItems(AlignItems.CENTER).justifyContent(AlignContent.CENTER).gapAll(3));
+        area.addChild(box);
+        Label t = new Label();
+        t.setText(title, false);
+        t.textStyle(s -> s.textColor(0xAAAAAA));
+        t.layout(l -> l.widthPercent(100).height(12).alignItems(AlignItems.CENTER)
+            .justifyContent(AlignContent.CENTER));
+        box.addChild(t);
+        Label h = new Label();
+        h.setText(hint, false);
+        h.textStyle(s -> s.textColor(0x777777));
+        h.layout(l -> l.widthPercent(100).height(12).alignItems(AlignItems.CENTER)
+            .justifyContent(AlignContent.CENTER));
+        box.addChild(h);
+    }
+
+    private static UIElement cardLabel(String text, int color, int height) {
+        Label l = new Label();
+        l.setText(text, false);
+        l.textStyle(t -> t.textColor(color));
+        l.layout(el -> el.widthPercent(100).height(height));
+        return l;
+    }
+
+    /** 小卡片网格可用宽度 (建筑 tab 有分类面板时要扣掉). */
+    private static int gridAvailW(boolean withCategory) {
+        return Minecraft.getInstance().getWindow().getGuiScaledWidth() - TAB_W - 30
+            - (withCategory ? CAT_W + 4 : 0);
+    }
+
+    /** 动态列数; 建筑 tab 有分类面板时要扣掉面板宽 (否则最后一列被切掉). */
+    private static int cols(boolean withCategory) {
+        return Math.max(2, Math.min(gridAvailW(withCategory) / 96, 6));
+    }
+
+    private static int cardW(boolean withCategory) {
+        int avail = gridAvailW(withCategory);
+        int c = cols(withCategory);
+        return Math.max(92, (avail - (c - 1) * 4) / c);
+    }
+
+    /** 每页行数 (按窗口高度算, 卡片 84 高 + 行距 4). */
+    private static int rowsPerPage() {
+        int availH = Minecraft.getInstance().getWindow().getGuiScaledHeight() - 80;
+        return Math.max(1, availH / 88);
+    }
+
+    /** 每页行数 (按窗口高度与卡片高度算, 行距 4). */
+    private static int rowsPerPageFor(int cardH) {
+        int availH = Minecraft.getInstance().getWindow().getGuiScaledHeight() - 70;
+        return Math.max(1, availH / (cardH + 4));
+    }
+
+    /** 页码收敛到 [0, totalPages-1]. */
+    private static int clampPage(int page, int totalPages) {
+        if (page >= totalPages) return totalPages - 1;
+        return Math.max(0, page);
+    }
+
+    /** 通用翻页条: ◀ 页码/总页数 ▶ (点击后重建列表区, 不打断搜索框输入). */
+    private static UIElement pager(int totalPages, IntSupplier get, IntConsumer set) {
+        UIElement nav = new UIElement();
+        nav.layout(l -> l.flexDirection(FlexDirection.ROW).widthPercent(100).height(14).gapAll(4)
+            .alignItems(AlignItems.CENTER).justifyContent(AlignContent.CENTER));
+        nav.setOverflowVisible(false);
+        Button prev = new Button().setText("◀", false);
+        prev.textStyle(s -> s.textColor(0xCCCCCC));
+        prev.layout(l -> l.width(24).height(14));
+        prev.setOnClick(e -> {
+            int p = get.getAsInt();
+            if (p > 0) {
+                set.accept(p - 1);
+                rebuildList();
+            }
+        });
+        nav.addChild(prev);
+        Label lbl = new Label();
+        lbl.setText((get.getAsInt() + 1) + " / " + totalPages, false);
+        lbl.textStyle(t -> t.textColor(0xAAAAAA));
+        lbl.layout(l -> l.width(44).height(14).alignItems(AlignItems.CENTER)
+            .justifyContent(AlignContent.CENTER));
+        nav.addChild(lbl);
+        Button next = new Button().setText("▶", false);
+        next.textStyle(s -> s.textColor(0xCCCCCC));
+        next.layout(l -> l.width(24).height(14));
+        next.setOnClick(e -> {
+            int p = get.getAsInt();
+            if (p < totalPages - 1) {
+                set.accept(p + 1);
+                rebuildList();
+            }
+        });
+        nav.addChild(next);
+        return nav;
+    }
+
+    /** 动态列布局: 宽卡片 (云端/服务器/下载). */
+    private static int wideCols() {
+        int avail = Minecraft.getInstance().getWindow().getGuiScaledWidth() - TAB_W - 30;
+        return Math.max(1, Math.min(avail / 240, 3));
+    }
+
+    private static int wideCardW() {
+        int avail = Minecraft.getInstance().getWindow().getGuiScaledWidth() - TAB_W - 30;
+        return Math.max(180, (avail - (wideCols() - 1) * 4) / wideCols());
+    }
+
+    // ==================== Tab 切换 ====================
+
+    private static void switchTab(Tab tab) {
+        if (tab == currentTab) return;
+        // 保存当前 tab 状态 (含页码; 服务器 tab 额外存分页+过滤)
+        SERVER_PAGE_BY_FILTER.put(serverFilter, serverPage);
+        TabState savedCur = new TabState(currentCategory, categoryPanelHidden, searchText, constructionPage);
+        savedCur.serverPage = serverPage;
+        savedCur.serverFilter = serverFilter;
+        TAB_STATES.put(currentTab, savedCur);
+        currentTab = tab;
+        // 恢复目标 tab 状态
+        TabState saved = TAB_STATES.get(tab);
+        if (saved != null) {
+            currentCategory = saved.category;
+            categoryPanelHidden = saved.panelHidden;
+            searchText = saved.search;
+            constructionPage = saved.page;
+            serverPage = saved.serverPage;
+            serverFilter = saved.serverFilter != null ? saved.serverFilter : "unsynced";
+        } else {
+            currentCategory = null;
+            categoryPanelHidden = false;
+            searchText = "";
+            constructionPage = 0;
+            serverPage = 0;
+            serverFilter = "unsynced";
+        }
+        pendingDeleteBuildingId = null;
+        cloudPage = 0;
+        websitePage = 0;
+        submitPage = 0;
+        // 进入云端 tab 时探针 Xaero 可用性 (旧版行为, 每次进入探一次即可, 不放 buildCloudGrid)
+        if (tab == Tab.CLOUD) {
+            XaeroWaypointBridge.forceProbe();
+        }
+        rebuild();
+    }
+
+    // ==================== 详情跳转 ====================
+
+    private static void openConstructionDetail(ConstructionInfo c) {
+        // 蓝图模式: 点建筑卡片直接开 CustomStructureGui (生存=提交材料 / 创造=预览)
+        if (blueprintStack != null) {
+            ItemStack stack = blueprintStack;
+            BlockPos pos = blueprintPos;
+            blueprintStack = null;
+            blueprintPos = null;
+            PrefabCustomAddon.LOGGER.info("[BLUEPRINT-MODE] 卡片点击直跳 CustomStructureGui: id={}, pos={}",
+                c.getId(), pos);
+            CustomStructureGui.openFromBrowser(c, stack, pos);
+            return;
+        }
+        var pl = Minecraft.getInstance().player;
+        CustomStructureGui.openFromBrowser(c, null, pl == null ? null : pl.blockPosition().below());
+    }
+
+    /** 下载 tab 已下载卡片 → 按文件名找本地三件套 → 详情. */
+    private static void openDownloadedBuildingDetail(PackDownloadManager.BuildingInfo2 b) {
+        if (b == null) return;
+        String baseName = b.name == null || b.name.isEmpty() ? b.id : b.name;
+        baseName = baseName.replaceAll("[\\\\/:*?\"<>|]", "_");
+        String ext = b.fileExt == null || b.fileExt.isEmpty() ? ".nbt" : b.fileExt;
+        if (!ext.startsWith(".")) ext = "." + ext;
+        String extNoDot = ext.substring(1);
+
+        for (Path root : new Path[]{LocalBuildingScanner.getDownloadRoot(), LocalBuildingScanner.getExtensionRoot()}) {
+            String scanTag = root.equals(LocalBuildingScanner.getDownloadRoot()) ? "download" : "extension";
+            for (LocalBuilding lb : LocalBuildingScanner.scanDir(root, scanTag)) {
+                String lbExt = lb.fileExt == null ? "" : lb.fileExt;
+                boolean extMatch = lbExt.isEmpty() || lbExt.equalsIgnoreCase(ext)
+                    || lbExt.equalsIgnoreCase(extNoDot)
+                    || (lbExt.startsWith(".") && lbExt.substring(1).equalsIgnoreCase(extNoDot));
+                if (!lb.id.equals(baseName) || !extMatch) continue;
+                ConstructionInfo c = new ConstructionInfo(lb.id);
+                c.setName(lb.name == null || lb.name.isEmpty() ? b.name : lb.name);
+                c.setAuthor(lb.author == null || lb.author.isEmpty() ? b.author : lb.author);
+                c.setDescription(lb.description);
+                c.setDependencies(lb.dependencies);
+                c.setCategory(lb.category);
+                c.setFormat(lb.fileExt == null ? "nbt" : lb.fileExt.replaceFirst("^\\.", ""));
+                c.setLocalImagePath(lb.imagePath);
+                c.setLocalNbtPath(lb.filePath);
+                openConstructionDetail(c);
+                return;
+            }
+        }
+        setStatus("✗ 找不到已下载文件, 试重新下载: " + b.name);
+    }
+
+    // ==================== 下载 tab 数据 ====================
+
+    private static void refreshDownloadedBuildings() {
+        downloadedBuildings = LocalBuildingScanner.scanDir(LocalBuildingScanner.getDownloadRoot(), "download");
+        for (LocalBuilding lb : downloadedBuildings) {
+            if (!lb.hasPreviewImage() || LOCAL_IMG.containsKey(lb.id) || LOCAL_IMG_LOADING.contains(lb.id)) continue;
+            LOCAL_IMG_LOADING.add(lb.id);
+            triggerLoadLocalImage(lb);
+        }
+    }
+
+    private static void triggerLoadLocalImage(LocalBuilding lb) {
         Path imgPath = lb.imagePath;
-        if (imgPath == null || !Files.exists(imgPath, new LinkOption[0])) {
+        if (imgPath == null || !Files.exists(imgPath)) {
             return;
         }
         CompletableFuture.runAsync(() -> {
-            try (InputStream is = Files.newInputStream(imgPath, new OpenOption[0]);){
+            try (InputStream is = Files.newInputStream(imgPath)) {
                 BufferedImage img = ImageIO.read(is);
                 if (img == null) {
                     return;
                 }
                 Minecraft.getInstance().execute(() -> {
-                    try {
-                        DynamicTexture tex = GuiExtensionPackBrowser.uploadIconTexture(img);
-                        if (tex == null) {
-                            return;
-                        }
-                        ResourceLocation loc = Minecraft.getInstance().getTextureManager().register("prefab_dl_" + lb.id, tex);
-                        this.localImageCache.put(lb.id, loc);
+                    DynamicTexture tex = uploadIconTexture(img);
+                    if (tex == null) {
+                        return;
                     }
-                    catch (Exception e) {
-                        PrefabCustomAddon.LOGGER.warn("[DOWNLOAD-TAB] local image upload failed for {}", (Object)lb.id, (Object)e);
-                    }
+                    ResourceLocation loc = Minecraft.getInstance().getTextureManager()
+                        .register("prefab_dl_" + TEX_GEN.incrementAndGet(), tex);
+                    LOCAL_IMG.put(lb.id, loc);
                 });
-            }
-            catch (Exception e) {
-                PrefabCustomAddon.LOGGER.warn("[DOWNLOAD-TAB] local image read failed for {}", (Object)lb.id, (Object)e);
+            } catch (Exception e) {
+                PrefabCustomAddon.LOGGER.warn("[DOWNLOAD-TAB] local image read failed for {}", lb.id, e);
             }
         });
     }
 
-    /*
-     * WARNING - Removed try catching itself - possible behaviour change.
-     */
-    private static DynamicTexture uploadIconTexture(BufferedImage img) {
-        if (img == null) {
-            return null;
-        }
-        int w = img.getWidth();
-        int h = img.getHeight();
-        if (w <= 0 || h <= 0) {
-            return null;
-        }
-        int cropSide = Math.min(w, h);
-        int cropX = (w - cropSide) / 2;
-        int cropY = (h - cropSide) / 2;
-        if (cropSide < w || cropSide < h) {
-            BufferedImage cropped = img.getSubimage(cropX, cropY, cropSide, cropSide);
-            BufferedImage croppedCopy = new BufferedImage(cropSide, cropSide, 2);
-            croppedCopy.createGraphics().drawImage((Image)cropped, 0, 0, null);
-            img = croppedCopy;
-            w = cropSide;
-            h = cropSide;
-        }
-        if (w > 256) {
-            double scale = 256.0 / (double)w;
-            int nw = 256;
-            int nh = 256;
-            BufferedImage scaled = new BufferedImage(nw, nh, 2);
-            Graphics2D g = scaled.createGraphics();
-            try {
-                g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
-                g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
-                g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-                g.drawImage(img, 0, 0, nw, nh, null);
-            }
-            finally {
-                g.dispose();
-            }
-            img = scaled;
-            w = nw;
-            h = nh;
-        }
-        DynamicTexture tex = new DynamicTexture(w, h, false);
-        tex.setFilter(true, true);
-        NativeImage pixels = tex.getPixels();
-        for (int y = 0; y < h; ++y) {
-            for (int x = 0; x < w; ++x) {
-                int argb = img.getRGB(x, y);
-                int abgr = argb & 0xFF00FF00 | (argb & 0xFF0000) >> 16 | (argb & 0xFF) << 16;
-                pixels.setPixelRGBA(x, y, abgr);
-            }
-        }
-        tex.upload();
-        return tex;
+    private static void refreshWebsiteBuildings() {
+        if (websiteBuildingsLoading) return;
+        websiteBuildingsLoading = true;
+        websiteBuildingsError = null;
+        PackDownloadManager.getInstance().fetchBuildingListAsync()
+            .thenAccept(list -> Minecraft.getInstance().execute(() -> {
+                websiteBuildings = list;
+                websiteBuildingsLoading = false;
+                websiteBuildingsError = null;
+                for (PackDownloadManager.BuildingInfo2 b : list) {
+                    if (b == null || b.id == null || WEBSITE_IMG.containsKey(b.id)
+                        || WEBSITE_IMG_LOADING.contains(b.id)) continue;
+                    triggerLoadWebsiteImage(b);
+                }
+                rebuildList();
+            }))
+            .exceptionally(ex -> {
+                Throwable t = ex.getCause() != null ? ex.getCause() : ex;
+                Minecraft.getInstance().execute(() -> {
+                    websiteBuildingsLoading = false;
+                    websiteBuildingsError = t.getMessage();
+                    PrefabCustomAddon.LOGGER.warn("[DOWNLOAD-TAB] fetch building list failed: {}", websiteBuildingsError);
+                    rebuildList();
+                });
+                return null;
+            });
     }
 
-    private void triggerLoadCloudThumb(CloudBuilding b) {
-        if (b == null || b.id == null) {
-            return;
-        }
-        PrefabCustomAddon.LOGGER.info("[CLOUD-THUMB] \u5c1d\u8bd5\u4e3a\u4e91\u7aef\u5efa\u7b51 {} (id={}) \u52a0\u8f7d\u7f29\u7565\u56fe", (Object)b.name, (Object)b.id);
-        if (b.thumbnailPng != null && b.thumbnailPng.length > 0) {
-            byte[] data = b.thumbnailPng;
-            CompletableFuture.runAsync(() -> {
+    private static void triggerLoadWebsiteImage(PackDownloadManager.BuildingInfo2 b) {
+        if (b == null || b.id == null) return;
+        WEBSITE_IMG_LOADING.add(b.id);
+        PackDownloadManager.getInstance().fetchBuildingImageAsync(b)
+            .thenAccept(data -> Minecraft.getInstance().execute(() -> {
+                WEBSITE_IMG_LOADING.remove(b.id);
+                if (data == null || data.length == 0) return;
+                BufferedImage img;
                 try {
-                    BufferedImage img = ImageIO.read(new ByteArrayInputStream(data));
-                    if (img == null) {
-                        PrefabCustomAddon.LOGGER.warn("[CLOUD-THUMB] \u5d4c\u5165\u56fe\u89e3\u7801\u5931\u8d25, \u5c1d\u8bd5 LocalBuilding \u515c\u5e95");
-                        this.loadCloudThumbFromLocalBuilding(b);
-                        return;
-                    }
-                    int w = img.getWidth();
-                    int h = img.getHeight();
-                    if (w <= 0 || h <= 0) {
-                        this.loadCloudThumbFromLocalBuilding(b);
-                        return;
-                    }
-                    int ww = w;
-                    int hh = h;
-                    Minecraft.getInstance().execute(() -> this.uploadCloudThumb(b, img, ww, hh, "embedded"));
-                }
-                catch (Exception e) {
-                    PrefabCustomAddon.LOGGER.warn("[CLOUD-THUMB] \u5d4c\u5165\u56fe\u8bfb\u53d6\u5931\u8d25, \u5c1d\u8bd5 LocalBuilding \u515c\u5e95: {}", (Object)e.toString());
-                    this.loadCloudThumbFromLocalBuilding(b);
-                }
-            });
-            return;
-        }
-        this.loadCloudThumbFromLocalBuilding(b);
-    }
-
-    private void loadCloudThumbFromLocalBuilding(CloudBuilding b) {
-        CompletableFuture.runAsync(() -> {
-            try {
-                List<LocalBuilding> all = LocalBuildingScanner.scanAll();
-                PrefabCustomAddon.LOGGER.info("[CLOUD-THUMB-FALLBACK] \u626b\u63cf\u5230 {} \u4e2a LocalBuilding, \u76ee\u6807 name='{}'", (Object)all.size(), (Object)b.name);
-                LocalBuilding matched = null;
-                for (LocalBuilding lb : all) {
-                    if (lb.name == null || !lb.name.equals(b.name)) continue;
-                    matched = lb;
-                    break;
-                }
-                if (matched == null) {
-                    PrefabCustomAddon.LOGGER.warn("[CLOUD-THUMB-FALLBACK] \u6ca1\u627e\u5230\u540c\u540d LocalBuilding (name='{}'), \u8d70\u9996\u5b57\u7b26\u5360\u4f4d\u7b26", (Object)b.name);
+                    img = ImageIO.read(new ByteArrayInputStream(data));
+                } catch (Exception e) {
                     return;
                 }
-                if (matched.imagePath == null || !Files.exists(matched.imagePath, new LinkOption[0])) {
-                    PrefabCustomAddon.LOGGER.warn("[CLOUD-THUMB-FALLBACK] \u5339\u914d\u5efa\u7b51\u6ca1\u56fe\u7247, \u8d70\u9996\u5b57\u7b26\u5360\u4f4d\u7b26");
-                    return;
-                }
-                try (InputStream is = Files.newInputStream(matched.imagePath, new OpenOption[0]);){
-                    BufferedImage img = ImageIO.read(is);
-                    if (img == null) {
-                        return;
-                    }
-                    int w = img.getWidth();
-                    int h = img.getHeight();
-                    if (w <= 0 || h <= 0) {
-                        return;
-                    }
-                    int ww = w;
-                    int hh = h;
-                    Minecraft.getInstance().execute(() -> this.uploadCloudThumb(b, img, ww, hh, "fallback"));
-                }
-            }
-            catch (Exception e) {
-                PrefabCustomAddon.LOGGER.warn("[CLOUD-THUMB-FALLBACK] \u8bfb\u56fe\u5931\u8d25 {}", (Object)b.id, (Object)e);
-            }
-        });
-    }
-
-    private void uploadCloudThumb(CloudBuilding b, BufferedImage img, int ww, int hh, String source) {
-        try {
-            DynamicTexture tex = new DynamicTexture(ww, hh, false);
-            tex.setFilter(false, false);
-            NativeImage pixels = tex.getPixels();
-            for (int y = 0; y < hh; ++y) {
-                for (int x = 0; x < ww; ++x) {
-                    int argb = img.getRGB(x, y);
-                    int abgr = argb & 0xFF00FF00 | (argb & 0xFF0000) >> 16 | (argb & 0xFF) << 16;
-                    pixels.setPixelRGBA(x, y, abgr);
-                }
-            }
-            tex.upload();
-            ResourceLocation loc = Minecraft.getInstance().getTextureManager().register("prefab_cloud_" + b.id, tex);
-            this.cloudThumbCache.put(b.id, loc);
-            PrefabCustomAddon.LOGGER.info("[CLOUD-THUMB] \u52a0\u8f7d\u6210\u529f (\u6765\u6e90={}, {}x{}) -> {}", new Object[]{source, ww, hh, loc});
-        }
-        catch (Exception e) {
-            PrefabCustomAddon.LOGGER.warn("[CLOUD-THUMB] upload failed for {}", (Object)b.id, (Object)e);
-        }
-    }
-
-    private void refreshWebsiteBuildings() {
-        if (this.websiteBuildingsLoading) {
-            return;
-        }
-        this.websiteBuildingsLoading = true;
-        this.websiteBuildingsError = null;
-        ((CompletableFuture)PackDownloadManager.getInstance().fetchBuildingListAsync().thenAccept(list -> Minecraft.getInstance().execute(() -> {
-            this.websiteBuildings = list;
-            this.websiteBuildingsLoading = false;
-            this.websiteBuildingsError = null;
-            for (PackDownloadManager.BuildingInfo2 b : list) {
-                if (b == null || b.id == null || this.websiteImageCache.containsKey(b.id) || this.websiteImageLoading.contains(b.id)) continue;
-                this.triggerLoadWebsiteImage(b);
-            }
-        }))).exceptionally(ex -> {
-            Throwable t = (Throwable) ex;
-            Minecraft.getInstance().execute(() -> {
-                this.websiteBuildingsLoading = false;
-                this.websiteBuildingsError = t.getCause() != null ? t.getCause().getMessage() : t.getMessage();
-                PrefabCustomAddon.LOGGER.warn("[DOWNLOAD-TAB] fetch building list failed: {}", (Object)this.websiteBuildingsError);
-            });
-            return null;
-        });
-    }
-
-    private void triggerLoadWebsiteImage(PackDownloadManager.BuildingInfo2 b) {
-        if (b == null || b.id == null) {
-            return;
-        }
-        this.websiteImageLoading.add(b.id);
-        ((CompletableFuture)PackDownloadManager.getInstance().fetchBuildingImageAsync(b).thenAccept(data -> Minecraft.getInstance().execute(() -> {
-            if (data == null || ((byte[])data).length == 0) {
-                this.websiteImageLoading.remove(b.id);
-                return;
-            }
-            try {
-                BufferedImage img = ImageIO.read(new ByteArrayInputStream((byte[])data));
-                if (img == null) {
-                    this.websiteImageLoading.remove(b.id);
-                    return;
-                }
-                int w = img.getWidth();
-                int h = img.getHeight();
-                if (w <= 0 || h <= 0) {
-                    this.websiteImageLoading.remove(b.id);
-                    return;
-                }
-                DynamicTexture tex = new DynamicTexture(w, h, false);
+                if (img == null || img.getWidth() <= 0 || img.getHeight() <= 0) return;
+                DynamicTexture tex = new DynamicTexture(img.getWidth(), img.getHeight(), false);
                 tex.setFilter(false, false);
-                NativeImage pixels = tex.getPixels();
-                for (int y = 0; y < h; ++y) {
-                    for (int x = 0; x < w; ++x) {
-                        int argb = img.getRGB(x, y);
-                        int abgr = argb & 0xFF00FF00 | (argb & 0xFF0000) >> 16 | (argb & 0xFF) << 16;
-                        pixels.setPixelRGBA(x, y, abgr);
-                    }
-                }
+                copyPixels(img, tex);
                 tex.upload();
-                ResourceLocation loc = Minecraft.getInstance().getTextureManager().register("prefab_web_" + b.id, tex);
-                this.websiteImageCache.put(b.id, loc);
-                this.websiteImageLoading.remove(b.id);
-            }
-            catch (Exception e) {
-                PrefabCustomAddon.LOGGER.warn("[DOWNLOAD-TAB] website image upload failed for {}", (Object)b.id, (Object)e);
-                this.websiteImageLoading.remove(b.id);
-            }
-        }))).exceptionally(ex -> {
-            this.websiteImageLoading.remove(b.id);
-            return null;
-        });
+                ResourceLocation loc = Minecraft.getInstance().getTextureManager()
+                    .register("prefab_web_" + TEX_GEN.incrementAndGet(), tex);
+                WEBSITE_IMG.put(b.id, loc);
+                rebuildList();
+            }))
+            .exceptionally(ex -> {
+                Minecraft.getInstance().execute(() -> WEBSITE_IMG_LOADING.remove(b.id));
+                return null;
+            });
     }
 
-    private void startWebsiteDownload(final PackDownloadManager.BuildingInfo2 b) {
-        if (b == null || b.id == null) {
-            return;
-        }
-        if (this.websiteDownloading.contains(b.id)) {
-            return;
-        }
-        this.websiteDownloading.add(b.id);
-        this.websiteDownloadProgress.put(b.id, new double[]{0.0, 0.0, 0.0});
-        PackDownloadManager.getInstance().downloadBuildingStreaming(b, new PackDownloadManager.ProgressCallback(){
-
+    private static void startWebsiteDownload(PackDownloadManager.BuildingInfo2 b) {
+        if (b == null || b.id == null || WEBSITE_DOWNLOADING.contains(b.id)) return;
+        WEBSITE_DOWNLOADING.add(b.id);
+        WEBSITE_PROGRESS.put(b.id, new double[]{0, 0, 0});
+        setStatus(tr("website.status.downloading", truncate(b.name, 14)));
+        rebuildList();
+        PackDownloadManager.getInstance().downloadBuildingStreaming(b, new PackDownloadManager.ProgressCallback() {
             @Override
             public void onStart(String packId) {
             }
 
             @Override
             public void onProgress(long downloaded, long total, double percent) {
-                Minecraft.getInstance().execute(() -> GuiExtensionPackBrowser.this.websiteDownloadProgress.put(b.id, new double[]{downloaded, total, percent}));
+                // 节流: 只在整数百分比变化时重建 (避免高频回调刷爆 UI)
+                int pct = (int) percent;
+                Integer last = WEBSITE_LAST_PCT.get(b.id);
+                if (last == null || last.intValue() != pct) {
+                    WEBSITE_LAST_PCT.put(b.id, pct);
+                    Minecraft.getInstance().execute(() -> {
+                        WEBSITE_PROGRESS.put(b.id, new double[]{downloaded, total, percent});
+                        rebuildList();
+                    });
+                }
             }
 
             @Override
             public void onComplete(Path savedTo) {
                 Minecraft.getInstance().execute(() -> {
-                    GuiExtensionPackBrowser.this.websiteDownloading.remove(b.id);
-                    GuiExtensionPackBrowser.this.websiteDownloadProgress.remove(b.id);
-                    GuiExtensionPackBrowser.this.refreshDownloadedBuildings();
-                    GuiExtensionPackBrowser.this.setStatus(GuiExtensionPackBrowser.tr("browser.status.downloaded", b.name), 0x55FF55);
+                    WEBSITE_DOWNLOADING.remove(b.id);
+                    WEBSITE_PROGRESS.remove(b.id);
+                    WEBSITE_LAST_PCT.remove(b.id);
+                    refreshDownloadedBuildings();
+                    setStatus(tr("browser.status.downloaded", b.name));
+                    rebuildList();
                 });
             }
 
             @Override
             public void onError(String error) {
                 Minecraft.getInstance().execute(() -> {
-                    GuiExtensionPackBrowser.this.websiteDownloading.remove(b.id);
-                    GuiExtensionPackBrowser.this.websiteDownloadProgress.remove(b.id);
-                    GuiExtensionPackBrowser.this.setStatus(GuiExtensionPackBrowser.tr("browser.status.download_failed", error), 0xFF5555);
+                    WEBSITE_DOWNLOADING.remove(b.id);
+                    WEBSITE_PROGRESS.remove(b.id);
+                    WEBSITE_LAST_PCT.remove(b.id);
+                    setStatus(tr("browser.status.download_failed", error));
+                    rebuildList();
                 });
             }
         });
     }
 
-    private void openWebsiteHome() {
+    private static void openWebsiteHome() {
         String url = AddonConfig.getServerUrl();
         if (url == null || url.isEmpty()) {
-            this.setStatus(GuiExtensionPackBrowser.tr("browser.status.no_server_url", new Object[0]), 0xFF5555);
+            setStatus(tr("browser.status.no_server_url"));
             return;
         }
         try {
             Util.getPlatform().openUri(URI.create(url));
-            this.setStatus(GuiExtensionPackBrowser.tr("browser.status.opened_browser", new Object[0]), 0x55AAFF);
-        }
-        catch (Exception e) {
-            this.setStatus(GuiExtensionPackBrowser.tr("browser.status.open_failed", e.getMessage()), 0xFF5555);
+            setStatus(tr("browser.status.opened_browser"));
+        } catch (Exception e) {
+            setStatus(tr("browser.status.open_failed", e.getMessage()));
         }
     }
 
-    private boolean isWebsiteBuildingDownloaded(PackDownloadManager.BuildingInfo2 b) {
-        if (b == null) {
-            return false;
-        }
+    private static boolean isWebsiteBuildingDownloaded(PackDownloadManager.BuildingInfo2 b) {
+        if (b == null) return false;
         String baseName = b.name == null || b.name.isEmpty() ? b.id : b.name;
         baseName = baseName.replaceAll("[\\\\/:*?\"<>|]", "_");
         String ext = b.fileExt == null || b.fileExt.isEmpty() ? ".nbt" : b.fileExt;
         Path dir = PackDownloadManager.getDownloadRoot();
-        if (!Files.exists(dir, new LinkOption[0])) {
-            return false;
-        }
-        if (Files.exists(dir.resolve(baseName + ext), new LinkOption[0])) {
-            return true;
-        }
-        for (int i = 2; i < 100; ++i) {
-            if (!Files.exists(dir.resolve(baseName + "_" + i + ext), new LinkOption[0])) continue;
-            return true;
+        if (!Files.exists(dir)) return false;
+        if (Files.exists(dir.resolve(baseName + ext))) return true;
+        for (int i = 2; i < 100; i++) {
+            if (Files.exists(dir.resolve(baseName + "_" + i + ext))) return true;
         }
         return false;
     }
 
-    public GuiExtensionPackBrowser() {
-        super("Extension Pack Browser");
-        // 默认普通模式: 清掉可能残留的蓝图状态 (Z 键 / 直接 new 的路径不受上次蓝图会话影响)
-        GuiExtensionPackBrowser.blueprintStack = null;
-        GuiExtensionPackBrowser.blueprintPos = null;
-        this.currentCategory = rememberedCategory;
-        this.scrollOffsetCards = rememberedPage;
-        this.coverTextureCache = new HashMap<String, ResourceLocation>();
-        this.previewTextureCache = new HashMap<String, ResourceLocation>();
-        this.downloadedBuildings = new ArrayList<LocalBuilding>();
-        this.localImageCache = new HashMap<String, ResourceLocation>();
-        this.localImageLoading = new HashSet<String>();
-        this.serverImageCache = new HashMap<String, ResourceLocation>();
-        this.serverCardSyncBtnRects = new HashMap<String, int[]>();
-        this.serverImageLoading = new HashSet<String>();
-        this.websiteBuildings = new ArrayList<PackDownloadManager.BuildingInfo2>();
-        this.websiteImageCache = new HashMap<String, ResourceLocation>();
-        this.websiteImageLoading = new HashSet<String>();
-        this.websiteDownloading = new HashSet<String>();
-        this.websiteDownloadProgress = new HashMap<String, double[]>();
-        this.websiteCardHitRects = new LinkedHashMap<String, int[]>();
-        this.websiteCardDownloadBtnRects = new LinkedHashMap<String, int[]>();
-        this.cloudCardHitRects = new LinkedHashMap<String, int[]>();
-        this.cloudCardRecallBtnRects = new LinkedHashMap<String, int[]>();
-        this.cloudCardSummonBtnRects = new LinkedHashMap<String, int[]>();
-        this.cloudCardDeleteBtnRects = new LinkedHashMap<String, int[]>();
-        this.cloudCardNavigateBtnRects = new LinkedHashMap<String, int[]>();
-        this.navigateDebugLogged = new HashSet<String>();
-        this.cloudThumbCache = new HashMap<String, ResourceLocation>();
-        this.cloudThumbLoading = new HashSet<String>();
-        this.serverFilterTabs = new int[3][4];
-        this.serverCardHitRects = new int[40][5];
-        this.cachedThumbTextureCache = new HashMap<String, ResourceLocation>();
-        ExtensionPackManager.getInstance().reloadIfChanged();
-        ExtensionPackManager.getInstance().forceReload();
-        PrefabCustomAddon.LOGGER.info("[DIAG-OPEN-GUI] \u8fdb\u5efa\u7b51\u6d4f\u89c8\u5668 GUI, \u5f53\u524d packs \u6570\u91cf: {}", (Object)ExtensionPackManager.getInstance().getPacks().size());
-    }
+    // ==================== 云端缩略图 ====================
 
-    public static void open() {
-        Minecraft.getInstance().setScreen((Screen)new GuiExtensionPackBrowser());
-    }
-
-    /**
-     * 蓝图模式打开 (右键未绑定的自定义蓝图): 记录蓝图 stack + 建造位置,
-     * 之后点建筑卡片直接 {@link CustomStructureGui#open}, 跳过浏览器详情页.
-     *
-     * <p>注意: static 标志在构造函数里清空, 所以必须在构造之后赋值.</p>
-     */
-    public static void openForBlueprint(ItemStack stack, BlockPos pos) {
-        GuiExtensionPackBrowser screen = new GuiExtensionPackBrowser();
-        GuiExtensionPackBrowser.blueprintStack = stack;
-        GuiExtensionPackBrowser.blueprintPos = pos;
-        Minecraft.getInstance().setScreen((Screen)screen);
-    }
-
-    protected void Initialize() {
-        this.categoryPanelHidden = rememberedPanelHidden;
-        this.currentCategory = rememberedCategory;
-        this.scrollOffsetCards = rememberedPage;
-        super.Initialize();
-        this.modifiedInitialXAxis = 200;
-        this.modifiedInitialYAxis = 120;
-        this.imagePanelWidth = 400;
-        this.imagePanelHeight = 240;
-        this.shownImageHeight = 1;
-        this.shownImageWidth = 1;
-        int[] pos = this.computePanelPos();
-        int grayBoxX = pos[0];
-        int grayBoxY = pos[1];
-        int tbY = grayBoxY + 1;
-        int tbH = 18;
-        this.btnBack = this.createAndAddButton(grayBoxX + 2, tbY, 28, tbH, "\u2190");
-        this.btnBack.visible = false;
-        int sbX = grayBoxX + 72 + 6;
-        int sbY = grayBoxY + 4;
-        int initialW = this.isBuildingsTab() ? 110 : 316;
-        this.searchBox = new EditBox(this.font, sbX, sbY, initialW, 16, (Component)Component.literal((String)GuiExtensionPackBrowser.tr("browser.search.placeholder", new Object[0])));
-        this.searchBox.setMaxLength(64);
-        this.searchBox.setBordered(true);
-        this.searchBox.setVisible(false);
-        this.searchBox.setResponder(text -> {
-            this.searchText = text;
-            this.scrollOffsetCards = 0;
-        });
-        this.addRenderableWidget(this.searchBox);
-        this.refreshDownloadedBuildings();
-        PrefabCustomAddon.LOGGER.info("[BROWSER-NEW] Initialize: panel {}x{} at ({},{}), screen={}x{}, tabs={}", new Object[]{400, 240, grayBoxX, grayBoxY, this.width, this.height, 72});
-    }
-
-    public void tick() {
-        super.tick();
-        if (this.statusTick > 0) {
-            --this.statusTick;
-        }
-        if (ThumbnailCache.pollCompleted()) {
-            this.cachedThumbTextureCache.clear();
-        }
-    }
-
-    private int[] computePanelPos() {
-        int x = this.width / 2 - this.modifiedInitialXAxis;
-        int y = this.height / 2 - this.modifiedInitialYAxis;
-        if (x < 4) {
-            x = 4;
-        }
-        if (y < 4) {
-            y = 4;
-        }
-        if (x + 400 > this.width - 4) {
-            x = Math.max(4, this.width - 400 - 4);
-        }
-        if (y + 240 > this.height - 4) {
-            y = Math.max(4, this.height - 240 - 4);
-        }
-        return new int[]{x, y};
-    }
-
-    protected void preButtonRender(GuiGraphics guiGraphics, int x, int y, int mouseX, int mouseY, float partialTicks) {
-        int[] pos = this.computePanelPos();
-        int grayBoxX = pos[0];
-        int grayBoxY = pos[1];
-        guiGraphics.fill(grayBoxX, grayBoxY, grayBoxX + 400, grayBoxY + 240, -15066598);
-        guiGraphics.fill(grayBoxX, grayBoxY, grayBoxX + 400, grayBoxY + 1, -11184811);
-        guiGraphics.fill(grayBoxX, grayBoxY + 240 - 1, grayBoxX + 400, grayBoxY + 240, -11184811);
-        guiGraphics.fill(grayBoxX, grayBoxY, grayBoxX + 1, grayBoxY + 240, -11184811);
-        guiGraphics.fill(grayBoxX + 400 - 1, grayBoxY, grayBoxX + 400, grayBoxY + 240, -11184811);
-        this.drawControlLeftPanel(guiGraphics, grayBoxX + 4, grayBoxY + 2, 72, 236);
-        this.drawControlLeftPanel(guiGraphics, grayBoxX + 72 + 4, grayBoxY + 2, 320, 236);
-    }
-
-    protected void postButtonRender(GuiGraphics guiGraphics, int x, int y, int mouseX, int mouseY, float partialTicks) {
-        int[] pos = this.computePanelPos();
-        int grayBoxX = pos[0];
-        int grayBoxY = pos[1];
-        this.drawTabs(guiGraphics, grayBoxX, grayBoxY, mouseX, mouseY);
-        this.drawContent(guiGraphics, grayBoxX, grayBoxY, mouseX, mouseY);
-        if (this.statusMessage != null && this.statusTick > 0) {
-            int statusY = grayBoxY + 240 - 14;
-            int sw = this.font.width(this.statusMessage);
-            int statusX = grayBoxX + (400 - sw) / 2;
-            guiGraphics.fill(statusX - 6, statusY - 2, statusX + sw + 6, statusY + 12, -1073741824);
-            guiGraphics.drawString(this.font, this.statusMessage, statusX, statusY, this.statusColor);
-        }
-    }
-
-    private int getTabY(int index) {
-        int[] pos = this.computePanelPos();
-        return pos[1] + 4 + index * 22;
-    }
-
-    private int getTabX() {
-        int[] pos = this.computePanelPos();
-        return pos[0] + 4;
-    }
-
-    private void drawTabs(GuiGraphics guiGraphics, int grayBoxX, int grayBoxY, int mouseX, int mouseY) {
-        Tab[] tabs = Tab.values();
-        for (int i = 0; i < tabs.length; ++i) {
-            int textColor;
-            int bg;
-            boolean hovered;
-            Tab t = tabs[i];
-            int ty = this.getTabY(i);
-            int tx = this.getTabX();
-            int tw = 68;
-            int th = 22;
-            boolean active = i == this.currentTab.ordinal() && this.currentDrilldownPack == null;
-            boolean bl = hovered = mouseX >= tx && mouseX <= tx + tw && mouseY >= ty && mouseY <= ty + th;
-            if (active) {
-                bg = -11898971;
-                textColor = 0xFFFFFF;
-            } else if (hovered) {
-                bg = -12961222;
-                textColor = 0xFFFFFF;
-            } else {
-                bg = -14013910;
-                textColor = 0xCCCCCC;
-            }
-            guiGraphics.fill(tx, ty, tx + tw, ty + th, bg);
-            if (active) {
-                guiGraphics.fill(tx, ty, tx + 3, ty + th, -11162881);
-            }
-            guiGraphics.drawString(this.font, t.label, tx + 8, ty + 7, textColor);
-        }
-    }
-
-    private Tab tabHitTest(int mouseX, int mouseY) {
-        Tab[] tabs = Tab.values();
-        for (int i = 0; i < tabs.length; ++i) {
-            int ty = this.getTabY(i);
-            int tx = this.getTabX();
-            int tw = 68;
-            int th = 22;
-            if (mouseX < tx || mouseX > tx + tw || mouseY < ty || mouseY > ty + th) continue;
-            return tabs[i];
-        }
-        return null;
-    }
-
-    private int[] getContentRect(int grayBoxX, int grayBoxY) {
-        int cx = grayBoxX + 72 + 6;
-        int cy = grayBoxY + 4;
-        int cw = 316;
-        boolean needSearch = this.isBuildingsTab() || this.currentTab == Tab.FAVORITES;
-        int ch = 232;
-        if (needSearch) {
-            cy += 18;
-            ch -= 18;
-        }
-        return new int[]{cx, cy, cw, ch};
-    }
-
-    private int[] getBuildingsCardRect(int grayBoxX, int grayBoxY) {
-        int[] base = this.getContentRect(grayBoxX, grayBoxY);
-        if (this.categoryPanelHidden) {
-            return new int[]{base[0], base[1] + 2, base[2] - 18, base[3] - 2};
-        }
-        return new int[]{base[0], base[1] + 2, base[2] - 110 - 4, base[3] - 2};
-    }
-
-    private void drawContent(GuiGraphics guiGraphics, int grayBoxX, int grayBoxY, int mouseX, int mouseY) {
-        boolean needSearch = this.isBuildingsTab() || this.currentTab == Tab.FAVORITES;
-        this.searchBox.setVisible(needSearch);
-        if (needSearch) {
-            String hint;
-            String string = hint = this.currentTab == Tab.FAVORITES ? GuiExtensionPackBrowser.tr("browser.search.placeholder_favorites", new Object[0]) : GuiExtensionPackBrowser.tr("browser.search.placeholder_buildings", new Object[0]);
-            if (this.searchBox.getValue().isEmpty()) {
-                int sbX = this.searchBox.getX();
-                int sbY = this.searchBox.getY();
-                guiGraphics.drawString(this.font, hint, sbX + 4, sbY + 4, -7829368);
-            }
-        }
-        if (this.currentDrilldownPack != null) {
-            this.drawPackDrilldown(guiGraphics, grayBoxX, grayBoxY, mouseX, mouseY);
+    private static void triggerLoadCloudThumb(CloudBuilding b) {
+        if (b == null || b.id == null) return;
+        if (b.thumbnailPng != null && b.thumbnailPng.length > 0) {
+            byte[] data = b.thumbnailPng;
+            CompletableFuture.runAsync(() -> {
+                try {
+                    BufferedImage img = ImageIO.read(new ByteArrayInputStream(data));
+                    if (img == null || img.getWidth() <= 0 || img.getHeight() <= 0) {
+                        loadCloudThumbFromLocalBuilding(b);
+                        return;
+                    }
+                    int w = img.getWidth();
+                    int h = img.getHeight();
+                    Minecraft.getInstance().execute(() -> uploadCloudThumb(b, img, w, h));
+                } catch (Exception e) {
+                    PrefabCustomAddon.LOGGER.warn("[CLOUD-THUMB] 嵌入图读取失败, 尝试 LocalBuilding 兜底: {}", e.toString());
+                    loadCloudThumbFromLocalBuilding(b);
+                }
+            });
             return;
         }
-        switch (this.currentTab.ordinal()) {
-            case 0: {
-                this.drawTabBuildings(guiGraphics, grayBoxX, grayBoxY, mouseX, mouseY);
-                break;
-            }
-            case 1: {
-                this.drawTabCloud(guiGraphics, grayBoxX, grayBoxY, mouseX, mouseY);
-                break;
-            }
-            case 2: {
-                this.drawTabServers(guiGraphics, grayBoxX, grayBoxY, mouseX, mouseY);
-                break;
-            }
-            case 3: {
-                this.drawTabFavorites(guiGraphics, grayBoxX, grayBoxY, mouseX, mouseY);
-                break;
-            }
-            case 4: {
-                this.drawTabDownload(guiGraphics, grayBoxX, grayBoxY, mouseX, mouseY);
-                break;
-            }
-            case 5: {
-                this.drawTabChangelog(guiGraphics, grayBoxX, grayBoxY, mouseX, mouseY);
-            }
-        }
-        if (this.currentTab == Tab.CLOUD && this.pendingDeleteBuildingId != null) {
-            this.drawDeleteConfirmOverlay(guiGraphics, grayBoxX, grayBoxY, mouseX, mouseY);
-        }
+        loadCloudThumbFromLocalBuilding(b);
     }
 
-    /** 更新日志正文字体: vanilla 内置 uniform (ASCII 宽体位图; 中文字形仍走 unifont). */
-    private static final ResourceLocation CHANGELOG_FONT = ResourceLocation.withDefaultNamespace("uniform");
+    /** 云端缩略图兜底: 按名字找本地同名建筑的预览图. */
+    private static void loadCloudThumbFromLocalBuilding(CloudBuilding b) {
+        CompletableFuture.runAsync(() -> {
+            try {
+                for (LocalBuilding lb : LocalBuildingScanner.scanAll()) {
+                    if (lb.name == null || !lb.name.equals(b.name)) continue;
+                    if (lb.imagePath == null || !Files.exists(lb.imagePath)) return;
+                    try (InputStream is = Files.newInputStream(lb.imagePath)) {
+                        BufferedImage img = ImageIO.read(is);
+                        if (img == null || img.getWidth() <= 0 || img.getHeight() <= 0) return;
+                        int w = img.getWidth();
+                        int h = img.getHeight();
+                        Minecraft.getInstance().execute(() -> uploadCloudThumb(b, img, w, h));
+                    }
+                    return;
+                }
+            } catch (Exception e) {
+                PrefabCustomAddon.LOGGER.warn("[CLOUD-THUMB-FALLBACK] 读图失败 {}", b.id);
+            }
+        });
+    }
 
-    private void drawTabChangelog(GuiGraphics guiGraphics, int grayBoxX, int grayBoxY, int mouseX, int mouseY) {
-        int[] r = this.getContentRect(grayBoxX, grayBoxY);
-        int rx = r[0];
-        int ry = r[1];
-        int rw = r[2];
-        guiGraphics.drawString(this.font, "\u66f4\u65b0\u65e5\u5fd7", rx + 4, ry + 4, 0x55AAFF);
-        guiGraphics.fill(rx + 4, ry + 17, rx + rw - 4, ry + 18, -12303292);
-        String[] lines = new String[]{"V2.5.0更新内容", "修复已知bug", "建筑终端添加存储功能"};
-        int lineY = ry + 24;
-        for (int i = 0; i < lines.length; ++i) {
-            // 内容区是浅灰底, 用深色字才看得清 (原来白/浅灰字在浅底上几乎不可见)
-            int color = i == 0 ? 0x3F3F3F : 0x505050;
-            // 用户要求换字体: 正文改用内置 uniform 字体渲染
-            guiGraphics.drawString(this.font,
-                    Component.literal(lines[i]).withStyle(Style.EMPTY.withFont(CHANGELOG_FONT)),
-                    rx + 6, lineY, color);
-            lineY += 14;
+    private static void uploadCloudThumb(CloudBuilding b, BufferedImage img, int ww, int hh) {
+        try {
+            DynamicTexture tex = new DynamicTexture(ww, hh, false);
+            tex.setFilter(false, false);
+            copyPixels(img, tex);
+            tex.upload();
+            ResourceLocation loc = Minecraft.getInstance().getTextureManager()
+                .register("prefab_cloud_" + TEX_GEN.incrementAndGet(), tex);
+            CLOUD_THUMB.put(b.id, loc);
+            rebuildList();
+        } catch (Exception e) {
+            PrefabCustomAddon.LOGGER.warn("[CLOUD-THUMB] upload failed for {}", b.id);
         }
     }
 
-    private void drawDeleteConfirmOverlay(GuiGraphics guiGraphics, int grayBoxX, int grayBoxY, int mouseX, int mouseY) {
-        CloudBuilding b = CloudBuildingClientCache.getInstance().getById(this.pendingDeleteBuildingId);
-        String name = b != null ? b.name : "?";
-        guiGraphics.fill(0, 0, this.width, this.height, -1073741824);
-        int overlayW = 220;
-        int overlayH = 90;
-        int overlayX = (this.width - overlayW) / 2;
-        int overlayY = (this.height - overlayH) / 2;
-        guiGraphics.fill(overlayX, overlayY, overlayX + overlayW, overlayY + overlayH, -300279270);
-        guiGraphics.fill(overlayX, overlayY, overlayX + overlayW, overlayY + 1, -5622989);
-        guiGraphics.fill(overlayX, overlayY + overlayH - 1, overlayX + overlayW, overlayY + overlayH, -11184811);
-        guiGraphics.fill(overlayX, overlayY, overlayX + 1, overlayY + overlayH, -11184811);
-        guiGraphics.fill(overlayX + overlayW - 1, overlayY, overlayX + overlayW, overlayY + overlayH, -11184811);
-        guiGraphics.drawCenteredString(this.font, GuiExtensionPackBrowser.tr("delete.title", new Object[0]), overlayX + overlayW / 2, overlayY + 8, 0xFF5555);
-        String nameLine = "\u00a7f" + GuiExtensionPackBrowser.truncate(name, 28);
-        guiGraphics.drawCenteredString(this.font, nameLine, overlayX + overlayW / 2, overlayY + 24, 0xFFFFFF);
-        guiGraphics.drawCenteredString(this.font, GuiExtensionPackBrowser.tr("delete.body", new Object[0]), overlayX + overlayW / 2, overlayY + 40, 0xAAAAAA);
-        int btnW = 80;
-        int btnH = 18;
-        int btnGap = 16;
-        int btnY = overlayY + overlayH - btnH - 10;
-        int cancelX = overlayX + overlayW / 2 - btnGap / 2 - btnW;
-        int okX = overlayX + overlayW / 2 + btnGap / 2;
-        boolean cancelHover = mouseX >= cancelX && mouseX <= cancelX + btnW && mouseY >= btnY && mouseY <= btnY + btnH;
-        guiGraphics.fill(cancelX, btnY, cancelX + btnW, btnY + btnH, cancelHover ? -10061910 : -12298889);
-        guiGraphics.drawCenteredString(this.font, GuiExtensionPackBrowser.tr("delete.cancel", new Object[0]), cancelX + btnW / 2, btnY + 5, 0xFFFFFF);
-        this.deleteConfirmCancelRect = new int[]{cancelX, btnY, btnW, btnH};
-        boolean okHover = mouseX >= okX && mouseX <= okX + btnW && mouseY >= btnY && mouseY <= btnY + btnH;
-        guiGraphics.fill(okX, btnY, okX + btnW, btnY + btnH, okHover ? -3394765 : -5627358);
-        guiGraphics.drawCenteredString(this.font, GuiExtensionPackBrowser.tr("delete.confirm", new Object[0]), okX + btnW / 2, btnY + 5, 0xFFFFFF);
-        this.deleteConfirmOkRect = new int[]{okX, btnY, btnW, btnH};
-    }
-
-    private void drawTabBuildings(GuiGraphics guiGraphics, int grayBoxX, int grayBoxY, int mouseX, int mouseY) {
-        this.drawCategoryList(guiGraphics, grayBoxX, grayBoxY, mouseX, mouseY);
-        List<ConstructionInfo> all = this.getMergedConstructionsForBuildingsTab();
-        List<ConstructionInfo> byCat = this.filterByCategory(all, this.currentCategory);
-        List<ConstructionInfo> filtered = this.filterBySearch(byCat, this.searchText);
-        this.drawConstructionCardsForBuildings(guiGraphics, grayBoxX, grayBoxY, mouseX, mouseY, filtered);
-    }
-
-    private List<ConstructionInfo> filterByCategory(List<ConstructionInfo> src, String cat) {
-        if (cat == null) {
-            return src;
+    private static ResourceLocation ensureCloudThumbLoaded(CloudBuilding b) {
+        if (b == null || b.thumbnailPng == null || b.thumbnailPng.length == 0) return null;
+        ResourceLocation existing = CLOUD_THUMB.get(b.id);
+        if (existing != null) return existing;
+        try {
+            BufferedImage img = ImageIO.read(new ByteArrayInputStream(b.thumbnailPng));
+            if (img == null || img.getWidth() <= 0 || img.getHeight() <= 0) return null;
+            int w = img.getWidth();
+            int h = img.getHeight();
+            DynamicTexture tex = new DynamicTexture(w, h, false);
+            tex.setFilter(false, false);
+            copyPixels(img, tex);
+            tex.upload();
+            ResourceLocation loc = Minecraft.getInstance().getTextureManager()
+                .register("prefab_cloud_" + TEX_GEN.incrementAndGet(), tex);
+            CLOUD_THUMB.put(b.id, loc);
+            return loc;
+        } catch (Exception e) {
+            PrefabCustomAddon.LOGGER.warn("[CLOUD-THUMB] 同步解码失败: id={} err={}", b.id, e.toString());
+            return null;
         }
-        ArrayList<ConstructionInfo> out = new ArrayList<ConstructionInfo>();
+    }
+
+    // ==================== 建筑预览图 / 缓存缩略图 ====================
+
+    /** 建筑预览图: pngData → localImagePath 文件 → 居中裁方纹理. key = 建筑 id. */
+    private static ResourceLocation ensurePreviewTextureLoaded(ConstructionInfo c) {
+        String key = c.getId();
+        if (PREVIEW_TEX.containsKey(key)) return PREVIEW_TEX.get(key);
+        if (!c.hasPreviewImage()) {
+            PREVIEW_TEX.put(key, null);
+            return null;
+        }
+        byte[] data = c.getPngData();
+        if ((data == null || data.length == 0) && c.getLocalImagePath() != null) {
+            try {
+                data = Files.readAllBytes(c.getLocalImagePath());
+            } catch (Exception e) {
+                PrefabCustomAddon.LOGGER.warn("[PREVIEW] {} 读 {} 失败: {}", key, c.getLocalImagePath(), e.getMessage());
+            }
+        }
+        if (data == null || data.length == 0) {
+            PREVIEW_TEX.put(key, null);
+            return null;
+        }
+        DynamicTexture tex = uploadTexture(data);
+        ResourceLocation loc = null;
+        if (tex != null) {
+            loc = Minecraft.getInstance().getTextureManager()
+                .register("prefab_preview_" + TEX_GEN.incrementAndGet(), tex);
+        }
+        PREVIEW_TEX.put(key, loc);
+        return loc;
+    }
+
+    /** 缩略图缓存 (mcs 下载时的缩略图) → 纹理. key = ThumbnailCache 指纹. */
+    private static ResourceLocation ensureCachedThumbnailTextureLoaded(ConstructionInfo c, byte[] pngData) {
+        String key = ThumbnailCache.fingerprint(c);
+        if (CACHED_THUMB_TEX.containsKey(key)) return CACHED_THUMB_TEX.get(key);
+        DynamicTexture tex = uploadTexture(pngData);
+        ResourceLocation loc = null;
+        if (tex != null) {
+            loc = Minecraft.getInstance().getTextureManager()
+                .register("prefab_thumb_" + TEX_GEN.incrementAndGet(), tex);
+        }
+        CACHED_THUMB_TEX.put(key, loc);
+        return loc;
+    }
+
+    // ==================== 纹理工具 ====================
+
+    /** 把 BufferedImage 像素 (ARGB→ABGR) 写进 DynamicTexture. */
+    private static void copyPixels(BufferedImage img, DynamicTexture tex) {
+        NativeImage pixels = tex.getPixels();
+        int w = img.getWidth();
+        int h = img.getHeight();
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                int argb = img.getRGB(x, y);
+                int abgr = (argb & 0xFF00FF00) | ((argb & 0xFF0000) >> 16) | ((argb & 0xFF) << 16);
+                pixels.setPixelRGBA(x, y, abgr);
+            }
+        }
+    }
+
+    /** 图片字节 → 居中裁方 → 缩到 ≤256 → DynamicTexture (失败返回 null). */
+    private static DynamicTexture uploadTexture(byte[] bytes) {
+        try {
+            BufferedImage img = ImageIO.read(new ByteArrayInputStream(bytes));
+            return uploadIconTexture(img);
+        } catch (Exception e) {
+            PrefabCustomAddon.LOGGER.warn("[BROWSER] 预览图纹理上传失败: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /** 居中裁方 + 限宽 256 → DynamicTexture (双线性过滤, 与旧版 uploadIconTexture 一致). */
+    private static DynamicTexture uploadIconTexture(BufferedImage img) {
+        if (img == null) return null;
+        try {
+            int w = img.getWidth();
+            int h = img.getHeight();
+            if (w <= 0 || h <= 0) return null;
+            int cropSide = Math.min(w, h);
+            if (cropSide < w || cropSide < h) {
+                BufferedImage cropped = img.getSubimage((w - cropSide) / 2, (h - cropSide) / 2, cropSide, cropSide);
+                BufferedImage croppedCopy = new BufferedImage(cropSide, cropSide, BufferedImage.TYPE_INT_ARGB);
+                Graphics2D cg = croppedCopy.createGraphics();
+                cg.drawImage(cropped, 0, 0, null);
+                cg.dispose();
+                img = croppedCopy;
+                w = cropSide;
+                h = cropSide;
+            }
+            if (w > 256) {
+                BufferedImage scaled = new BufferedImage(256, 256, BufferedImage.TYPE_INT_ARGB);
+                Graphics2D g = scaled.createGraphics();
+                g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+                g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
+                g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                g.drawImage(img, 0, 0, 256, 256, null);
+                g.dispose();
+                img = scaled;
+                w = 256;
+                h = 256;
+            }
+            DynamicTexture tex = new DynamicTexture(w, h, false);
+            tex.setFilter(true, true);
+            copyPixels(img, tex);
+            tex.upload();
+            return tex;
+        } catch (Exception e) {
+            PrefabCustomAddon.LOGGER.warn("[BROWSER] uploadIconTexture 失败: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    // ==================== 数据过滤 ====================
+
+    /** 建筑 tab 数据源: ExtensionPack 全部建筑 (去掉 server-cache 副本) ∪ LocalBuildingScanner 本地扫描, 收藏优先排序. */
+    private static List<ConstructionInfo> getMergedConstructionsForBuildingsTab() {
+        List<ConstructionInfo> raw = ExtensionPackManager.getInstance().getAllConstructionsForGui();
+        List<ConstructionInfo> all = new ArrayList<>(raw.size());
+        for (ConstructionInfo c : raw) {
+            if (c.getPack() != null && c.getPack().isServerBacked()) continue;
+            all.add(c);
+        }
+        for (LocalBuilding lb : scanAllCached()) {
+            ConstructionInfo existing = null;
+            for (ConstructionInfo c : all) {
+                if (c.getId().equals(lb.id)) {
+                    existing = c;
+                    break;
+                }
+            }
+            ConstructionInfo c = existing;
+            if (c == null) {
+                c = new ConstructionInfo(lb.id);
+                all.add(c);
+            }
+            c.setName(lb.name);
+            c.setAuthor(lb.author);
+            c.setDescription(lb.description);
+            c.setDependencies(lb.dependencies);
+            c.setCategory(lb.category);
+            if (lb.fileExt != null && !lb.fileExt.isEmpty()) {
+                c.setFormat(lb.fileExt.startsWith(".") ? lb.fileExt.substring(1) : lb.fileExt);
+            }
+            if (lb.imagePath != null && Files.exists(lb.imagePath)) {
+                c.setLocalImagePath(lb.imagePath);
+            }
+            if (lb.filePath != null) {
+                c.setLocalNbtPath(lb.filePath);
+            }
+        }
+        PlayerPreferences prefs = PlayerPreferences.get();
+        List<ConstructionInfo> favorited = new ArrayList<>();
+        List<ConstructionInfo> rest = new ArrayList<>();
+        for (ConstructionInfo c : all) {
+            String pkg = c.getPack() == null ? null : c.getPack().getPackageName();
+            if (prefs.isFavorite(pkg, c.getId())) {
+                favorited.add(c);
+            } else {
+                rest.add(c);
+            }
+        }
+        List<ConstructionInfo> merged = new ArrayList<>(all.size());
+        merged.addAll(favorited);
+        merged.addAll(rest);
+        return merged;
+    }
+
+    private static List<ConstructionInfo> filterByCategory(List<ConstructionInfo> src, String cat) {
+        if (cat == null) return src;
+        List<ConstructionInfo> out = new ArrayList<>();
         for (ConstructionInfo c : src) {
-            if (!cat.equals(c.getCategoryOrDefault())) continue;
-            out.add(c);
+            if (cat.equals(c.getCategoryOrDefault())) out.add(c);
         }
         return out;
     }
 
-    private void drawCategoryList(GuiGraphics guiGraphics, int grayBoxX, int grayBoxY, int mouseX, int mouseY) {
-        this.categoryItemRects.clear();
-        this.categoryAddBtnRect = null;
-        this.categoryToggleBtnRect = null;
-        int[] pos = this.computePanelPos();
-        int panelX = pos[0];
-        int panelY = pos[1];
-        int listX = panelX + 400 - 110 - 4;
-        int listY = panelY + 4;
-        int listW = 110;
-        int listH = 232;
-        if (this.categoryPanelHidden) {
-            int textX;
-            int btnW = 28;
-            int btnH = 12;
-            int btnX = panelX + 400 - btnW - 6;
-            int btnY = listY + 18;
-            boolean hover = mouseX >= btnX && mouseX <= btnX + btnW && mouseY >= btnY && mouseY <= btnY + btnH;
-            guiGraphics.fill(btnX, btnY, btnX + btnW, btnY + btnH, hover ? -10061910 : -12298889);
-            guiGraphics.drawCenteredString(this.font, "\u25b6 \u5c55\u5f00", btnX + btnW / 2, btnY + (btnH - 8) / 2, -1);
-            this.categoryToggleBtnRect = new int[]{btnX, btnY, btnW, btnH};
-            Object catDisplay = this.currentCategory == null ? GuiExtensionPackBrowser.tr("browser.category.all", new Object[0]) : this.currentCategory;
-            int maxTextW = 114;
-            if (this.font.width((String)catDisplay) > maxTextW) {
-                while (((String)catDisplay).length() > 1 && this.font.width((String)catDisplay + "..") > maxTextW) {
-                    catDisplay = ((String)catDisplay).substring(0, ((String)catDisplay).length() - 1);
-                }
-                catDisplay = (String)catDisplay + "..";
-            }
-            if ((textX = listX + listW - this.font.width((String)catDisplay)) < listX) {
-                textX = listX;
-            }
-            int textY = listY + 4;
-            guiGraphics.drawString(this.font, "\u00a77" + (String)catDisplay, textX, textY, -3355444);
-            return;
-        }
-        guiGraphics.fill(listX, listY, listX + listW, listY + listH, -14737633);
-        guiGraphics.fill(listX, listY, listX + listW, listY + 1, -11184811);
-        guiGraphics.fill(listX, listY + listH - 1, listX + listW, listY + listH, -11184811);
-        guiGraphics.fill(listX, listY, listX + 1, listY + listH, -11184811);
-        guiGraphics.fill(listX + listW - 1, listY, listX + listW, listY + listH, -11184811);
-        guiGraphics.drawString(this.font, "\u00a7l" + GuiExtensionPackBrowser.tr("browser.category.title", new Object[0]), listX + 4, listY + 4, -1);
-        int tgW = 20;
-        int tgH = 10;
-        int tgX = listX + listW - tgW - 2;
-        int tgY = listY + 3;
-        boolean tgHover = mouseX >= tgX && mouseX <= tgX + tgW && mouseY >= tgY && mouseY <= tgY + tgH;
-        guiGraphics.fill(tgX, tgY, tgX + tgW, tgY + tgH, tgHover ? -10061910 : -12298889);
-        guiGraphics.drawCenteredString(this.font, "\u25c0 \u6536\u8d77", tgX + tgW / 2, tgY + (tgH - 8) / 2 + 1, -1);
-        this.categoryToggleBtnRect = new int[]{tgX, tgY, tgW, tgH};
-        int itemY = listY + 16;
-        int itemH = 14;
-        int padX = 4;
-        this.drawCategoryItem(guiGraphics, listX, itemY, listW, itemH, GuiExtensionPackBrowser.tr("browser.category.all", new Object[0]), this.currentCategory == null, this.categoryItemRects.size());
-        this.categoryItemRects.add(new int[]{listX + padX, itemY, listW - padX * 2, itemH});
-        this.drawCategoryItem(guiGraphics, listX, itemY += itemH, listW, itemH, "\u672a\u5206\u7c7b", "\u672a\u5206\u7c7b".equals(this.currentCategory), this.categoryItemRects.size());
-        this.categoryItemRects.add(new int[]{listX + padX, itemY, listW - padX * 2, itemH});
-        itemY += itemH;
-        List<String> all = CategoryManager.get().getCategories();
-        for (int i = 1; i < all.size(); ++i) {
-            String name = all.get(i);
-            this.drawCategoryItem(guiGraphics, listX, itemY, listW, itemH, name, name.equals(this.currentCategory), this.categoryItemRects.size());
-            this.categoryItemRects.add(new int[]{listX + padX, itemY, listW - padX * 2, itemH});
-            if ((itemY += itemH) + itemH > listY + listH - 20) break;
-        }
-        int btnY = listY + listH - 18;
-        int btnH = 14;
-        int btnW = listW - 8;
-        int btnX = listX + 4;
-        boolean btnHover = mouseX >= btnX && mouseX <= btnX + btnW && mouseY >= btnY && mouseY <= btnY + btnH;
-        guiGraphics.fill(btnX, btnY, btnX + btnW, btnY + btnH, btnHover ? -10061910 : -12298889);
-        guiGraphics.drawCenteredString(this.font, "+ " + GuiExtensionPackBrowser.tr("browser.category.manage", new Object[0]), btnX + btnW / 2, btnY + 3, -1);
-        this.categoryAddBtnRect = new int[]{btnX, btnY, btnW, btnH};
-    }
-
-    private void drawCategoryItem(GuiGraphics guiGraphics, int x, int y, int w, int h, String label, boolean selected, int idx) {
-        int bg = selected ? -12948822 : -15066598;
-        int padX = 4;
-        guiGraphics.fill(x + padX, y, x + w - padX, y + h, bg);
-        if (selected) {
-            guiGraphics.fill(x + padX, y, x + padX + 2, y + h, -11162881);
-        }
-        int maxW = w - padX * 2 - 4;
-        Object display = label;
-        if (this.font.width((String)display) > maxW) {
-            while (((String)display).length() > 1 && this.font.width((String)display + "..") > maxW) {
-                display = ((String)display).substring(0, ((String)display).length() - 1);
-            }
-            display = (String)display + "..";
-        }
-        int textColor = selected ? -1 : -3355444;
-        guiGraphics.drawString(this.font, (String)display, x + padX + 4, y + 3, textColor);
-    }
-
-    private void drawConstructionCardsForBuildings(GuiGraphics guiGraphics, int grayBoxX, int grayBoxY, int mouseX, int mouseY, List<ConstructionInfo> list) {
-        int[] rect = this.getBuildingsCardRect(grayBoxX, grayBoxY);
-        int rx = rect[0];
-        int ry = rect[1];
-        int rw = rect[2];
-        int rh = rect[3];
-        if (list.isEmpty()) {
-            String hint;
-            String title;
-            if (this.currentCategory != null) {
-                title = GuiExtensionPackBrowser.tr("browser.category.empty_in_category", this.currentCategory);
-                hint = GuiExtensionPackBrowser.tr("browser.category.empty_in_category_hint", new Object[0]);
-            } else if (this.searchText != null && !this.searchText.isEmpty()) {
-                title = GuiExtensionPackBrowser.tr("browser.empty.no_match", new Object[0]);
-                hint = GuiExtensionPackBrowser.tr("browser.empty.try_clear_search", new Object[0]);
-            } else {
-                title = GuiExtensionPackBrowser.tr("browser.empty.no_buildings", new Object[0]);
-                hint = GuiExtensionPackBrowser.tr("browser.empty.no_buildings_hint", new Object[0]);
-            }
-            this.drawEmpty(guiGraphics, rect, title, hint);
-            return;
-        }
-        int cols = 2;
-        int rows = 2;
-        int pageSize = cols * rows;
-        int pageCount = Math.max(1, (list.size() + pageSize - 1) / pageSize);
-        int page = Math.max(0, Math.min(this.scrollOffsetCards, pageCount - 1));
-        int start = page * pageSize;
-        int end = Math.min(start + pageSize, list.size());
-        int gridW = cols * 92 + (cols - 1) * 6;
-        int gridX = rx + (rw - gridW) / 2;
-        int gridY = ry + 2;
-        for (int i = 0; i < end - start; ++i) {
-            int row = i / cols;
-            int col = i % cols;
-            int cx = gridX + col * 98;
-            int cy = gridY + row * 86;
-            ConstructionInfo c = list.get(start + i);
-            this.drawConstructionCard(guiGraphics, cx, cy, c, mouseX, mouseY);
-        }
-        if (pageCount > 1) {
-            this.drawPaginationBar(guiGraphics, rx, ry + rh - 12, rw, page, pageCount, mouseX, mouseY);
-        }
-    }
-
-    private List<ConstructionInfo> getMergedConstructionsForBuildingsTab() {
-        ArrayList<ConstructionInfo> raw = new ArrayList<ConstructionInfo>(ExtensionPackManager.getInstance().getAllConstructionsForGui());
-        int dropped = 0;
-        ArrayList<ConstructionInfo> all = new ArrayList<ConstructionInfo>(raw.size());
-        for (ConstructionInfo constructionInfo : raw) {
-            if (constructionInfo.getPack() != null && constructionInfo.getPack().isServerBacked()) {
-                ++dropped;
-                continue;
-            }
-            all.add(constructionInfo);
-        }
-        if (dropped > 0) {
-            PrefabCustomAddon.LOGGER.info("[BUILDINGS-TAB] \u8fc7\u6ee4\u6389 server-cache \u526f\u672c {} \u4e2a, \u5269\u4f59 {} \u4e2a", (Object)dropped, (Object)all.size());
-        }
-        HashSet<String> existingIds = new HashSet<String>();
-        for (ConstructionInfo constructionInfo : all) {
-            existingIds.add(constructionInfo.getId());
-        }
-        List<LocalBuilding> list = LocalBuildingScanner.scanAll();
-        PrefabCustomAddon.LOGGER.info("[BUILDINGS-TAB] ExtensionPack \u5efa\u7b51 {} \u4e2a, LocalBuildingScanner \u626b\u5230 {} \u4e2a, \u73b0\u6709 id \u96c6\u5408 {}", new Object[]{all.size(), list.size(), existingIds});
-        for (LocalBuilding lb : list) {
-            PrefabCustomAddon.LOGGER.info("[BUILDINGS-TAB]   LocalBuilding: id='{}' name='{}' file={}", new Object[]{lb.id, lb.name, lb.filePath});
-        }
-        for (LocalBuilding lb : list) {
-            Object c;
-            ConstructionInfo existing = null;
-            for (ConstructionInfo constructionInfo : all) {
-                if (!constructionInfo.getId().equals(lb.id)) continue;
-                existing = constructionInfo;
-                break;
-            }
-            if ((c = existing) == null) {
-                c = new ConstructionInfo(lb.id);
-                all.add((ConstructionInfo)c);
-            }
-            ((ConstructionInfo)c).setName(lb.name);
-            ((ConstructionInfo)c).setAuthor(lb.author);
-            ((ConstructionInfo)c).setDescription(lb.description);
-            ((ConstructionInfo)c).setDependencies(lb.dependencies);
-            ((ConstructionInfo)c).setCategory(lb.category);
-            if (lb.fileExt != null && !lb.fileExt.isEmpty()) {
-                ((ConstructionInfo)c).setFormat(lb.fileExt.startsWith(".") ? lb.fileExt.substring(1) : lb.fileExt);
-            }
-            if (lb.imagePath != null && Files.exists(lb.imagePath, new LinkOption[0])) {
-                ((ConstructionInfo)c).setLocalImagePath(lb.imagePath);
-            }
-            if (lb.filePath != null) {
-                ((ConstructionInfo)c).setLocalNbtPath(lb.filePath);
-            }
-            PrefabCustomAddon.LOGGER.info("[BUILDINGS-TAB]   \u5408\u5e76 id='{}' (lb.dependencies={} \u2192 c.dependencies={})", new Object[]{lb.id, lb.dependencies, ((ConstructionInfo)c).getDependencies()});
-        }
-        PlayerPreferences playerPreferences = PlayerPreferences.get();
-        ArrayList<ConstructionInfo> favorited = new ArrayList<ConstructionInfo>();
-        ArrayList<ConstructionInfo> rest = new ArrayList<ConstructionInfo>();
-        for (ConstructionInfo constructionInfo : all) {
-            String pkg;
-            String string = pkg = constructionInfo.getPack() == null ? null : constructionInfo.getPack().getPackageName();
-            if (playerPreferences.isFavorite(pkg, constructionInfo.getId())) {
-                favorited.add(constructionInfo);
-                continue;
-            }
-            rest.add(constructionInfo);
-        }
-        ArrayList<ConstructionInfo> merged = new ArrayList<ConstructionInfo>(all.size());
-        merged.addAll(favorited);
-        merged.addAll(rest);
-        PrefabCustomAddon.LOGGER.info("[BUILDINGS-TAB] \u6536\u85cf\u4f18\u5148\u6392\u5e8f: \u6536\u85cf {} \u4e2a, \u975e\u6536\u85cf {} \u4e2a, \u5408\u5e76\u540e {} \u4e2a", new Object[]{favorited.size(), rest.size(), merged.size()});
-        return merged;
-    }
-
-    private void drawTabServers(GuiGraphics guiGraphics, int grayBoxX, int grayBoxY, int mouseX, int mouseY) {
-        int statusColor;
-        String statusText;
-        int[] r = this.getContentRect(grayBoxX, grayBoxY);
-        int rx = r[0];
-        int ry = r[1];
-        int rw = r[2];
-        int rh = r[3];
-        this.serverFilterTabs = new int[3][4];
-        if (Minecraft.getInstance().getCurrentServer() == null) {
-            this.drawEmpty(guiGraphics, new int[]{rx, ry, rw, rh}, GuiExtensionPackBrowser.tr("server.only_multiplayer.title", new Object[0]), GuiExtensionPackBrowser.tr("server.only_multiplayer.hint", new Object[0]));
-            this.lastSyncServerBtn = null;
-            return;
-        }
-        ServerPackSyncClient sync = ServerPackSyncClient.getInstance();
-        ServerPackSyncClient.State sState = sync.getState();
-        String sMsg = sync.getStatusMessage();
-        if (sState == ServerPackSyncClient.State.DOWNLOADING || sState == ServerPackSyncClient.State.REQUESTING || sState == ServerPackSyncClient.State.CHECKING || sState == ServerPackSyncClient.State.FINALIZING) {
-            statusText = sMsg == null || sMsg.isEmpty() ? GuiExtensionPackBrowser.tr("server.status.syncing", new Object[0]) : sMsg;
-            statusColor = 0x55AAFF;
-        } else if (sState == ServerPackSyncClient.State.DONE) {
-            statusText = sMsg == null || sMsg.isEmpty() ? GuiExtensionPackBrowser.tr("server.status.done", new Object[0]) : sMsg;
-            statusColor = 0x55FF55;
-        } else if (sState == ServerPackSyncClient.State.ERROR) {
-            statusText = sMsg == null || sMsg.isEmpty() ? GuiExtensionPackBrowser.tr("server.status.error", new Object[0]) : sMsg;
-            statusColor = 0xFF5555;
-        } else {
-            statusText = GuiExtensionPackBrowser.tr("server.status.idle", new Object[0]);
-            statusColor = 0xAAAAAA;
-        }
-        guiGraphics.drawString(this.font, statusText, rx + 4, ry + 4, statusColor);
-        int sbW = 60;
-        int sbH = 14;
-        int sbX = rx + rw - sbW - 4;
-        int sbY = ry + 2;
-        boolean isSyncing = sync.isSyncing();
-        if (isSyncing) {
-            guiGraphics.fill(sbX, sbY, sbX + sbW, sbY + sbH, -11184811);
-            guiGraphics.drawCenteredString(this.font, GuiExtensionPackBrowser.tr("server.button.syncing", new Object[0]), sbX + sbW / 2, sbY + 3, -3355444);
-        } else {
-            this.drawTextButton(guiGraphics, sbX, sbY, sbW, sbH, GuiExtensionPackBrowser.tr("server.button.sync", new Object[0]), mouseX, mouseY);
-        }
-        this.lastSyncServerBtn = new int[]{sbX, sbY, sbW, sbH};
-        int filterY = ry + 22;
-        int filterH = rh - 22;
-        List<ServerBuildingInfo> all = ExtensionPackManager.getInstance().getServerBuildings();
-        if (all.isEmpty()) {
-            this.drawEmpty(guiGraphics, new int[]{rx, filterY, rw, filterH}, GuiExtensionPackBrowser.tr("server.empty.title", new Object[0]), GuiExtensionPackBrowser.tr("server.empty.hint", new Object[0]));
-            return;
-        }
-        int allCount = all.size();
-        int unsyncedCount = 0;
-        for (ServerBuildingInfo b : all) {
-            if (b.synced) continue;
-            ++unsyncedCount;
-        }
-        int syncedCount = allCount - unsyncedCount;
-        int tabW = (rw - 8) / 3;
-        int tabH = 12;
-        int tabY = filterY;
-        for (int i = 0; i < 3; ++i) {
-            int tx = rx + 4 + i * (tabW + 4);
-            String[] labels = new String[]{GuiExtensionPackBrowser.tr("server.filter.all", String.valueOf(allCount)), GuiExtensionPackBrowser.tr("server.filter.unsynced", String.valueOf(unsyncedCount)), GuiExtensionPackBrowser.tr("server.filter.synced", String.valueOf(syncedCount))};
-            String[] modes = new String[]{"all", "unsynced", "synced"};
-            boolean active = modes[i].equals(this.serverFilter);
-            int bg = active ? -10061910 : -13421756;
-            guiGraphics.fill(tx, tabY, tx + tabW, tabY + tabH, bg);
-            guiGraphics.fill(tx, tabY, tx + tabW, tabY + 1, active ? -7824948 : -11184794);
-            guiGraphics.drawCenteredString(this.font, labels[i], tx + tabW / 2, tabY + 2, active ? -1 : -5592406);
-            this.serverFilterTabs[i] = new int[]{tx, tabY, tabW, tabH};
-        }
-        ArrayList<ServerBuildingInfo> filtered = new ArrayList<ServerBuildingInfo>();
-        for (ServerBuildingInfo b : all) {
-            if ("unsynced".equals(this.serverFilter) && b.synced || "synced".equals(this.serverFilter) && !b.synced) continue;
-            filtered.add(b);
-        }
-        if (filtered.isEmpty()) {
-            String emptyHint;
-            String emptyTitle;
-            if ("unsynced".equals(this.serverFilter)) {
-                emptyTitle = GuiExtensionPackBrowser.tr("server.filter.empty_synced", new Object[0]);
-                emptyHint = GuiExtensionPackBrowser.tr("server.filter.empty_synced_hint", new Object[0]);
-            } else if ("synced".equals(this.serverFilter)) {
-                emptyTitle = GuiExtensionPackBrowser.tr("server.filter.empty_unsynced", new Object[0]);
-                emptyHint = GuiExtensionPackBrowser.tr("server.filter.empty_unsynced_hint", new Object[0]);
-            } else {
-                emptyTitle = GuiExtensionPackBrowser.tr("msg.no_match", new Object[0]);
-                emptyHint = GuiExtensionPackBrowser.tr("msg.try_filter", new Object[0]);
-            }
-            this.drawEmpty(guiGraphics, new int[]{rx, filterY + tabH + 4, rw, filterH - tabH - 4}, emptyTitle, emptyHint);
-            return;
-        }
-        this.drawServerBuildingCards(guiGraphics, rx, filterY + tabH + 4, rw, filterH - tabH - 4, mouseX, mouseY, filtered);
-    }
-
-    private void drawServerBuildingCards(GuiGraphics guiGraphics, int rx, int ry, int rw, int rh, int mouseX, int mouseY, List<ServerBuildingInfo> list) {
-        this.serverCardHitCount = 0;
-        this.serverCardSyncBtnRects.clear();
-        if (list.isEmpty()) {
-            this.drawEmpty(guiGraphics, new int[]{rx, ry, rw, rh}, GuiExtensionPackBrowser.tr("msg.no_match", new Object[0]), GuiExtensionPackBrowser.tr("msg.try_filter", new Object[0]));
-            return;
-        }
-        int cardW = (rw - 8 - 6) / 2;
-        int cardH = 56;
-        int cardGap = 6;
-        int listH = rh - 14;
-        int total = list.size();
-        int rows = Math.max(1, (listH + cardGap) / (cardH + cardGap));
-        int pageSize = rows * 2;
-        int pageCount = Math.max(1, (total + pageSize - 1) / pageSize);
-        int page = Math.max(0, Math.min(this.scrollOffsetCards, pageCount - 1));
-        int start = page * pageSize;
-        int end = Math.min(start + pageSize, total);
-        for (int i = start; i < end; ++i) {
-            int idx = i - start;
-            int col = idx % 2;
-            int row = idx / 2;
-            int cx = rx + 4 + col * (cardW + cardGap);
-            int cy = ry + 2 + row * (cardH + cardGap);
-            this.drawServerBuildingCard(guiGraphics, cx, cy, cardW, cardH, list.get(i), mouseX, mouseY);
-            if (this.serverCardHitCount >= this.serverCardHitRects.length) continue;
-            this.serverCardHitRects[this.serverCardHitCount++] = new int[]{cx, cy, cardW, cardH, i};
-        }
-        if (pageCount > 1) {
-            this.drawPaginationBar(guiGraphics, rx, ry + rh - 12, rw, page, pageCount, mouseX, mouseY);
-        }
-    }
-
-    private void drawServerBuildingCard(GuiGraphics guiGraphics, int cx, int cy, int cw, int ch, ServerBuildingInfo b, int mouseX, int mouseY) {
-        boolean btnHovered;
-        boolean canShowThumb;
-        boolean hovered = mouseX >= cx && mouseX <= cx + cw && mouseY >= cy && mouseY <= cy + ch;
-        int bg = hovered ? -13816531 : -14737633;
-        guiGraphics.fill(cx, cy, cx + cw, cy + ch, bg);
-        int borderColor = b.synced ? -13730510 : -29696;
-        guiGraphics.fill(cx, cy, cx + cw, cy + 1, borderColor);
-        guiGraphics.fill(cx, cy + ch - 1, cx + cw, cy + ch, -11184811);
-        guiGraphics.fill(cx, cy, cx + 1, cy + ch, -11184811);
-        guiGraphics.fill(cx + cw - 1, cy, cx + cw, cy + ch, -11184811);
-        int iconSize = ch >= 64 ? 36 : 28;
-        int iconX = cx + 4;
-        int iconY = cy + 4;
-        boolean bl = canShowThumb = b.synced || b.pngData != null && b.pngData.length > 0;
-        if (canShowThumb) {
-            this.ensureServerBuildingImageLoaded(b);
-            ResourceLocation tex = this.serverImageCache.get(b.buildingId);
-            if (tex != null) {
-                this.drawIconNearest(guiGraphics, tex, iconX, iconY, iconSize, iconSize, 0, 0, 256, 256, 256, 256);
-            } else {
-                guiGraphics.fill(iconX, iconY, iconX + iconSize, iconY + iconSize, -15066598);
-                String initial = b.getDisplayName();
-                initial = initial.isEmpty() ? "?" : initial.substring(0, 1);
-                guiGraphics.drawCenteredString(this.font, initial, iconX + iconSize / 2, iconY + iconSize / 2 - 4, -7811960);
-            }
-        } else {
-            guiGraphics.fill(iconX, iconY, iconX + iconSize, iconY + iconSize, -15066598);
-            guiGraphics.drawCenteredString(this.font, "\u2193", iconX + iconSize / 2, iconY + iconSize / 2 - 8, -29696);
-            String hint = GuiExtensionPackBrowser.tr("server.card.unsynced_hint", new Object[0]);
-            guiGraphics.drawCenteredString(this.font, hint, iconX + iconSize / 2, iconY + iconSize / 2 + 4, -5601178);
-        }
-        int textX = iconX + iconSize + 5;
-        int textW = cw - iconSize - 10;
-        if (textW < 30) {
-            textW = 30;
-        }
-        int nameY = ch >= 64 ? cy + 5 : cy + 2;
-        int statusY = ch >= 64 ? cy + 17 : cy + 12;
-        int metaY = ch >= 64 ? cy + 29 : cy + 22;
-        Object name = b.getDisplayName();
-        if (this.font.width((String)name) > textW) {
-            while (this.font.width((String)name + "..") > textW && ((String)name).length() > 1) {
-                name = ((String)name).substring(0, ((String)name).length() - 1);
-            }
-            name = (String)name + "..";
-        }
-        guiGraphics.drawString(this.font, (String)name, textX, nameY, -1);
-        String statusLine = GuiExtensionPackBrowser.tr(b.synced ? "server.badge.synced" : "server.badge.unsynced", new Object[0]);
-        int statusColor = b.synced ? -11141291 : -21931;
-        guiGraphics.drawString(this.font, statusLine, textX, statusY, statusColor);
-        String ext = b.getSourceExt();
-        String meta = ext + " \u00b7 " + GuiExtensionPackBrowser.formatFileSize(b.size);
-        guiGraphics.drawString(this.font, meta, textX, metaY, -7829368);
-        int sepY = ch >= 64 ? cy + 44 : cy + 36;
-        guiGraphics.fill(cx + 2, sepY, cx + cw - 2, sepY + 1, -12303292);
-        int btnH = ch >= 64 ? 16 : 14;
-        int btnX = cx + 5;
-        int btnY = cy + ch - btnH - 3;
-        int btnW = cw - 10;
-        boolean bl2 = btnHovered = mouseX >= btnX && mouseX <= btnX + btnW && mouseY >= btnY && mouseY <= btnY + btnH;
-        if (b.synced) {
-            int btnBg = btnHovered ? -12948934 : -869368526;
-            guiGraphics.fill(btnX, btnY, btnX + btnW, btnY + btnH, btnBg);
-            guiGraphics.drawCenteredString(this.font, GuiExtensionPackBrowser.tr("server.button.view", new Object[0]), btnX + btnW / 2, btnY + 4, -1);
-        } else {
-            int btnBg = btnHovered ? -21931 : -29696;
-            guiGraphics.fill(btnX, btnY, btnX + btnW, btnY + btnH, btnBg);
-            guiGraphics.drawCenteredString(this.font, GuiExtensionPackBrowser.tr("server.button.sync_one", new Object[0]), btnX + btnW / 2, btnY + 4, -1);
-        }
-        this.serverCardSyncBtnRects.put(b.buildingId, new int[]{btnX, btnY, btnW, btnH});
-    }
-
-    private void ensureServerBuildingImageLoaded(ServerBuildingInfo b) {
-        boolean hasPngData;
-        if (b == null || b.buildingId == null) {
-            return;
-        }
-        String key = b.buildingId;
-        if (this.serverImageCache.containsKey(key)) {
-            return;
-        }
-        if (this.serverImageLoading.contains(key)) {
-            return;
-        }
-        boolean bl = hasPngData = b.pngData != null && b.pngData.length > 0;
-        if (!hasPngData && !b.synced) {
-            return;
-        }
-        this.serverImageLoading.add(key);
-        CompletableFuture.runAsync(() -> {
-            try {
-                byte[] data;
-                block13: {
-                    Path cacheDir;
-                    block14: {
-                        String srcFile;
-                        block12: {
-                            data = null;
-                            if (b.pngData == null || b.pngData.length <= 0) break block12;
-                            data = b.pngData;
-                            break block13;
-                        }
-                        cacheDir = ExtensionPackManager.getInstance().getServerCacheDir();
-                        if (cacheDir == null || !Files.exists(cacheDir, new LinkOption[0])) break block13;
-                        String string = srcFile = b.sourceFileName == null ? "" : b.sourceFileName.toLowerCase();
-                        if (!srcFile.endsWith(".zip")) break block14;
-                        Path zipPath = GuiExtensionPackBrowser.findServerFile(cacheDir, b.packName == null ? b.buildingId : b.packName, ".zip");
-                        if (zipPath == null) {
-                            zipPath = GuiExtensionPackBrowser.findServerFile(cacheDir, b.buildingId, ".zip");
-                        }
-                        if (zipPath == null) break block13;
-                        try (ZipInputStream zis = new ZipInputStream(Files.newInputStream(zipPath, new OpenOption[0]));){
-                            ZipEntry ze;
-                            while ((ze = zis.getNextEntry()) != null) {
-                                int n;
-                                if (!ze.getName().toLowerCase().endsWith(".png") || ze.isDirectory()) continue;
-                                ByteArrayOutputStream bos = new ByteArrayOutputStream();
-                                byte[] buf = new byte[4096];
-                                while ((n = zis.read(buf)) > 0) {
-                                    bos.write(buf, 0, n);
-                                }
-                                data = bos.toByteArray();
-                            }
-                        }
-                    }
-                    for (String imgExt : new String[]{".png", ".jpg", ".jpeg", ".webp"}) {
-                        Path imgPath = GuiExtensionPackBrowser.findServerFile(cacheDir, b.buildingId, imgExt);
-                        if (imgPath == null) continue;
-                        data = Files.readAllBytes(imgPath);
-                        break;
-                    }
-                }
-                if (data == null || data.length == 0) {
-                    Minecraft.getInstance().execute(() -> {
-                        this.serverImageCache.put(key, null);
-                        this.serverImageLoading.remove(key);
-                    });
-                    return;
-                }
-                byte[] finalData = data;
-                Minecraft.getInstance().execute(() -> {
-                    try (ByteArrayInputStream is = new ByteArrayInputStream(finalData);){
-                        BufferedImage img = ImageIO.read(is);
-                        if (img == null) {
-                            this.serverImageCache.put(key, null);
-                        } else {
-                            DynamicTexture tex = GuiExtensionPackBrowser.uploadIconTexture(img);
-                            if (tex == null) {
-                                this.serverImageCache.put(key, null);
-                            } else {
-                                ResourceLocation loc = Minecraft.getInstance().getTextureManager().register("prefab_server_" + key, tex);
-                                this.serverImageCache.put(key, loc);
-                            }
-                        }
-                    }
-                    catch (Exception e) {
-                        PrefabCustomAddon.LOGGER.warn("[SERVER-IMG] {} load failed: {}", (Object)key, (Object)e.toString());
-                        this.serverImageCache.put(key, null);
-                    }
-                    finally {
-                        this.serverImageLoading.remove(key);
-                    }
-                });
-            }
-            catch (Exception e) {
-                PrefabCustomAddon.LOGGER.warn("[SERVER-IMG] {} read failed: {}", (Object)key, (Object)e.toString());
-                Minecraft.getInstance().execute(() -> {
-                    this.serverImageCache.put(key, null);
-                    this.serverImageLoading.remove(key);
-                });
-            }
-        });
-    }
-
-    private static Path findServerFile(Path dir, String baseName, String ext) {
-        Path p = dir.resolve(baseName + ext);
-        return Files.exists(p, new LinkOption[0]) ? p : null;
-    }
-
-    private int serverCardHitTest(int mouseX, int mouseY) {
-        for (int i = 0; i < this.serverCardHitCount; ++i) {
-            int[] r = this.serverCardHitRects[i];
-            if (mouseX < r[0] || mouseX > r[0] + r[2] || mouseY < r[1] || mouseY > r[1] + r[3]) continue;
-            return r[4];
-        }
-        return -1;
-    }
-
-    private void drawTabFavorites(GuiGraphics guiGraphics, int grayBoxX, int grayBoxY, int mouseX, int mouseY) {
-        List<ConstructionInfo> favs = ExtensionPackManager.getInstance().getFavoriteConstructions();
-        List<ConstructionInfo> filtered = this.filterBySearch(favs, this.searchText);
-        if (favs.isEmpty()) {
-            int[] r = this.getContentRect(grayBoxX, grayBoxY);
-            this.drawEmpty(guiGraphics, r, GuiExtensionPackBrowser.tr("favorites.empty.title", new Object[0]), GuiExtensionPackBrowser.tr("favorites.empty.hint", new Object[0]));
-            return;
-        }
-        this.drawConstructionCards(guiGraphics, grayBoxX, grayBoxY, mouseX, mouseY, filtered);
-    }
-
-    private void drawTabDownload(GuiGraphics guiGraphics, int grayBoxX, int grayBoxY, int mouseX, int mouseY) {
-        int statusColor;
-        String statusText;
-        int[] r = this.getContentRect(grayBoxX, grayBoxY);
-        int rx = r[0];
-        int ry = r[1];
-        int rw = r[2];
-        int rh = r[3];
-        this.websiteCardHitRects.clear();
-        if (this.websiteBuildingsLoading) {
-            statusText = GuiExtensionPackBrowser.tr("website.status.loading", new Object[0]);
-            statusColor = 0x55AAFF;
-        } else if (this.websiteBuildingsError != null) {
-            statusText = GuiExtensionPackBrowser.tr("website.status.failed", GuiExtensionPackBrowser.truncate(this.websiteBuildingsError, 16));
-            statusColor = 0xFF5555;
-        } else if (this.websiteBuildings.isEmpty()) {
-            statusText = GuiExtensionPackBrowser.tr("website.status.empty", new Object[0]);
-            statusColor = 0xAAAAAA;
-        } else {
-            statusText = GuiExtensionPackBrowser.tr("website.status.summary", String.valueOf(this.websiteBuildings.size()));
-            statusColor = 0xAAAAAA;
-        }
-        guiGraphics.drawString(this.font, statusText, rx + 4, ry + 4, statusColor);
-        int btnH = 12;
-        int webBtnW = 60;
-        int webBtnX = rx + rw - webBtnW - 4;
-        int webBtnY = ry + 2;
-        this.drawTextButton(guiGraphics, webBtnX, webBtnY, webBtnW, btnH, GuiExtensionPackBrowser.tr("website.button.open", new Object[0]), mouseX, mouseY);
-        this.lastOpenWebsiteButtonRect = new int[]{webBtnX, webBtnY, webBtnW, btnH};
-        int filtW = 64;
-        int filtX = webBtnX - filtW - 4;
-        int filtY = ry + 2;
-        String filtLabel = "all".equals(this.websiteFilter) ? GuiExtensionPackBrowser.tr("website.filter.all", new Object[0]) : ("downloaded".equals(this.websiteFilter) ? GuiExtensionPackBrowser.tr("website.filter.downloaded", new Object[0]) : GuiExtensionPackBrowser.tr("website.filter.not_downloaded", new Object[0]));
-        this.drawTextButton(guiGraphics, filtX, filtY, filtW, btnH, "\u25bc " + filtLabel, mouseX, mouseY);
-        this.websiteFilterButtonRect = new int[]{filtX, filtY, filtW, btnH};
-        ArrayList<PackDownloadManager.BuildingInfo2> filtered = new ArrayList<PackDownloadManager.BuildingInfo2>();
-        for (PackDownloadManager.BuildingInfo2 b2 : this.websiteBuildings) {
-            if (b2 == null || b2.id == null) continue;
-            boolean downloaded = this.isWebsiteBuildingDownloaded(b2);
-            if ("downloaded".equals(this.websiteFilter) && !downloaded || "not_downloaded".equals(this.websiteFilter) && downloaded) continue;
-            filtered.add(b2);
-        }
-        filtered.sort((a, b) -> {
-            boolean db;
-            boolean da = this.isWebsiteBuildingDownloaded((PackDownloadManager.BuildingInfo2)a);
-            if (da != (db = this.isWebsiteBuildingDownloaded((PackDownloadManager.BuildingInfo2)b))) {
-                return da ? -1 : 1;
-            }
-            return 0;
-        });
-        if (filtered.isEmpty()) {
-            String emptyHint;
-            String emptyTitle;
-            if (this.websiteBuildingsError != null) {
-                emptyTitle = GuiExtensionPackBrowser.tr("website.empty.failed", new Object[0]);
-                emptyHint = GuiExtensionPackBrowser.tr("website.empty.failed_hint", new Object[0]);
-            } else if ("not_downloaded".equals(this.websiteFilter)) {
-                emptyTitle = GuiExtensionPackBrowser.tr("website.empty.all_downloaded", new Object[0]);
-                emptyHint = GuiExtensionPackBrowser.tr("website.empty.all_downloaded_hint", new Object[0]);
-            } else if ("downloaded".equals(this.websiteFilter)) {
-                emptyTitle = GuiExtensionPackBrowser.tr("website.empty.no_downloaded", new Object[0]);
-                emptyHint = GuiExtensionPackBrowser.tr("website.empty.no_downloaded_hint", new Object[0]);
-            } else if (this.websiteBuildingsLoading) {
-                emptyTitle = GuiExtensionPackBrowser.tr("website.empty.loading", new Object[0]);
-                emptyHint = GuiExtensionPackBrowser.tr("website.empty.loading_hint", new Object[0]);
-            } else {
-                emptyTitle = GuiExtensionPackBrowser.tr("website.empty.empty", new Object[0]);
-                emptyHint = GuiExtensionPackBrowser.tr("website.empty.empty_hint", new Object[0]);
-            }
-            this.drawEmpty(guiGraphics, new int[]{rx, ry + 18, rw, rh - 18}, emptyTitle, emptyHint);
-            return;
-        }
-        int listY = ry + 18;
-        int listH = rh - 22;
-        int cardW = (rw - 8 - 12) / 3;
-        int cardH = 70;
-        int total = filtered.size();
-        int pageSize = Math.max(1, (listH + 6) / (cardH + 6)) * 3;
-        int pageCount = Math.max(1, (total + pageSize - 1) / pageSize);
-        int page = Math.max(0, Math.min(this.scrollOffsetCards, pageCount - 1));
-        int start = page * pageSize;
-        int end = Math.min(start + pageSize, total);
-        int col = 0;
-        int row = 0;
-        for (int i = start; i < end; ++i) {
-            PackDownloadManager.BuildingInfo2 b3 = (PackDownloadManager.BuildingInfo2)filtered.get(i);
-            int cx = rx + 4 + col * (cardW + 6);
-            int cy = listY + row * (cardH + 6);
-            this.drawWebsiteBuildingCard(guiGraphics, cx, cy, cardW, cardH, b3, mouseX, mouseY);
-            int[] rect = new int[]{cx, cy, cardW, cardH};
-            this.websiteCardHitRects.put(b3.id, rect);
-            if (++col < 3) continue;
-            col = 0;
-            ++row;
-        }
-        if (pageCount > 1) {
-            this.drawPaginationBar(guiGraphics, rx, ry + rh - 12, rw, page, pageCount, mouseX, mouseY);
-        }
-    }
-
-    private void drawWebsiteBuildingCard(GuiGraphics guiGraphics, int cx, int cy, int cw, int ch, PackDownloadManager.BuildingInfo2 b, int mouseX, int mouseY) {
-        Object name;
-        boolean downloaded = this.isWebsiteBuildingDownloaded(b);
-        boolean downloading = this.websiteDownloading.contains(b.id);
-        boolean hovered = mouseX >= cx && mouseX <= cx + cw && mouseY >= cy && mouseY <= cy + ch;
-        int bg = hovered ? -13816531 : -14737633;
-        guiGraphics.fill(cx, cy, cx + cw, cy + ch, bg);
-        int borderColor = downloading ? -11162881 : (downloaded ? -13730510 : -29696);
-        guiGraphics.fill(cx, cy, cx + cw, cy + 1, borderColor);
-        guiGraphics.fill(cx, cy + ch - 1, cx + cw, cy + ch, -11184811);
-        guiGraphics.fill(cx, cy, cx + 1, cy + ch, -11184811);
-        guiGraphics.fill(cx + cw - 1, cy, cx + cw, cy + ch, -11184811);
-        int iconSize = 36;
-        int iconX = cx + 4;
-        int iconY = cy + 4;
-        ResourceLocation tex = this.websiteImageCache.get(b.id);
-        if (tex != null) {
-            this.drawIconNearest(guiGraphics, tex, iconX, iconY, iconSize, iconSize, 0, 0, 48, 48, 48, 48);
-        } else {
-            guiGraphics.fill(iconX, iconY, iconX + iconSize, iconY + iconSize, -15066598);
-            String initial = b.name.isEmpty() ? "?" : b.name.substring(0, 1);
-            guiGraphics.drawCenteredString(this.font, initial, iconX + iconSize / 2, iconY + iconSize / 2 - 4, -7829368);
-        }
-        int textX = iconX + iconSize + 5;
-        int textW = cw - iconSize - 10;
-        if (textW < 30) {
-            textW = 30;
-        }
-        Object object = name = b.name == null || b.name.isEmpty() ? b.id : b.name;
-        if (this.font.width((String)name) > textW) {
-            while (this.font.width((String)name + "..") > textW && ((String)name).length() > 1) {
-                name = ((String)name).substring(0, ((String)name).length() - 1);
-            }
-            name = (String)name + "..";
-        }
-        guiGraphics.drawString(this.font, (String)name, textX, cy + 5, 0xFFFFFF);
-        Object author = "\u00a77by " + (b.author == null || b.author.isEmpty() ? GuiExtensionPackBrowser.tr("website.author.unknown", new Object[0]) : b.author);
-        if (this.font.width((String)author) > textW) {
-            while (this.font.width((String)author + "..") > textW && ((String)author).length() > 1) {
-                author = ((String)author).substring(0, ((String)author).length() - 1);
-            }
-            author = (String)author + "..";
-        }
-        guiGraphics.drawString(this.font, (String)author, textX, cy + 17, -5592406);
-        String meta = "\u00a77" + (b.fileExt == null || b.fileExt.isEmpty() ? ".nbt" : b.fileExt) + " \u00b7 " + GuiExtensionPackBrowser.formatFileSize(b.fileSize) + (String)(b.downloads > 0 ? " \u00b7 \u2193" + b.downloads : "");
-        guiGraphics.drawString(this.font, meta, textX, cy + 29, -7829368);
-        int sepY = cy + 44;
-        guiGraphics.fill(cx + 2, sepY, cx + cw - 2, sepY + 1, -12303292);
-        int dBtnW = cw - 10;
-        int dBtnH = 16;
-        int dBtnX = cx + 5;
-        int dBtnY = cy + ch - dBtnH - 4;
-        if (downloading) {
-            guiGraphics.fill(dBtnX, dBtnY, dBtnX + dBtnW, dBtnY + dBtnH, -11184777);
-            double[] prog = this.websiteDownloadProgress.get(b.id);
-            String label = GuiExtensionPackBrowser.tr("website.status.loading", new Object[0]);
-            if (prog != null) {
-                int pct = (int)prog[2];
-                label = GuiExtensionPackBrowser.tr("website.badge.downloading", String.valueOf(pct));
-            }
-            guiGraphics.drawCenteredString(this.font, label, dBtnX + dBtnW / 2, dBtnY + 4, -3355444);
-        } else if (downloaded) {
-            guiGraphics.fill(dBtnX, dBtnY, dBtnX + dBtnW, dBtnY + dBtnH, -869368526);
-            guiGraphics.drawCenteredString(this.font, GuiExtensionPackBrowser.tr("website.badge.downloaded", new Object[0]), dBtnX + dBtnW / 2, dBtnY + 4, -1);
-        } else {
-            this.drawTextButton(guiGraphics, dBtnX, dBtnY, dBtnW, dBtnH, GuiExtensionPackBrowser.tr("website.button.download", new Object[0]), mouseX, mouseY);
-        }
-        this.websiteCardDownloadBtnRects.put(b.id, new int[]{dBtnX, dBtnY, dBtnW, dBtnH});
-    }
-
-    private void drawTabCloud(GuiGraphics guiGraphics, int grayBoxX, int grayBoxY, int mouseX, int mouseY) {
-        int statusColor;
-        String statusText;
-        List<CloudBuilding> list;
-        int[] r = this.getContentRect(grayBoxX, grayBoxY);
-        int rx = r[0];
-        int ry = r[1];
-        int rw = r[2];
-        int rh = r[3];
-        this.cloudCardHitRects.clear();
-        this.cloudCardRecallBtnRects.clear();
-        this.cloudCardSummonBtnRects.clear();
-        this.cloudCardDeleteBtnRects.clear();
-        this.cloudCardNavigateBtnRects.clear();
-        if (this.navigateDebugLogged.size() > 200) {
-            this.navigateDebugLogged.clear();
-        }
-        if ((list = CloudBuildingClientCache.getInstance().getAll()).isEmpty()) {
-            statusText = GuiExtensionPackBrowser.tr("cloud.status.empty", new Object[0]);
-            statusColor = 0xAAAAAA;
-        } else {
-            int placed = 0;
-            int recalled = 0;
-            for (CloudBuilding b : list) {
-                if (b.placed) {
-                    ++placed;
-                    continue;
-                }
-                ++recalled;
-            }
-            statusText = GuiExtensionPackBrowser.tr("cloud.status.summary", String.valueOf(list.size()), String.valueOf(placed), String.valueOf(recalled));
-            statusColor = 0x55AAFF;
-        }
-        guiGraphics.drawString(this.font, statusText, rx + 4, ry + 4, statusColor);
-        if (list.isEmpty()) {
-            this.drawEmpty(guiGraphics, new int[]{rx, ry + 18, rw, rh - 18}, GuiExtensionPackBrowser.tr("cloud.empty.title", new Object[0]), GuiExtensionPackBrowser.tr("cloud.empty.hint", new Object[0]));
-            return;
-        }
-        for (CloudBuilding b : list) {
-            if (b.thumbnailPng == null || b.thumbnailPng.length <= 0 || this.cloudThumbCache.containsKey(b.id)) continue;
-            this.ensureCloudThumbLoaded(b);
-        }
-        int listY = ry + 18;
-        int listH = rh - 22;
-        int cardW = (rw - 8 - 6) / 2;
-        int cardH = 96;
-        int total = list.size();
-        int rows = Math.max(1, (listH + 6) / (cardH + 6));
-        int pageSize = rows * 2;
-        int pageCount = Math.max(1, (total + pageSize - 1) / pageSize);
-        int page = Math.max(0, Math.min(this.scrollOffsetCards, pageCount - 1));
-        int start = page * pageSize;
-        int end = Math.min(start + pageSize, total);
-        int col = 0;
-        int row = 0;
-        for (int i = start; i < end; ++i) {
-            int cx = rx + 4 + col * (cardW + 6);
-            int cy = listY + row * (cardH + 6);
-            this.drawCloudBuildingCard(guiGraphics, cx, cy, cardW, cardH, list.get(i), mouseX, mouseY);
-            this.cloudCardHitRects.put(list.get((int)i).id, new int[]{cx, cy, cardW, cardH});
-            if (++col < 2) continue;
-            col = 0;
-            ++row;
-        }
-        if (pageCount > 1) {
-            this.drawPaginationBar(guiGraphics, rx, ry + rh - 12, rw, page, pageCount, mouseX, mouseY);
-        }
-    }
-
-    private void drawCloudBuildingCard(GuiGraphics guiGraphics, int cx, int cy, int cw, int ch, CloudBuilding b, int mouseX, int mouseY) {
-        int bg2;
-        String facingShort;
-        boolean hovered = mouseX >= cx && mouseX <= cx + cw && mouseY >= cy && mouseY <= cy + ch;
-        int bg = hovered ? -13816531 : -14737633;
-        guiGraphics.fill(cx, cy, cx + cw, cy + ch, bg);
-        int topColor = b.placed ? -13730510 : -8947849;
-        guiGraphics.fill(cx, cy, cx + cw, cy + 1, topColor);
-        guiGraphics.fill(cx, cy + ch - 1, cx + cw, cy + ch, -11184811);
-        guiGraphics.fill(cx, cy, cx + 1, cy + ch, -11184811);
-        guiGraphics.fill(cx + cw - 1, cy, cx + cw, cy + ch, -11184811);
-        int iconSize = 48;
-        int iconX = cx + 4;
-        int iconY = cy + 4;
-        int iconBg = b.placed ? -14730721 : -14013910;
-        guiGraphics.fill(iconX, iconY, iconX + iconSize, iconY + iconSize, iconBg);
-        ResourceLocation thumb = this.cloudThumbCache.get(b.id);
-        if (thumb == null && b.thumbnailPng != null && b.thumbnailPng.length > 0) {
-            thumb = this.ensureCloudThumbLoaded(b);
-        }
-        if (thumb != null) {
-            int srcW = b.thumbWidth > 0 ? b.thumbWidth : iconSize;
-            int srcH = b.thumbHeight > 0 ? b.thumbHeight : iconSize;
-            guiGraphics.blit(thumb, iconX, iconY, 0.0f, 0.0f, iconSize, iconSize, srcW, srcH);
-        } else {
-            if (b.name != null && !b.name.isEmpty() && !this.cloudThumbLoading.contains(b.id)) {
-                this.cloudThumbLoading.add(b.id);
-                this.triggerLoadCloudThumb(b);
-            }
-            String initial = b.name == null || b.name.isEmpty() ? "?" : b.name.substring(0, 1);
-            guiGraphics.drawCenteredString(this.font, initial, iconX + iconSize / 2, iconY + iconSize / 2 - 4, b.placed ? -7811960 : -7829368);
-        }
-        int textX = iconX + iconSize + 6;
-        int textW = cw - iconSize - 12 - 14;
-        if (textW < 30) {
-            textW = 30;
-        }
-        String baseName = b.name == null || b.name.isEmpty() ? GuiExtensionPackBrowser.tr("cloud.card.unnamed", new Object[0]) : b.name;
-        String nameTrunc = this.truncateToWidth(baseName, textW);
-        guiGraphics.drawString(this.font, nameTrunc, textX, cy + 4, -1);
-        String statusSuffix = b.placed ? GuiExtensionPackBrowser.tr("cloud.card.placed", new Object[0]) : GuiExtensionPackBrowser.tr("cloud.card.recalled", new Object[0]);
-        int statusColor = b.placed ? -11141291 : -5592406;
-        guiGraphics.drawString(this.font, statusSuffix, textX, cy + 16, statusColor);
-        if (b.facing == null) {
-            facingShort = "?";
-        } else {
-            switch (b.facing.getName()) {
-                case "north": {
-                    facingShort = "\u5317";
-                    break;
-                }
-                case "south": {
-                    facingShort = "\u5357";
-                    break;
-                }
-                case "east": {
-                    facingShort = "\u4e1c";
-                    break;
-                }
-                case "west": {
-                    facingShort = "\u897f";
-                    break;
-                }
-                default: {
-                    facingShort = b.facing.getName();
-                }
-            }
-        }
-        String relTime = this.formatRelativeTime(b.timestamp);
-        relTime = relTime.replace("\u5206\u949f", "\u5206").replace("\u5c0f\u65f6", "\u65f6").replace("\u5929", "\u5929");
-        Object meta = b.placed && b.placedAt != null ? b.blocks.size() + " \u00b7 " + b.placedAt.toShortString() + " \u00b7 " + relTime : b.blocks.size() + " \u00b7 " + facingShort + " \u00b7 " + relTime;
-        meta = this.truncateToWidth((String)meta, textW);
-        guiGraphics.drawString(this.font, (String)meta, textX, cy + 28, -5592406);
-        String hint = b.placed ? "\u70b9\u6536\u56de\u6e05\u7406" : "\u70b9\u653e\u51fa\u9884\u89c8";
-        hint = this.truncateToWidth(hint, textW);
-        guiGraphics.drawString(this.font, hint, textX, cy + 40, -7829368);
-        Object sizeInfo = b.sizeX + "\u00d7" + b.sizeY + "\u00d7" + b.sizeZ;
-        sizeInfo = this.truncateToWidth((String)sizeInfo, textW);
-        guiGraphics.drawString(this.font, (String)sizeInfo, textX, cy + 52, -8947849);
-        int sepY = cy + 70;
-        guiGraphics.fill(cx + 2, sepY, cx + cw - 2, sepY + 1, -12303292);
-        int btnY = sepY + 4;
-        int btnH = ch - (btnY - cy) - 3;
-        if (btnH < 14) {
-            btnH = 14;
-        }
-        int gap = 4;
-        int recallW = (cw - 10 - gap) / 2;
-        int recallX = cx + 5;
-        int summonX = recallX + recallW + gap;
-        int summonW = cw - 10 - recallW - gap;
-        if (b.placed) {
-            this.drawTextButton(guiGraphics, recallX, btnY, recallW, btnH, GuiExtensionPackBrowser.tr("cloud.button.recall", new Object[0]), mouseX, mouseY);
-        } else {
-            bg2 = -13421773;
-            guiGraphics.fill(recallX, btnY, recallX + recallW, btnY + btnH, bg2);
-            guiGraphics.drawCenteredString(this.font, GuiExtensionPackBrowser.tr("cloud.button.recall", new Object[0]), recallX + recallW / 2, btnY + (btnH - 8) / 2, -10066330);
-        }
-        if (!b.placed) {
-            this.drawTextButton(guiGraphics, summonX, btnY, summonW, btnH, GuiExtensionPackBrowser.tr("cloud.button.summon", new Object[0]), mouseX, mouseY);
-        } else {
-            bg2 = -13421773;
-            guiGraphics.fill(summonX, btnY, summonX + summonW, btnY + btnH, bg2);
-            guiGraphics.drawCenteredString(this.font, GuiExtensionPackBrowser.tr("cloud.button.summon", new Object[0]), summonX + summonW / 2, btnY + (btnH - 8) / 2, -10066330);
-        }
-        this.cloudCardRecallBtnRects.put(b.id, new int[]{recallX, btnY, recallW, btnH});
-        this.cloudCardSummonBtnRects.put(b.id, new int[]{summonX, btnY, summonW, btnH});
-        boolean hasRealPlacedAt = b.placedAt != null && (b.placedAt.getX() != 0 || b.placedAt.getY() != 0 || b.placedAt.getZ() != 0);
-        boolean xaeroAvail = XaeroWaypointBridge.isAvailable();
-        if (!this.navigateDebugLogged.contains(b.id)) {
-            this.navigateDebugLogged.add(b.id);
-            PrefabCustomAddon.LOGGER.info("[CLOUD-NAV] building='{}' placed={} placedAt={} xaeroAvail={} \u2192 {}", new Object[]{b.name, b.placed, b.placedAt, xaeroAvail, xaeroAvail && hasRealPlacedAt ? "BUTTON_SHOWN" : "BUTTON_HIDDEN"});
-        }
-        if (xaeroAvail && hasRealPlacedAt) {
-            int navSize = 10;
-            int delXForNav = cx + cw - 3 - 10;
-            int navX = delXForNav - 2 - navSize;
-            int navY = cy + 3;
-            boolean navHovered = mouseX >= navX && mouseX <= navX + navSize && mouseY >= navY && mouseY <= navY + navSize;
-            int navColor = navHovered ? -7798904 : -11163051;
-            int cx2 = navX + navSize / 2;
-            int cy2 = navY + navSize / 2;
-            guiGraphics.fill(cx2 - 1, cy2 - 2, cx2 + 2, cy2 - 1, navColor);
-            guiGraphics.fill(cx2 - 2, cy2 - 1, cx2 + 3, cy2, navColor);
-            guiGraphics.fill(cx2 - 1, cy2, cx2 + 2, cy2 + 1, navColor);
-            guiGraphics.fill(cx2, cy2 + 1, cx2 + 1, cy2 + 2, navColor);
-            if (navHovered) {
-                guiGraphics.fill(cx2 - 2, cy2 - 3, cx2 + 3, cy2 - 2, 0x55FFFFFF);
-                guiGraphics.fill(cx2 - 3, cy2 - 2, cx2 + 4, cy2 - 1, 0x55FFFFFF);
-                guiGraphics.fill(cx2 - 3, cy2 + 1, cx2 + 4, cy2 + 2, 0x55FFFFFF);
-            }
-            this.cloudCardNavigateBtnRects.put(b.id, new int[]{navX, navY, navSize, navSize});
-        }
-        int delSize = 10;
-        int delX = cx + cw - delSize - 3;
-        int delY = cy + 3;
-        boolean delHovered = mouseX >= delX && mouseX <= delX + delSize && mouseY >= delY && mouseY <= delY + delSize;
-        int delColor = delHovered ? -43691 : -7829368;
-        guiGraphics.fill(delX + 2, delY + 2, delX + delSize - 1, delY + 3, delColor);
-        guiGraphics.fill(delX + 3, delY + 3, delX + delSize - 2, delY + 4, delColor);
-        guiGraphics.fill(delX + delSize - 2, delY + 2, delX + delSize - 1, delY + 3, delColor);
-        guiGraphics.fill(delX + 3, delY + delSize - 3, delX + delSize - 2, delY + delSize - 2, delColor);
-        for (int i = 0; i < delSize - 4; ++i) {
-            guiGraphics.fill(delX + 2 + i, delY + 2 + i, delX + 3 + i, delY + 3 + i, delColor);
-            guiGraphics.fill(delX + delSize - 3 - i, delY + 2 + i, delX + delSize - 2 - i, delY + 3 + i, delColor);
-        }
-        this.cloudCardDeleteBtnRects.put(b.id, new int[]{delX, delY, delSize, delSize});
-    }
-
-    private ResourceLocation ensureCloudThumbLoaded(CloudBuilding b) {
-        if (b == null || b.thumbnailPng == null || b.thumbnailPng.length == 0) {
-            return null;
-        }
-        ResourceLocation existing = this.cloudThumbCache.get(b.id);
-        if (existing != null) {
-            return existing;
-        }
-        try {
-            BufferedImage img = ImageIO.read(new ByteArrayInputStream(b.thumbnailPng));
-            if (img == null) {
-                PrefabCustomAddon.LOGGER.warn("[CLOUD-THUMB] \u540c\u6b65\u89e3\u7801\u5d4c\u5165\u56fe\u4e3a null: id={}", (Object)b.id);
-                return null;
-            }
-            int w = img.getWidth();
-            int h = img.getHeight();
-            if (w <= 0 || h <= 0) {
-                return null;
-            }
-            b.thumbWidth = w;
-            b.thumbHeight = h;
-            int ww = w;
-            int hh = h;
-            DynamicTexture tex = new DynamicTexture(ww, hh, false);
-            tex.setFilter(false, false);
-            NativeImage pixels = tex.getPixels();
-            for (int y = 0; y < hh; ++y) {
-                for (int x = 0; x < ww; ++x) {
-                    int argb = img.getRGB(x, y);
-                    int abgr = argb & 0xFF00FF00 | (argb & 0xFF0000) >> 16 | (argb & 0xFF) << 16;
-                    pixels.setPixelRGBA(x, y, abgr);
-                }
-            }
-            tex.upload();
-            ResourceLocation loc = Minecraft.getInstance().getTextureManager().register("prefab_cloud_" + b.id, tex);
-            this.cloudThumbCache.put(b.id, loc);
-            PrefabCustomAddon.LOGGER.info("[CLOUD-THUMB] \u540c\u6b65\u89e3\u7801\u5d4c\u5165\u56fe: id={} {}x{}", new Object[]{b.id, ww, hh});
-            return loc;
-        }
-        catch (Exception e) {
-            PrefabCustomAddon.LOGGER.warn("[CLOUD-THUMB] \u540c\u6b65\u89e3\u7801\u5931\u8d25: id={} err={}", (Object)b.id, (Object)e.toString());
-            return null;
-        }
-    }
-
-    private String truncateToWidth(String s, int maxWidth) {
-        if (s == null) {
-            return "";
-        }
-        if (this.font.width(s) <= maxWidth) {
-            return s;
-        }
-        String trimmed = s;
-        while (trimmed.length() > 1 && this.font.width(trimmed + "..") > maxWidth) {
-            trimmed = trimmed.substring(0, trimmed.length() - 1);
-        }
-        return trimmed + "..";
-    }
-
-    private String formatRelativeTime(long ts) {
-        long sec;
-        if (ts <= 0L) {
-            return GuiExtensionPackBrowser.tr("time.unknown", new Object[0]);
-        }
-        long diff = System.currentTimeMillis() - ts;
-        if (diff < 0L) {
-            diff = 0L;
-        }
-        if ((sec = diff / 1000L) < 60L) {
-            return GuiExtensionPackBrowser.tr("time.just_now", new Object[0]);
-        }
-        long min = sec / 60L;
-        if (min < 60L) {
-            return GuiExtensionPackBrowser.tr("time.minutes_ago", String.valueOf(min));
-        }
-        long hr = min / 60L;
-        if (hr < 24L) {
-            return GuiExtensionPackBrowser.tr("time.hours_ago", String.valueOf(hr));
-        }
-        long day = hr / 24L;
-        return GuiExtensionPackBrowser.tr("time.days_ago", String.valueOf(day));
-    }
-
-    private static String tr(String key, Object ... args) {
-        try {
-            return Component.translatable((String)key, (Object[])args).getString();
-        }
-        catch (Throwable t) {
-            return key;
-        }
-    }
-
-    private static String truncate(String s, int max) {
-        if (s == null) {
-            return "";
-        }
-        if (s.length() <= max) {
-            return s;
-        }
-        return s.substring(0, max) + "...";
-    }
-
-    private static boolean hitTestRect(int[] r, int mx, int my) {
-        if (r == null || r.length < 4) {
-            return false;
-        }
-        return mx >= r[0] && mx <= r[0] + r[2] && my >= r[1] && my <= r[1] + r[3];
-    }
-
-    private void drawTextButton(GuiGraphics guiGraphics, int x, int y, int w, int h, String text, int mouseX, int mouseY) {
-        boolean hovered = mouseX >= x && mouseX <= x + w && mouseY >= y && mouseY <= y + h;
-        int bg = hovered ? -10061910 : -12298889;
-        guiGraphics.fill(x, y, x + w, y + h, bg);
-        guiGraphics.fill(x, y, x + w, y + 1, -7824948);
-        guiGraphics.fill(x, y + h - 1, x + w, y + h, -14535868);
-        guiGraphics.drawCenteredString(this.font, text, x + w / 2, y + (h - 8) / 2, 0xFFFFFF);
-    }
-
-    private void drawPaginationBar(GuiGraphics guiGraphics, int rx, int bottomY, int rw, int currentPage, int totalPages, int mouseX, int mouseY) {
-        int startX;
-        this.paginationBarRect = null;
-        this.paginationPrevRect = null;
-        this.paginationNextRect = null;
-        this.paginationPageRects = null;
-        if (totalPages <= 1) {
-            return;
-        }
-        int barH = 12;
-        int y = bottomY;
-        this.paginationBarRect = new int[]{rx, y, rw, barH};
-        int prevW = 16;
-        int nextW = 16;
-        int gap = 4;
-        int numW = 28;
-        int totalUsed = prevW + gap + numW + gap + nextW;
-        int prevX = startX = rx + (rw - totalUsed) / 2;
-        int cy = y;
-        this.paginationPrevRect = new int[]{prevX, cy, prevW, barH};
-        boolean prevActive = currentPage > 0;
-        this.drawPageBtn(guiGraphics, this.paginationPrevRect, "\u2039", prevActive, prevActive && GuiExtensionPackBrowser.isHovered(this.paginationPrevRect, mouseX, mouseY));
-        int numX = prevX + prevW + gap;
-        int[] numR = new int[]{numX, cy, numW, barH};
-        this.paginationPageRects = null;
-        int bg = -12298889;
-        boolean hovered = GuiExtensionPackBrowser.isHovered(numR, mouseX, mouseY);
-        if (hovered) {
-            bg = -11180391;
-        }
-        guiGraphics.fill(numR[0], numR[1], numR[0] + numR[2], numR[1] + numR[3], bg);
-        String label = currentPage + 1 + "/" + totalPages;
-        guiGraphics.drawCenteredString(this.font, label, numR[0] + numR[2] / 2, numR[1] + (numR[3] - 8) / 2, -1);
-        int nextX = numX + numW + gap;
-        this.paginationNextRect = new int[]{nextX, cy, nextW, barH};
-        boolean nextActive = currentPage < totalPages - 1;
-        this.drawPageBtn(guiGraphics, this.paginationNextRect, "\u203a", nextActive, nextActive && GuiExtensionPackBrowser.isHovered(this.paginationNextRect, mouseX, mouseY));
-    }
-
-    private void drawPageBtn(GuiGraphics guiGraphics, int[] r, String text, boolean active, boolean hovered) {
-        int bg = !active ? -14013910 : (hovered ? -10061910 : -12298889);
-        guiGraphics.fill(r[0], r[1], r[0] + r[2], r[1] + r[3], bg);
-        int textColor = active ? 0xFFFFFF : -10066330;
-        guiGraphics.drawCenteredString(this.font, text, r[0] + r[2] / 2, r[1] + (r[3] - 8) / 2, textColor);
-    }
-
-    private static boolean isHovered(int[] r, int mx, int my) {
-        return r != null && mx >= r[0] && mx <= r[0] + r[2] && my >= r[1] && my <= r[1] + r[3];
-    }
-
-    private boolean handlePaginationClick(int mouseX, int mouseY) {
-        int maxPage;
-        if (GuiExtensionPackBrowser.isHovered(this.paginationPrevRect, mouseX, mouseY) && this.scrollOffsetCards > 0) {
-            --this.scrollOffsetCards;
-            return true;
-        }
-        if (GuiExtensionPackBrowser.isHovered(this.paginationNextRect, mouseX, mouseY) && this.scrollOffsetCards < (maxPage = this.computeMaxPageForCurrentTab())) {
-            ++this.scrollOffsetCards;
-            return true;
-        }
-        if (this.paginationPageRects != null) {
-            for (int[] r : this.paginationPageRects) {
-                if (!GuiExtensionPackBrowser.isHovered(r, mouseX, mouseY)) continue;
-                this.scrollOffsetCards = r[4];
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private boolean handleCategoryListClick(int mouseX, int mouseY) {
-        if (GuiExtensionPackBrowser.isHovered(this.categoryToggleBtnRect, mouseX, mouseY)) {
-            this.categoryPanelHidden = !this.categoryPanelHidden;
-            this.scrollOffsetCards = 0;
-            return true;
-        }
-        if (this.categoryPanelHidden) {
-            return false;
-        }
-        for (int idx = 0; idx < this.categoryItemRects.size(); ++idx) {
-            String newCat;
-            int[] r = this.categoryItemRects.get(idx);
-            if (!GuiExtensionPackBrowser.isHovered(r, mouseX, mouseY)) continue;
-            if (idx == 0) {
-                newCat = null;
-            } else if (idx == 1) {
-                newCat = "\u672a\u5206\u7c7b";
-            } else {
-                List<String> all = CategoryManager.get().getCategories();
-                int realIdx = idx - 1;
-                newCat = realIdx >= 0 && realIdx < all.size() ? all.get(realIdx) : null;
-            }
-            this.currentCategory = Objects.equals(newCat, this.currentCategory) ? null : newCat;
-            this.scrollOffsetCards = 0;
-            return true;
-        }
-        if (GuiExtensionPackBrowser.isHovered(this.categoryAddBtnRect, mouseX, mouseY)) {
-            GuiCategoryManager.openStandalone();
-            return true;
-        }
-        return false;
-    }
-
-    private void openDownloadFolder() {
-        Path dir = LocalBuildingScanner.getDownloadRoot();
-        try {
-            if (!Files.exists(dir, new LinkOption[0])) {
-                Files.createDirectories(dir, new FileAttribute[0]);
-            }
-            FolderOpener.openInOS(dir);
-            this.setStatus("\u5df2\u6253\u5f00: " + String.valueOf(dir), 0x55FF55);
-        }
-        catch (Exception e) {
-            this.setStatus("\u6253\u5f00\u5931\u8d25: " + e.getMessage(), 0xFF5555);
-        }
-    }
-
-    private void drawDownloadedCard(GuiGraphics guiGraphics, int cx, int cy, int cw, int ch, LocalBuilding lb, int mouseX, int mouseY) {
-        boolean hovered = mouseX >= cx && mouseX <= cx + cw && mouseY >= cy && mouseY <= cy + ch;
-        int bg = hovered ? -13816531 : -14737633;
-        guiGraphics.fill(cx, cy, cx + cw, cy + ch, bg);
-        guiGraphics.fill(cx, cy, cx + cw, cy + 1, -11184811);
-        guiGraphics.fill(cx, cy + ch - 1, cx + cw, cy + ch, -11184811);
-        guiGraphics.fill(cx, cy, cx + 1, cy + ch, -11184811);
-        guiGraphics.fill(cx + cw - 1, cy, cx + cw, cy + ch, -11184811);
-        int iconSize = 40;
-        int iconX = cx + 4;
-        int iconY = cy + (ch - iconSize) / 2;
-        ResourceLocation tex = this.localImageCache.get(lb.id);
-        if (tex != null) {
-            this.drawIconNearest(guiGraphics, tex, iconX, iconY, iconSize, iconSize, 0, 0, 256, 256, 256, 256);
-        } else {
-            guiGraphics.fill(iconX, iconY, iconX + iconSize, iconY + iconSize, -15066598);
-            String initial = lb.name.isEmpty() ? "?" : lb.name.substring(0, 1);
-            guiGraphics.drawCenteredString(this.font, initial, iconX + iconSize / 2, iconY + iconSize / 2 - 4, -7829368);
-        }
-        int textX = iconX + iconSize + 6;
-        int textW = cw - iconSize - 12;
-        Object name = lb.getDisplayName();
-        if (this.font.width((String)name) > textW) {
-            while (this.font.width((String)name + "..") > textW && ((String)name).length() > 1) {
-                name = ((String)name).substring(0, ((String)name).length() - 1);
-            }
-            name = (String)name + "..";
-        }
-        guiGraphics.drawString(this.font, (String)name, textX, cy + 8, 0xFFFFFF);
-        String author = "\u00a77by " + (lb.author.isEmpty() ? "\u672a\u77e5" : lb.author);
-        guiGraphics.drawString(this.font, author, textX, cy + 20, -5592406);
-        String meta = "\u00a77" + (lb.fileExt.isEmpty() ? ".nbt" : lb.fileExt) + " \u00b7 " + GuiExtensionPackBrowser.formatFileSize(lb.fileSize);
-        guiGraphics.drawString(this.font, meta, textX, cy + 32, -7829368);
-        String tag = "extension".equals(lb.source) ? "\u672c\u5730" : "\u4e0b\u8f7d";
-        int tagW = this.font.width(tag);
-        guiGraphics.drawString(this.font, "\u00a77" + tag, cx + cw - tagW - 4, cy + ch - 10, -7829368);
-    }
-
-    private static String formatFileSize(long bytes) {
-        if (bytes <= 0L) {
-            return "-";
-        }
-        if (bytes < 1024L) {
-            return bytes + "B";
-        }
-        if (bytes < 0x100000L) {
-            return bytes / 1024L + "KB";
-        }
-        return String.format("%.1fMB", (double)bytes / 1024.0 / 1024.0);
-    }
-
-    private void drawPackDrilldown(GuiGraphics guiGraphics, int grayBoxX, int grayBoxY, int mouseX, int mouseY) {
-        ExtensionPack p = this.currentDrilldownPack;
-        int[] r = this.getContentRect(grayBoxX, grayBoxY);
-        int infoY = r[1] - 4;
-        String info = String.format("\u00a77\u4f5c\u8005: \u00a7f%s \u00a77| \u00a77\u5efa\u7b51: \u00a7f%d \u00a77| \u00a77\u7248\u672c: \u00a7f%s", p.getAuthor() == null || p.getAuthor().isEmpty() ? "\u672a\u77e5" : p.getAuthor(), p.getConstructions().size(), p.getVersion() == null || p.getVersion().isEmpty() ? "\u672a\u6307\u5b9a" : p.getVersion());
-        guiGraphics.drawString(this.font, info, r[0] + 4, infoY, 0xFFFFFF);
-        List<ConstructionInfo> filtered = this.filterBySearch(p.getConstructions(), this.searchText);
-        this.drawConstructionCards(guiGraphics, grayBoxX, grayBoxY, mouseX, mouseY, filtered);
-    }
-
-    private void drawPackCards(GuiGraphics guiGraphics, int grayBoxX, int grayBoxY, int mouseX, int mouseY, List<ExtensionPack> packs, boolean isServerTab) {
-        int[] rect = this.getContentRect(grayBoxX, grayBoxY);
-        int rx = rect[0];
-        int ry = rect[1];
-        int rw = rect[2];
-        int rh = rect[3];
-        if (packs.isEmpty()) {
-            String hint = isServerTab ? "(\u670d\u52a1\u5668\u8fd8\u6ca1\u6709\u540c\u6b65\u4efb\u4f55\u5305)" : "(prefab-extension \u6587\u4ef6\u5939\u91cc\u6ca1\u627e\u5230\u6807\u51c6\u683c\u5f0f\u62d3\u5c55\u5305)";
-            this.drawEmpty(guiGraphics, rect, "\u672a\u53d1\u73b0", hint);
-            return;
-        }
-        int pageSize = 6;
-        int pageCount = Math.max(1, (packs.size() + pageSize - 1) / pageSize);
-        int page = Math.max(0, Math.min(this.scrollOffsetCards, pageCount - 1));
-        int start = page * pageSize;
-        int end = Math.min(start + pageSize, packs.size());
-        int gridW = 288;
-        int gridX = rx + (rw - gridW) / 2;
-        int gridY = ry + 4;
-        for (int i = 0; i < end - start; ++i) {
-            int row = i / 3;
-            int col = i % 3;
-            int cx = gridX + col * 98;
-            int cy = gridY + row * 86;
-            ExtensionPack p = packs.get(start + i);
-            this.drawPackCard(guiGraphics, cx, cy, p, mouseX, mouseY);
-        }
-        if (pageCount > 1) {
-            this.drawPaginationBar(guiGraphics, rx, ry + rh - 12, rw, page, pageCount, mouseX, mouseY);
-        }
-    }
-
-    private void drawPackCard(GuiGraphics guiGraphics, int cx, int cy, ExtensionPack p, int mouseX, int mouseY) {
-        boolean hovered = mouseX >= cx && mouseX <= cx + 92 && mouseY >= cy && mouseY <= cy + 80;
-        int bg = hovered ? -12961222 : -14737633;
-        int border = hovered ? -11162881 : -11184811;
-        guiGraphics.fill(cx, cy, cx + 92, cy + 80, bg);
-        guiGraphics.fill(cx, cy, cx + 92, cy + 1, border);
-        guiGraphics.fill(cx, cy + 80 - 1, cx + 92, cy + 80, border);
-        guiGraphics.fill(cx, cy, cx + 1, cy + 80, border);
-        guiGraphics.fill(cx + 92 - 1, cy, cx + 92, cy + 80, border);
-        int iconSize = 60;
-        int iconX = cx + (92 - iconSize) / 2;
-        int iconY = cy + 4;
-        if (p.hasCoverImage() && p.getCoverImageData() != null) {
-            ResourceLocation tex = this.ensureCoverTextureLoaded(p);
-            if (tex != null) {
-                this.drawIconNearest(guiGraphics, tex, iconX, iconY, iconSize, iconSize, 0, 0, 48, 48, 48, 48);
-            } else {
-                guiGraphics.fill(iconX, iconY, iconX + iconSize, iconY + iconSize, -15066598);
-            }
-        } else {
-            guiGraphics.fill(iconX, iconY, iconX + iconSize, iconY + iconSize, -15066598);
-            String ch = p.getName().isEmpty() ? "?" : p.getName().substring(0, 1);
-            guiGraphics.drawCenteredString(this.font, ch, iconX + iconSize / 2, iconY + iconSize / 2 - 4, -7829368);
-        }
-        Object name = p.getName();
-        if (((String)name).length() > 12) {
-            name = ((String)name).substring(0, 10) + "..";
-        }
-        guiGraphics.drawCenteredString(this.font, (String)name, cx + 46, cy + iconSize + 6, 0xFFFFFF);
-        String sub = p.getConstructions().size() + " \u5efa\u7b51";
-        if (p.isServerBacked()) {
-            sub = sub + " \u00a7b[\u670d]";
-        }
-        guiGraphics.drawCenteredString(this.font, sub, cx + 46, cy + 80 - 10, -5592406);
-    }
-
-    private void drawConstructionCards(GuiGraphics guiGraphics, int grayBoxX, int grayBoxY, int mouseX, int mouseY, List<ConstructionInfo> list) {
-        int[] rect = this.getContentRect(grayBoxX, grayBoxY);
-        int rx = rect[0];
-        int ry = rect[1];
-        int rw = rect[2];
-        int rh = rect[3];
-        if (list.isEmpty()) {
-            this.drawEmpty(guiGraphics, rect, "\u65e0\u5339\u914d\u5efa\u7b51", "(\u8bd5\u8bd5\u6e05\u7a7a\u641c\u7d22\u8bcd)");
-            return;
-        }
-        int pageSize = 6;
-        int pageCount = Math.max(1, (list.size() + pageSize - 1) / pageSize);
-        int page = Math.max(0, Math.min(this.scrollOffsetCards, pageCount - 1));
-        int start = page * pageSize;
-        int end = Math.min(start + pageSize, list.size());
-        int gridW = 288;
-        int gridX = rx + (rw - gridW) / 2;
-        int gridY = ry + 4;
-        for (int i = 0; i < end - start; ++i) {
-            int row = i / 3;
-            int col = i % 3;
-            int cx = gridX + col * 98;
-            int cy = gridY + row * 86;
-            ConstructionInfo c = list.get(start + i);
-            this.drawConstructionCard(guiGraphics, cx, cy, c, mouseX, mouseY);
-        }
-        if (pageCount > 1) {
-            this.drawPaginationBar(guiGraphics, rx, ry + rh - 12, rw, page, pageCount, mouseX, mouseY);
-        }
-    }
-
-    private void drawConstructionCard(GuiGraphics guiGraphics, int cx, int cy, ConstructionInfo c, int mouseX, int mouseY) {
-        boolean hovered = mouseX >= cx && mouseX <= cx + 92 && mouseY >= cy && mouseY <= cy + 80;
-        int bg = hovered ? -12961222 : -14737633;
-        int border = hovered ? -11162881 : -11184811;
-        guiGraphics.fill(cx, cy, cx + 92, cy + 80, bg);
-        guiGraphics.fill(cx, cy, cx + 92, cy + 1, border);
-        guiGraphics.fill(cx, cy + 80 - 1, cx + 92, cy + 80, border);
-        guiGraphics.fill(cx, cy, cx + 1, cy + 80, border);
-        guiGraphics.fill(cx + 92 - 1, cy, cx + 92, cy + 80, border);
-        int iconW = 90;
-        int iconH = 64;
-        int iconX = cx + 1;
-        int iconY = cy + 1;
-        boolean iconDrawn = false;
-        if (c.hasPreviewImage()) {
-            ResourceLocation tex = this.ensurePreviewTextureLoaded(c);
-            if (tex != null) {
-                this.drawIconNearest(guiGraphics, tex, iconX, iconY, iconW, iconH, 0, 0, 256, 256, 256, 256);
-                iconDrawn = true;
-            } else {
-                guiGraphics.fill(iconX, iconY, iconX + iconW, iconY + iconH, -15066598);
-            }
-        }
-        if (!iconDrawn && ThumbnailCache.hasCached(c)) {
-            byte[] pngData = ThumbnailCache.read(c);
-            if (pngData != null) {
-                ResourceLocation tex = this.ensureCachedThumbnailTextureLoaded(c, pngData);
-                if (tex != null) {
-                    this.drawIconNearest(guiGraphics, tex, iconX, iconY, iconW, iconH, 0, 0, 256, 256, 256, 256);
-                    iconDrawn = true;
-                } else {
-                    guiGraphics.fill(iconX, iconY, iconX + iconW, iconY + iconH, -15066598);
-                }
-            } else {
-                guiGraphics.fill(iconX, iconY, iconX + iconW, iconY + iconH, -15066598);
-            }
-        }
-        if (!iconDrawn) {
-            guiGraphics.fill(iconX, iconY, iconX + iconW, iconY + iconH, -15066598);
-            String ch = c.getName().isEmpty() ? "?" : c.getName().substring(0, 1);
-            guiGraphics.drawCenteredString(this.font, ch, iconX + iconW / 2, iconY + iconH / 2 - 4, -7829368);
-        }
-        String packKey = c.getPack() == null ? "__standalone__" : c.getPack().getPackageName();
-        boolean isFav = PlayerPreferences.get().isFavorite(packKey, c.getId());
-        String star = isFav ? "\u2605 " : "";
-        int nameMaxLen = isFav ? 8 : 10;
-        Object name = c.getName();
-        if (((String)name).length() > nameMaxLen) {
-            name = ((String)name).substring(0, nameMaxLen - 2) + "..";
-        }
-        String displayName = star + (String)name;
-        int nameColor = isFav ? -8858 : 0xFFFFFF;
-        guiGraphics.drawCenteredString(this.font, displayName, cx + 46, iconY + iconH + 2, nameColor);
-    }
-
-    private int cardHitTest(int mouseX, int mouseY, int totalCount) {
-        return this.cardHitTest(mouseX, mouseY, totalCount, 3, this.getContentRect(this.computePanelPos()[0], this.computePanelPos()[1]));
-    }
-
-    private int cardHitTestBuildings(int mouseX, int mouseY, int totalCount) {
-        int[] pos = this.computePanelPos();
-        return this.cardHitTest(mouseX, mouseY, totalCount, 2, this.getBuildingsCardRect(pos[0], pos[1]));
-    }
-
-    private int cardHitTest(int mouseX, int mouseY, int totalCount, int cols, int[] rect) {
-        int rx = rect[0];
-        int ry = rect[1];
-        int rw = rect[2];
-        int rh = rect[3];
-        if (mouseX < rx || mouseX > rx + rw || mouseY < ry || mouseY > ry + rh) {
-            return -1;
-        }
-        int pageSize = cols * 2;
-        int pageCount = Math.max(1, (totalCount + pageSize - 1) / pageSize);
-        int page = Math.max(0, Math.min(this.scrollOffsetCards, pageCount - 1));
-        int gridW = cols * 92 + (cols - 1) * 6;
-        int gridX = rx + (rw - gridW) / 2;
-        int gridY = ry + 4;
-        for (int i = 0; i < pageSize; ++i) {
-            int row = i / cols;
-            int col = i % cols;
-            int cx = gridX + col * 98;
-            int cy = gridY + row * 86;
-            if (mouseX < cx || mouseX > cx + 92 || mouseY < cy || mouseY > cy + 80) continue;
-            int idx = page * pageSize + i;
-            return idx < totalCount ? idx : -1;
-        }
-        return -1;
-    }
-
-    public boolean mouseClicked(double mouseX, double mouseY, int button) {
-        int mx = (int)mouseX;
-        int my = (int)mouseY;
-        if (this.handlePaginationClick(mx, my)) {
-            return true;
-        }
-        Tab hit = this.tabHitTest(mx, my);
-        if (hit != null) {
-            this.switchTab(hit);
-            return true;
-        }
-        if (this.currentDrilldownPack != null) {
-            List<ConstructionInfo> list = this.filterBySearch(this.currentDrilldownPack.getConstructions(), this.searchText);
-            int idx = this.cardHitTest(mx, my, list.size());
-            if (idx >= 0) {
-                this.openConstructionDetail(list.get(idx));
-                return true;
-            }
-        } else {
-            switch (this.currentTab.ordinal()) {
-                case 0: {
-                    if (this.handleCategoryListClick(mx, my)) {
-                        return true;
-                    }
-                    List<ConstructionInfo> all = this.getMergedConstructionsForBuildingsTab();
-                    List<ConstructionInfo> byCat = this.filterByCategory(all, this.currentCategory);
-                    List<ConstructionInfo> list = this.filterBySearch(byCat, this.searchText);
-                    int idx = this.cardHitTestBuildings(mx, my, list.size());
-                    if (idx < 0) break;
-                    this.openConstructionDetail(list.get(idx));
-                    return true;
-                }
-                case 1: {
-                    int[] r;
-                    for (Map.Entry<String, int[]> e : this.cloudCardRecallBtnRects.entrySet()) {
-                        r = e.getValue();
-                        if (mx < r[0] || mx > r[0] + r[2] || my < r[1] || my > r[1] + r[3]) continue;
-                        String id = (String)e.getKey();
-                        CloudBuilding b = CloudBuildingClientCache.getInstance().getById(id);
-                        if (b == null) {
-                            this.setStatus("\u2717 \u627e\u4e0d\u5230\u8be5\u4e91\u7aef\u5efa\u7b51", 0xFF5555);
-                            return true;
-                        }
-                        if (!b.placed) {
-                            this.setStatus("\u8be5\u5efa\u7b51\u5df2\u7ecf\u662f\u6536\u56de\u72b6\u6001", 0xAAAAAA);
-                            return true;
-                        }
-                        CloudBuildingClientCache.getInstance().requestRecall(id);
-                        this.setStatus("\u21a9 \u6536\u56de\u4e2d: " + b.name, 0x55AAFF);
-                        return true;
-                    }
-                    for (Map.Entry<String, int[]> e : this.cloudCardDeleteBtnRects.entrySet()) {
-                        r = e.getValue();
-                        if (mx < r[0] || mx > r[0] + r[2] || my < r[1] || my > r[1] + r[3]) continue;
-                        String id = (String)e.getKey();
-                        CloudBuilding b = CloudBuildingClientCache.getInstance().getById(id);
-                        if (b == null) {
-                            this.setStatus("\u2717 \u627e\u4e0d\u5230\u8be5\u4e91\u7aef\u5efa\u7b51", 0xFF5555);
-                            return true;
-                        }
-                        if (b.placed) {
-                            this.setStatus("\u5efa\u7b51\u5df2\u653e\u51fa, \u8bf7\u5148\u6536\u56de\u518d\u5220\u9664", 0xFFAA55);
-                            return true;
-                        }
-                        this.pendingDeleteBuildingId = id;
-                        return true;
-                    }
-                    if (this.pendingDeleteBuildingId != null) {
-                        if (this.deleteConfirmCancelRect != null && GuiExtensionPackBrowser.hitTestRect(this.deleteConfirmCancelRect, mx, my)) {
-                            this.pendingDeleteBuildingId = null;
-                            this.deleteConfirmCancelRect = null;
-                            this.deleteConfirmOkRect = null;
-                            this.setStatus("\u5df2\u53d6\u6d88\u5220\u9664", 0xAAAAAA);
-                            return true;
-                        }
-                        if (this.deleteConfirmOkRect != null && GuiExtensionPackBrowser.hitTestRect(this.deleteConfirmOkRect, mx, my)) {
-                            String id = this.pendingDeleteBuildingId;
-                            CloudBuilding b = CloudBuildingClientCache.getInstance().getById(id);
-                            String name = b != null ? b.name : "?";
-                            this.pendingDeleteBuildingId = null;
-                            this.deleteConfirmCancelRect = null;
-                            this.deleteConfirmOkRect = null;
-                            CloudBuildingClientCache.getInstance().requestDelete(id);
-                            this.setStatus("\u2717 \u5220\u9664\u4e2d: " + name, 0xFFAA55);
-                            return true;
-                        }
-                        return true;
-                    }
-                    for (Map.Entry<String, int[]> e : this.cloudCardNavigateBtnRects.entrySet()) {
-                        ResourceKey dim;
-                        r = e.getValue();
-                        if (mx < r[0] || mx > r[0] + r[2] || my < r[1] || my > r[1] + r[3]) continue;
-                        String id = (String)e.getKey();
-                        CloudBuilding b = CloudBuildingClientCache.getInstance().getById(id);
-                        if (b == null || b.placedAt == null || b.placedAt.getX() == 0 && b.placedAt.getY() == 0 && b.placedAt.getZ() == 0) {
-                            this.setStatus("\u2717 \u8be5\u5efa\u7b51\u6682\u65e0\u4e16\u754c\u4f4d\u7f6e", 0xFF5555);
-                            return true;
-                        }
-                        try {
-                            if (b.dimensionId != null && !b.dimensionId.isEmpty()) {
-                                ResourceLocation dimLoc = ResourceLocation.parse((String)b.dimensionId);
-                                dim = ResourceKey.create((ResourceKey)Registries.DIMENSION, (ResourceLocation)dimLoc);
-                            } else {
-                                dim = Minecraft.getInstance().level != null ? Minecraft.getInstance().level.dimension() : ResourceKey.create((ResourceKey)Registries.DIMENSION, (ResourceLocation)ResourceLocation.withDefaultNamespace((String)"overworld"));
-                            }
-                        }
-                        catch (Throwable t) {
-                            dim = ResourceKey.create((ResourceKey)Registries.DIMENSION, (ResourceLocation)ResourceLocation.withDefaultNamespace((String)"overworld"));
-                        }
-                        String wpName = b.placed ? "\u2192 " + b.name : "\u2192 " + b.name + " (\u5df2\u6536\u56de)";
-                        String otherWpName = b.placed ? "\u2192 " + b.name + " (\u5df2\u6536\u56de)" : "\u2192 " + b.name;
-                        boolean exists = XaeroWaypointBridge.hasWaypoint(wpName);
-                        if (!exists) {
-                            exists = XaeroWaypointBridge.hasWaypoint(otherWpName);
-                        }
-                        if (exists) {
-                            boolean removed = XaeroWaypointBridge.removeWaypoint(wpName);
-                            if (!removed) {
-                                removed = XaeroWaypointBridge.removeWaypoint(otherWpName);
-                            }
-                            if (removed) {
-                                this.setStatus("\u2717 \u5df2\u53d6\u6d88\u822a\u70b9: " + b.name, 0xFFFF55);
-                            } else {
-                                this.setStatus("\u2717 \u627e\u5230\u822a\u70b9\u4f46\u65e0\u6cd5\u5220\u9664 (Xaero 26.4.2 remove API \u4e0d\u517c\u5bb9?)", 0xFF5555);
-                            }
-                        } else {
-                            boolean ok = XaeroWaypointBridge.addWaypoint((ResourceKey<Level>)dim, b.placedAt, wpName, -11163051);
-                            if (ok) {
-                                this.setStatus("\ud83d\udccd \u5df2\u6807\u822a\u70b9: " + b.name + " @ " + b.placedAt.toShortString() + (b.placed ? "" : " \u00a77(\u5df2\u6536\u56de, \u5386\u53f2\u4f4d\u7f6e)"), 0x55FF55);
-                            } else {
-                                String reason = XaeroWaypointBridge.consumeLastAddError();
-                                if (reason == null || reason.isEmpty()) {
-                                    reason = "Xaero \u4e0d\u53ef\u7528";
-                                }
-                                this.setStatus("\u2717 \u6807\u822a\u70b9\u5931\u8d25: " + reason, 0xFF5555);
-                            }
-                        }
-                        return true;
-                    }
-                    for (Map.Entry<String, int[]> e : this.cloudCardSummonBtnRects.entrySet()) {
-                        r = (int[])e.getValue();
-                        if (mx < r[0] || mx > r[0] + r[2] || my < r[1] || my > r[1] + r[3]) continue;
-                        String id = (String)e.getKey();
-                        CloudBuilding b = CloudBuildingClientCache.getInstance().getById(id);
-                        if (b == null) {
-                            this.setStatus("\u2717 \u627e\u4e0d\u5230\u8be5\u4e91\u7aef\u5efa\u7b51", 0xFF5555);
-                            return true;
-                        }
-                        if (b.placed) {
-                            this.setStatus("\u5df2\u653e\u51fa @ " + (b.placedAt == null ? "?" : b.placedAt.toShortString()) + ", \u5148\u6536\u56de\u518d\u653e\u51fa", 0xAAAAAA);
-                            return true;
-                        }
-                        boolean ok = CloudPreview.start(id);
-                        if (ok) {
-                            this.setStatus("\u2601 \u4e91\u7aef\u9884\u89c8: " + b.name + " (" + PackBrowserKeyHandler.keyName(PackBrowserKeyHandler.PREVIEW_FORWARD, "\u2191") + PackBrowserKeyHandler.keyName(PackBrowserKeyHandler.PREVIEW_BACK, "\u2193") + PackBrowserKeyHandler.keyName(PackBrowserKeyHandler.PREVIEW_LEFT, "\u2190") + PackBrowserKeyHandler.keyName(PackBrowserKeyHandler.PREVIEW_RIGHT, "\u2192") + " \u79fb\u52a8, " + PackBrowserKeyHandler.keyName(PackBrowserKeyHandler.PREVIEW_ROTATE, "CTRL") + " \u65cb\u8f6c, " + PackBrowserKeyHandler.buildKeyName() + " \u653e\u51fa, " + PackBrowserKeyHandler.keyName(PackBrowserKeyHandler.CANCEL_PREVIEW, "\u53f3\u952e") + " \u53d6\u6d88)", 0x55FF55);
-                        } else {
-                            this.setStatus("\u2717 \u5f00\u542f\u4e91\u7aef\u9884\u89c8\u5931\u8d25", 0xFF5555);
-                        }
-                        return true;
-                    }
-                    return true;
-                }
-                case 2: {
-                    int[] r;
-                    if (Minecraft.getInstance().getCurrentServer() == null) {
-                        return true;
-                    }
-                    ServerPackSyncClient sync = ServerPackSyncClient.getInstance();
-                    if (this.lastSyncServerBtn != null && !sync.isSyncing() && mx >= (r = this.lastSyncServerBtn)[0] && mx <= r[0] + r[2] && my >= r[1] && my <= r[1] + r[3]) {
-                        sync.requestResync();
-                        this.setStatus("\u5df2\u8bf7\u6c42\u540c\u6b65\u670d\u52a1\u5668", 0x55AAFF);
-                        return true;
-                    }
-                    String[] modes = new String[]{"all", "unsynced", "synced"};
-                    for (int i = 0; i < 3; ++i) {
-                        int[] r2 = this.serverFilterTabs[i];
-                        if (r2 == null || r2.length < 4 || mx < r2[0] || mx > r2[0] + r2[2] || my < r2[1] || my > r2[1] + r2[3]) continue;
-                        this.serverFilter = modes[i];
-                        this.scrollOffsetCards = 0;
-                        this.setStatus("\u7b5b\u9009: " + modes[i], 0xAAAAAA);
-                        return true;
-                    }
-                    for (Map.Entry<String, int[]> e : this.serverCardSyncBtnRects.entrySet()) {
-                        int[] r3 = e.getValue();
-                        if (mx < r3[0] || mx > r3[0] + r3[2] || my < r3[1] || my > r3[1] + r3[3]) continue;
-                        List<ServerBuildingInfo> all = ExtensionPackManager.getInstance().getServerBuildings();
-                        ServerBuildingInfo target = null;
-                        for (ServerBuildingInfo b : all) {
-                            if (!e.getKey().equals(b.buildingId)) continue;
-                            target = b;
-                            break;
-                        }
-                        if (target == null) {
-                            return true;
-                        }
-                        if (target.synced) {
-                            this.openSyncedServerBuildingDetail(target);
-                        } else if (sync.isSyncing()) {
-                            this.setStatus("\u540c\u6b65\u4e2d, \u8bf7\u7a0d\u5019...", 0xFFAA55);
-                        } else {
-                            sync.requestSyncSingle(target.buildingId);
-                            this.setStatus("\u5f00\u59cb\u540c\u6b65: " + target.getDisplayName(), 0x55AAFF);
-                        }
-                        return true;
-                    }
-                    int cardIdx = this.serverCardHitTest(mx, my);
-                    if (cardIdx < 0) break;
-                    List<ServerBuildingInfo> all = ExtensionPackManager.getInstance().getServerBuildings();
-                    ArrayList<ServerBuildingInfo> filtered = new ArrayList<ServerBuildingInfo>();
-                    for (ServerBuildingInfo b : all) {
-                        if ("unsynced".equals(this.serverFilter) && b.synced || "synced".equals(this.serverFilter) && !b.synced) continue;
-                        filtered.add(b);
-                    }
-                    if (cardIdx >= filtered.size()) break;
-                    ServerBuildingInfo target = (ServerBuildingInfo)filtered.get(cardIdx);
-                    if (target.synced) {
-                        this.openSyncedServerBuildingDetail(target);
-                    } else if (sync.isSyncing()) {
-                        this.setStatus("\u540c\u6b65\u4e2d, \u8bf7\u7a0d\u5019...", 0xFFAA55);
-                    } else {
-                        sync.requestSyncSingle(target.buildingId);
-                        this.setStatus("\u5f00\u59cb\u540c\u6b65: " + target.getDisplayName(), 0x55AAFF);
-                    }
-                    return true;
-                }
-                case 3: {
-                    List<ConstructionInfo> list = this.filterBySearch(ExtensionPackManager.getInstance().getFavoriteConstructions(), this.searchText);
-                    int idx = this.cardHitTest(mx, my, list.size());
-                    if (idx < 0) break;
-                    this.openConstructionDetail(list.get(idx));
-                    return true;
-                }
-                case 4: {
-                    String id;
-                    int[] r;
-                    int[] r4;
-                    if (this.lastOpenWebsiteButtonRect != null && mx >= (r4 = this.lastOpenWebsiteButtonRect)[0] && mx <= r4[0] + r4[2] && my >= r4[1] && my <= r4[1] + r4[3]) {
-                        this.openWebsiteHome();
-                        return true;
-                    }
-                    if (this.websiteFilterButtonRect != null && mx >= (r4 = this.websiteFilterButtonRect)[0] && mx <= r4[0] + r4[2] && my >= r4[1] && my <= r4[1] + r4[3]) {
-                        this.websiteFilter = "all".equals(this.websiteFilter) ? "downloaded" : ("downloaded".equals(this.websiteFilter) ? "not_downloaded" : "all");
-                        this.scrollOffsetCards = 0;
-                        return true;
-                    }
-                    for (Map.Entry<String, int[]> e : this.websiteCardDownloadBtnRects.entrySet()) {
-                        r = e.getValue();
-                        if (mx < r[0] || mx > r[0] + r[2] || my < r[1] || my > r[1] + r[3]) continue;
-                        id = e.getKey();
-                        for (PackDownloadManager.BuildingInfo2 b : this.websiteBuildings) {
-                            if (!id.equals(b.id)) continue;
-                            if (this.isWebsiteBuildingDownloaded(b)) {
-                                this.openDownloadedBuildingDetail(b);
-                            } else if (this.websiteDownloading.contains(id)) {
-                                this.setStatus("\u4e0b\u8f7d\u4e2d, \u8bf7\u7a0d\u5019", 0xFFAA55);
-                            } else {
-                                this.startWebsiteDownload(b);
-                            }
-                            return true;
-                        }
-                    }
-                    for (Map.Entry<String, int[]> e : this.websiteCardHitRects.entrySet()) {
-                        r = e.getValue();
-                        if (mx < r[0] || mx > r[0] + r[2] || my < r[1] || my > r[1] + r[3]) continue;
-                        id = e.getKey();
-                        for (PackDownloadManager.BuildingInfo2 b : this.websiteBuildings) {
-                            if (!id.equals(b.id)) continue;
-                            if (this.isWebsiteBuildingDownloaded(b)) {
-                                this.openDownloadedBuildingDetail(b);
-                            } else {
-                                this.setStatus("\u2717 \u8be5\u5efa\u7b51\u8fd8\u672a\u4e0b\u8f7d, \u5148\u70b9\u5e95\u90e8\u300c\u4e0b\u8f7d\u300d\u6309\u94ae", 0xAAAAAA);
-                            }
-                            return true;
-                        }
-                    }
-                    return true;
-                }
-            }
-        }
-        return super.mouseClicked(mouseX, mouseY, button);
-    }
-
-    public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
-        return super.mouseScrolled(mouseX, mouseY, scrollX, scrollY);
-    }
-
-    private int computePageSizeForCurrentTab() {
-        if (this.currentTab == Tab.CLOUD) {
-            int rh = 232;
-            int listH = rh - 22;
-            int cardH = 96;
-            int cardGap = 6;
-            return Math.max(1, (listH + cardGap) / (cardH + cardGap)) * 2;
-        }
-        if (this.currentTab == Tab.DOWNLOAD) {
-            int rh = 232;
-            int listH = rh - 22;
-            int cardH = 70;
-            int cardGap = 6;
-            return Math.max(1, (listH + cardGap) / (cardH + cardGap)) * 3;
-        }
-        if (this.currentTab == Tab.SERVERS) {
-            int rh = 232;
-            int filterH = rh - 8;
-            int tabH = 18;
-            int listH = filterH - tabH - 4 - 14;
-            int cardH = 56;
-            int cardGap = 6;
-            return Math.max(1, (listH + cardGap) / (cardH + cardGap)) * 2;
-        }
-        if (this.currentTab == Tab.BUILDINGS) {
-            return 4;
-        }
-        return 6;
-    }
-
-    private int computeMaxPageForCurrentTab() {
-        int total;
-        int pageSize = this.computePageSizeForCurrentTab();
-        if (this.currentTab == Tab.DOWNLOAD) {
-            total = this.getFilteredWebsiteBuildings().size();
-        } else if (this.currentTab == Tab.FAVORITES) {
-            total = this.filterBySearch(ExtensionPackManager.getInstance().getFavoriteConstructions(), this.searchText).size();
-        } else if (this.currentTab == Tab.CLOUD) {
-            total = CloudBuildingClientCache.getInstance().size();
-        } else if (this.currentTab == Tab.SERVERS) {
-            List<ServerBuildingInfo> all = ExtensionPackManager.getInstance().getServerBuildings();
-            int n = 0;
-            for (ServerBuildingInfo b : all) {
-                if (b == null || "unsynced".equals(this.serverFilter) && b.synced || "synced".equals(this.serverFilter) && !b.synced) continue;
-                ++n;
-            }
-            total = n;
-        } else {
-            total = this.filterBySearch(this.getMergedConstructionsForBuildingsTab(), this.searchText).size();
-        }
-        return Math.max(0, (total + pageSize - 1) / pageSize - 1);
-    }
-
-    private List<PackDownloadManager.BuildingInfo2> getFilteredWebsiteBuildings() {
-        ArrayList<PackDownloadManager.BuildingInfo2> result = new ArrayList<PackDownloadManager.BuildingInfo2>();
-        for (PackDownloadManager.BuildingInfo2 b : this.websiteBuildings) {
-            if (b == null || b.id == null) continue;
-            boolean downloaded = PackDownloadManager.getInstance().isBuildingDownloaded(b);
-            if ("all".equals(this.websiteFilter)) {
-                result.add(b);
-                continue;
-            }
-            if ("downloaded".equals(this.websiteFilter) && downloaded) {
-                result.add(b);
-                continue;
-            }
-            if (!"not_downloaded".equals(this.websiteFilter) || downloaded) continue;
-            result.add(b);
-        }
-        return result;
-    }
-
-    public void buttonClicked(AbstractButton button) {
-        if (button == this.btnClose) {
-            this.onClose();
-            return;
-        }
-        if (button == this.btnBack) {
-            this.currentDrilldownPack = null;
-            this.btnBack.visible = false;
-            this.scrollOffsetCards = 0;
-            this.searchText = "";
-            if (this.searchBox != null) {
-                this.searchBox.setValue("");
-            }
-            return;
-        }
-        if (button == this.btnSync) {
-            ExtensionPackManager.getInstance().reloadClient();
-            try {
-                ServerPackSyncClient.getInstance().requestResync();
-            }
-            catch (Exception e) {
-                PrefabCustomAddon.LOGGER.warn("[BROWSER] sync \u5931\u8d25: {}", (Object)e.getMessage());
-            }
-            this.setStatus("\u5df2\u8bf7\u6c42\u540c\u6b65\u670d\u52a1\u5668\u5efa\u7b51", 0x55AAFF);
-            return;
-        }
-        if (button == this.btnOpenFolder) {
-            boolean ok = FolderOpener.openExtensionFolder();
-            if (ok) {
-                this.setStatus("\u5df2\u6253\u5f00\u62d3\u5c55\u5305\u6587\u4ef6\u5939", 0x55FF55);
-            } else {
-                this.setStatus("\u6253\u5f00\u5931\u8d25, \u8bf7\u624b\u52a8\u8bbf\u95ee: " + String.valueOf(PackDownloadManager.getExtensionRoot()), 0xFFAA55);
-            }
-            return;
-        }
-    }
-
-    public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
-        if (keyCode == 256) {
-            if (this.pendingDeleteBuildingId != null) {
-                this.pendingDeleteBuildingId = null;
-                this.deleteConfirmCancelRect = null;
-                this.deleteConfirmOkRect = null;
-                this.setStatus("\u5df2\u53d6\u6d88\u5220\u9664", 0xAAAAAA);
-                return true;
-            }
-            if (this.currentDrilldownPack != null) {
-                this.currentDrilldownPack = null;
-                this.btnBack.visible = false;
-                this.scrollOffsetCards = 0;
-                this.searchText = "";
-                if (this.searchBox != null) {
-                    this.searchBox.setValue("");
-                }
-                return true;
-            }
-        }
-        return super.keyPressed(keyCode, scanCode, modifiers);
-    }
-
-    public boolean charTyped(char codePoint, int modifiers) {
-        if (this.searchBox == null || !this.searchBox.isVisible() || this.searchBox.isFocused()) {
-            // empty if block
-        }
-        return super.charTyped(codePoint, modifiers);
-    }
-
-    private void switchTab(Tab tab) {
-        String savedSearch;
-        boolean savedPanelHidden;
-        int savedScroll;
-        if (tab == this.currentTab && this.currentDrilldownPack == null) {
-            return;
-        }
-        if (this.currentTab != null) {
-            TAB_STATES.put(this.currentTab, new TabState(this.currentCategory, this.scrollOffsetCards, this.categoryPanelHidden, this.searchText));
-        }
-        this.currentTab = tab;
-        this.currentDrilldownPack = null;
-        this.btnBack.visible = false;
-        TabState saved = TAB_STATES.get((Object)tab);
-        if (saved != null) {
-            this.currentCategory = saved.currentCategory;
-            savedScroll = saved.scrollOffsetCards;
-            savedPanelHidden = saved.categoryPanelHidden;
-            savedSearch = saved.searchText;
-        } else {
-            this.currentCategory = null;
-            savedScroll = 0;
-            savedPanelHidden = false;
-            savedSearch = "";
-        }
-        this.categoryPanelHidden = savedPanelHidden;
-        this.searchText = savedSearch;
-        if (this.searchBox != null) {
-            this.searchBox.setValue(this.searchText);
-            this.rebuildSearchBox();
-            this.scrollOffsetCards = savedScroll;
-        } else {
-            this.scrollOffsetCards = savedScroll;
-        }
-        if (tab == Tab.CLOUD) {
-            XaeroWaypointBridge.forceProbe();
-        }
-        this.pendingDeleteBuildingId = null;
-        this.deleteConfirmCancelRect = null;
-        this.deleteConfirmOkRect = null;
-        if (tab == Tab.DOWNLOAD) {
-            this.refreshDownloadedBuildings();
-            if (this.websiteBuildings.isEmpty() && !this.websiteBuildingsLoading) {
-                this.refreshWebsiteBuildings();
-            }
-        }
-    }
-
-    private boolean isBuildingsTab() {
-        return this.currentTab == Tab.BUILDINGS || this.currentDrilldownPack != null;
-    }
-
-    private void rebuildSearchBox() {
-        int targetW;
-        if (this.searchBox == null) {
-            return;
-        }
-        int[] pos = this.computePanelPos();
-        int grayBoxX = pos[0];
-        int grayBoxY = pos[1];
-        int sbX = grayBoxX + 72 + 6;
-        int sbY = grayBoxY + 4;
-        int n = targetW = this.isBuildingsTab() ? 110 : 316;
-        if (this.searchBox.getWidth() == targetW) {
-            return;
-        }
-        String current = this.searchBox.getValue();
-        this.removeWidget((GuiEventListener)this.searchBox);
-        this.searchBox = new EditBox(this.font, sbX, sbY, targetW, 16, (Component)Component.literal((String)GuiExtensionPackBrowser.tr("browser.search.placeholder", new Object[0])));
-        this.searchBox.setMaxLength(64);
-        this.searchBox.setBordered(true);
-        this.searchBox.setValue(current);
-        this.searchBox.setResponder(text -> {
-            this.searchText = text;
-            this.scrollOffsetCards = 0;
-        });
-        this.addRenderableWidget(this.searchBox);
-    }
-
-    private void drilldownPack(ExtensionPack p) {
-        this.currentDrilldownPack = p;
-        this.btnBack.visible = true;
-        this.scrollOffsetCards = 0;
-        this.searchText = "";
-        this.currentCategory = null;
-        if (this.searchBox != null) {
-            this.searchBox.setValue("");
-            this.rebuildSearchBox();
-        }
-    }
-
-    private void openConstructionDetail(ConstructionInfo c) {
-        // 蓝图模式: 点建筑卡片直接开 CustomStructureGui (生存=提交材料 / 创造=预览),
-        // 跳过浏览器详情页 (删除/检测依赖/选择/选择并锁定 那套是浏览器路径的操作).
-        if (GuiExtensionPackBrowser.blueprintStack != null) {
-            ItemStack stack = GuiExtensionPackBrowser.blueprintStack;
-            BlockPos pos = GuiExtensionPackBrowser.blueprintPos;
-            GuiExtensionPackBrowser.blueprintStack = null;
-            GuiExtensionPackBrowser.blueprintPos = null;
-            // 直跳 CustomStructureGui 前也要记住分页/分类状态, 否则之后"关闭"返回浏览器时回到第 1 页
-            rememberedCategory = this.currentCategory;
-            rememberedPage = this.scrollOffsetCards;
-            rememberedPanelHidden = this.categoryPanelHidden;
-            PrefabCustomAddon.LOGGER.info("[BLUEPRINT-MODE] 卡片点击直跳 CustomStructureGui: id={}, pos={}",
-                c.getId(), pos);
-            // openFromBrowser: CustomStructureGui"关闭"时会重开本浏览器 (恢复上面的 remembered 状态)
-            CustomStructureGui.openFromBrowser(c, stack, pos);
-            return;
-        }
-        rememberedCategory = this.currentCategory;
-        rememberedPage = this.scrollOffsetCards;
-        rememberedPanelHidden = this.categoryPanelHidden;
-        GuiConstructionDetail.open(c);
-    }
-
-    private void openDownloadedBuildingDetail(PackDownloadManager.BuildingInfo2 b) {
-        Object ext;
-        if (b == null) {
-            return;
-        }
-        String baseName = b.name == null || b.name.isEmpty() ? b.id : b.name;
-        baseName = baseName.replaceAll("[\\\\/:*?\"<>|]", "_");
-        Object object = ext = b.fileExt == null || b.fileExt.isEmpty() ? ".nbt" : b.fileExt;
-        if (!((String)ext).startsWith(".")) {
-            ext = "." + (String)ext;
-        }
-        String extNoDot = ((String)ext).substring(1);
-        Path dlRoot = LocalBuildingScanner.getDownloadRoot();
-        List<LocalBuilding> dlList = LocalBuildingScanner.scanDir(dlRoot, "download");
-        for (LocalBuilding lb : dlList) {
-            boolean extMatch;
-            String lbExt = lb.fileExt == null ? "" : lb.fileExt;
-            boolean idMatch = lb.id.equals(baseName);
-            boolean bl = extMatch = lbExt.isEmpty() || lbExt.equalsIgnoreCase((String)ext) || lbExt.equalsIgnoreCase(extNoDot) || lbExt.startsWith(".") && lbExt.substring(1).equalsIgnoreCase(extNoDot);
-            if (!idMatch || !extMatch) continue;
-            ConstructionInfo c = new ConstructionInfo(lb.id);
-            c.setName(lb.name == null || lb.name.isEmpty() ? b.name : lb.name);
-            c.setAuthor(lb.author == null || lb.author.isEmpty() ? b.author : lb.author);
-            c.setDescription(lb.description);
-            c.setDependencies(lb.dependencies);
-            c.setCategory(lb.category);
-            c.setFormat(lb.fileExt == null ? "nbt" : lb.fileExt.replaceFirst("^\\.", ""));
-            c.setLocalImagePath(lb.imagePath);
-            c.setLocalNbtPath(lb.filePath);
-            this.openConstructionDetail(c);
-            return;
-        }
-        Path extRoot = LocalBuildingScanner.getExtensionRoot();
-        List<LocalBuilding> extList = LocalBuildingScanner.scanDir(extRoot, "extension");
-        for (LocalBuilding lb : extList) {
-            boolean extMatch;
-            String lbExt = lb.fileExt == null ? "" : lb.fileExt;
-            boolean idMatch = lb.id.equals(baseName);
-            boolean bl = extMatch = lbExt.isEmpty() || lbExt.equalsIgnoreCase((String)ext) || lbExt.equalsIgnoreCase(extNoDot) || lbExt.startsWith(".") && lbExt.substring(1).equalsIgnoreCase(extNoDot);
-            if (!idMatch || !extMatch) continue;
-            ConstructionInfo c = new ConstructionInfo(lb.id);
-            c.setName(lb.name == null || lb.name.isEmpty() ? b.name : lb.name);
-            c.setAuthor(lb.author == null || lb.author.isEmpty() ? b.author : lb.author);
-            c.setDescription(lb.description);
-            c.setDependencies(lb.dependencies);
-            c.setCategory(lb.category);
-            c.setFormat(lb.fileExt == null ? "nbt" : lb.fileExt.replaceFirst("^\\.", ""));
-            c.setLocalImagePath(lb.imagePath);
-            c.setLocalNbtPath(lb.filePath);
-            this.openConstructionDetail(c);
-            return;
-        }
-        this.setStatus("\u2717 \u627e\u4e0d\u5230\u5df2\u4e0b\u8f7d\u6587\u4ef6, \u8bd5\u91cd\u65b0\u4e0b\u8f7d: " + b.name, 0xFFAA55);
-    }
-
-    private void setStatus(String msg, int color) {
-        this.statusMessage = msg;
-        this.statusColor = color;
-        this.statusTick = 200;
-    }
-
-    private List<ConstructionInfo> filterBySearch(List<ConstructionInfo> src, String q) {
-        if (q == null || q.trim().isEmpty()) {
-            return src;
-        }
+    private static List<ConstructionInfo> filterBySearch(List<ConstructionInfo> src, String q) {
+        if (q == null || q.trim().isEmpty()) return src;
         String needle = q.trim().toLowerCase();
-        ArrayList<ConstructionInfo> out = new ArrayList<ConstructionInfo>();
+        List<ConstructionInfo> out = new ArrayList<>();
         for (ConstructionInfo c : src) {
-            if (!GuiExtensionPackBrowser.matches(c.getName(), needle) && !GuiExtensionPackBrowser.matches(c.getAuthor(), needle) && !GuiExtensionPackBrowser.matches(c.getId(), needle)) continue;
-            out.add(c);
+            if (matches(c.getName(), needle) || matches(c.getAuthor(), needle) || matches(c.getId(), needle)) {
+                out.add(c);
+            }
         }
         return out;
     }
@@ -2910,300 +2320,52 @@ extends GuiBase {
         return s != null && s.toLowerCase().contains(needle);
     }
 
-    private void drawEmpty(GuiGraphics guiGraphics, int[] rect, String title, String hint) {
-        int cx = rect[0] + rect[2] / 2;
-        int cy = rect[1] + rect[3] / 2 - 10;
-        guiGraphics.drawCenteredString(this.font, "\u00a77" + title, cx, cy, 0xAAAAAA);
-        guiGraphics.drawCenteredString(this.font, hint, cx, cy + 14, 0x888888);
-    }
+    // ==================== 小工具 ====================
 
-    /*
-     * Enabled aggressive block sorting
-     * Enabled unnecessary exception pruning
-     * Enabled aggressive exception aggregation
-     */
-    private ResourceLocation ensureCoverTextureLoaded(ExtensionPack p) {
-        String key;
-        String string = key = p.getPackageName() != null ? p.getPackageName() : p.getFileName();
-        if (this.coverTextureCache.containsKey(key)) {
-            return this.coverTextureCache.get(key);
-        }
-        try (ByteArrayInputStream is = new ByteArrayInputStream(p.getCoverImageData());){
-            BufferedImage img = ImageIO.read(is);
-            if (img == null) {
-                ResourceLocation resourceLocation = null;
-                return resourceLocation;
-            }
-            int w = img.getWidth();
-            int h = img.getHeight();
-            DynamicTexture tex = new DynamicTexture(w, h, false);
-            tex.setFilter(false, false);
-            for (int y = 0; y < h; ++y) {
-                for (int x = 0; x < w; ++x) {
-                    int argb = img.getRGB(x, y);
-                    int abgr = argb & 0xFF00FF00 | (argb & 0xFF0000) >> 16 | (argb & 0xFF) << 16;
-                    tex.getPixels().setPixelRGBA(x, y, abgr);
-                }
-            }
-            tex.upload();
-            ResourceLocation loc = Minecraft.getInstance().getTextureManager().register("prefab_cover_" + key, tex);
-            this.coverTextureCache.put(key, loc);
-            ResourceLocation resourceLocation = loc;
-            return resourceLocation;
-        }
-        catch (Exception e) {
-            PrefabCustomAddon.LOGGER.warn("Failed to load cover image for {}", (Object)p.getName(), (Object)e);
-            this.coverTextureCache.put(key, null);
-            return null;
+    private static void setStatus(String msg) {
+        lastStatus = msg;
+        if (statusLabel != null) {
+            statusLabel.setText(msg, false);
         }
     }
 
-    /*
-     * Enabled aggressive block sorting
-     * Enabled unnecessary exception pruning
-     * Enabled aggressive exception aggregation
-     */
-    private ResourceLocation ensurePreviewTextureLoaded(ConstructionInfo c) {
-        String key = c.getId();
-        if (this.previewTextureCache.containsKey(key)) {
-            return this.previewTextureCache.get(key);
-        }
-        if (!c.hasPreviewImage()) {
-            PrefabCustomAddon.LOGGER.info("[PREVIEW] {} \u65e0\u56fe: pngData={} localImagePath={} exists={}", new Object[]{key, c.getPngData() != null ? Integer.valueOf(c.getPngData().length) : "null", c.getLocalImagePath(), c.getLocalImagePath() != null ? Boolean.valueOf(Files.exists(c.getLocalImagePath(), new LinkOption[0])) : "n/a"});
-            this.previewTextureCache.put(key, null);
-            return null;
-        }
-        byte[] data = c.getPngData();
-        if ((data == null || data.length == 0) && c.getLocalImagePath() != null) {
-            try {
-                data = Files.readAllBytes(c.getLocalImagePath());
-                PrefabCustomAddon.LOGGER.info("[PREVIEW] {} \u4ece {} \u8bfb\u5230 {} bytes", new Object[]{key, c.getLocalImagePath(), data.length});
-            }
-            catch (Exception e) {
-                PrefabCustomAddon.LOGGER.warn("[PREVIEW] {} \u8bfb {} \u5931\u8d25: {}", new Object[]{key, c.getLocalImagePath(), e.getMessage()});
-            }
-        }
-        if (data == null || data.length == 0) {
-            PrefabCustomAddon.LOGGER.info("[PREVIEW] {} data \u4e3a\u7a7a, \u8df3\u8fc7", (Object)key);
-            this.previewTextureCache.put(key, null);
-            return null;
-        }
-        try (ByteArrayInputStream is = new ByteArrayInputStream(data);){
-            BufferedImage img = ImageIO.read(is);
-            if (img == null) {
-                PrefabCustomAddon.LOGGER.warn("[PREVIEW] {} ImageIO \u89e3\u6790\u5931\u8d25 ({} bytes), \u6587\u4ef6\u53ef\u80fd\u635f\u574f\u6216\u683c\u5f0f\u4e0d\u652f\u6301", (Object)key, (Object)data.length);
-                this.previewTextureCache.put(key, null);
-                ResourceLocation resourceLocation = null;
-                return resourceLocation;
-            }
-            DynamicTexture tex = GuiExtensionPackBrowser.uploadIconTexture(img);
-            if (tex == null) {
-                PrefabCustomAddon.LOGGER.warn("[PREVIEW] {} uploadIconTexture \u8fd4\u56de null (\u6e90 {}x{})", new Object[]{key, img.getWidth(), img.getHeight()});
-                this.previewTextureCache.put(key, null);
-                ResourceLocation resourceLocation = null;
-                return resourceLocation;
-            }
-            ResourceLocation loc = Minecraft.getInstance().getTextureManager().register("prefab_preview_" + key, tex);
-            PrefabCustomAddon.LOGGER.info("[PREVIEW] {} \u4e0a\u4f20\u6210\u529f {}x{} \u2192 {}", new Object[]{key, img.getWidth(), img.getHeight(), loc});
-            this.previewTextureCache.put(key, loc);
-            ResourceLocation resourceLocation = loc;
-            return resourceLocation;
-        }
-        catch (Exception e) {
-            PrefabCustomAddon.LOGGER.warn("Failed to load preview for {}", (Object)c.getName(), (Object)e);
-            this.previewTextureCache.put(key, null);
-            return null;
-        }
+    private static String tr(String key, Object... args) {
+        return PrefabCustomAddon.tr(key, args);
     }
 
-    /*
-     * Enabled aggressive block sorting
-     * Enabled unnecessary exception pruning
-     * Enabled aggressive exception aggregation
-     */
-    private ResourceLocation ensureCachedThumbnailTextureLoaded(ConstructionInfo c, byte[] pngData) {
-        String key = ThumbnailCache.fingerprint(c);
-        if (this.cachedThumbTextureCache.containsKey(key)) {
-            return this.cachedThumbTextureCache.get(key);
-        }
-        try (ByteArrayInputStream is = new ByteArrayInputStream(pngData);){
-            BufferedImage img = ImageIO.read(is);
-            if (img == null) {
-                this.cachedThumbTextureCache.put(key, null);
-                ResourceLocation resourceLocation = null;
-                return resourceLocation;
-            }
-            DynamicTexture tex = GuiExtensionPackBrowser.uploadIconTexture(img);
-            if (tex == null) {
-                this.cachedThumbTextureCache.put(key, null);
-                ResourceLocation resourceLocation = null;
-                return resourceLocation;
-            }
-            ResourceLocation loc = Minecraft.getInstance().getTextureManager().register("prefab_thumb_" + key, tex);
-            this.cachedThumbTextureCache.put(key, loc);
-            ResourceLocation resourceLocation = loc;
-            return resourceLocation;
-        }
-        catch (Exception e) {
-            PrefabCustomAddon.LOGGER.warn("Failed to load cached thumbnail for {}", (Object)c.getName(), (Object)e);
-            this.cachedThumbTextureCache.put(key, null);
-            return null;
-        }
+    private static String truncate(String s, int max) {
+        if (s == null) return "";
+        return s.length() > max ? s.substring(0, max) + ".." : s;
     }
 
-    private void drawIconNearest(GuiGraphics guiGraphics, ResourceLocation texture, int x, int y, int w, int h, int u, int v, int uW, int vH, int sheetW, int sheetH) {
-        RenderSystem.setShader(GameRenderer::getPositionTexColorShader);
-        RenderSystem.setShaderTexture((int)0, (ResourceLocation)texture);
-        RenderSystem.texParameter((int)3553, (int)10241, (int)9729);
-        RenderSystem.texParameter((int)3553, (int)10240, (int)9729);
-        RenderSystem.enableBlend();
-        RenderSystem.defaultBlendFunc();
-        float f = 1.0f / (float)sheetW;
-        float f1 = 1.0f / (float)sheetH;
-        float u0 = (float)u * f;
-        float v0 = (float)v * f1;
-        float u1 = (float)(u + uW) * f;
-        float v1 = (float)(v + vH) * f1;
-        Tesselator tesselator = Tesselator.getInstance();
-        BufferBuilder buffer = tesselator.begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION_TEX_COLOR);
-        buffer.addVertex((float)x, (float)(y + h), 0.0f).setUv(u0, v1).setColor(1.0f, 1.0f, 1.0f, 1.0f);
-        buffer.addVertex((float)(x + w), (float)(y + h), 0.0f).setUv(u1, v1).setColor(1.0f, 1.0f, 1.0f, 1.0f);
-        buffer.addVertex((float)(x + w), (float)y, 0.0f).setUv(u1, v0).setColor(1.0f, 1.0f, 1.0f, 1.0f);
-        buffer.addVertex((float)x, (float)y, 0.0f).setUv(u0, v0).setColor(1.0f, 1.0f, 1.0f, 1.0f);
-        BufferUploader.drawWithShader((MeshData)buffer.build());
+    /** 按像素宽截断 (CJK 按 9px, 其余按 6px 估算), 超出补 "..". */
+    private static String truncateW(String s, int maxPx) {
+        if (s == null) return "";
+        int w = 0;
+        for (int i = 0; i < s.length(); i++) {
+            w += s.charAt(i) > 0x2E7F ? 9 : 6;
+            if (w > maxPx) return s.substring(0, i) + "..";
+        }
+        return s;
     }
 
-    public void onClose() {
-        rememberedCategory = this.currentCategory;
-        rememberedPage = this.scrollOffsetCards;
-        rememberedPanelHidden = this.categoryPanelHidden;
-        this.coverTextureCache.clear();
-        this.previewTextureCache.clear();
-        this.cachedThumbTextureCache.clear();
-        this.localImageCache.clear();
-        this.websiteImageCache.clear();
-        this.serverImageCache.clear();
-        super.onClose();
+    private static String formatRelativeTime(long ts) {
+        if (ts <= 0L) return tr("time.unknown");
+        long diff = System.currentTimeMillis() - ts;
+        if (diff < 0L) diff = 0L;
+        long sec = diff / 1000L;
+        if (sec < 60L) return tr("time.just_now");
+        long min = sec / 60L;
+        if (min < 60L) return tr("time.minutes_ago", String.valueOf(min));
+        long hr = min / 60L;
+        if (hr < 24L) return tr("time.hours_ago", String.valueOf(hr));
+        return tr("time.days_ago", String.valueOf(hr / 24L));
     }
 
-    private void openSyncedServerBuildingDetail(ServerBuildingInfo b) {
-        if (b == null || !b.synced) {
-            return;
-        }
-        Path cacheDir = ExtensionPackManager.getInstance().getServerCacheDir();
-        if (cacheDir == null || !Files.exists(cacheDir, new LinkOption[0])) {
-            this.setStatus("\u2717 \u627e\u4e0d\u5230 server-cache/ \u76ee\u5f55", 0xFF5555);
-            return;
-        }
-        String fileBase = b.packName != null && !b.packName.isEmpty() ? b.packName : b.buildingId;
-        String ext = b.getSourceExt().toLowerCase();
-        if (ext.equals(".zip")) {
-            Path zipPath = GuiExtensionPackBrowser.findServerFile(cacheDir, fileBase, ".zip");
-            if (zipPath == null) {
-                this.setStatus("\u2717 \u627e\u4e0d\u5230 zip: " + fileBase + ".zip", 0xFF5555);
-                return;
-            }
-            try (ZipFile zip = new ZipFile(zipPath.toFile());){
-                InputStream is;
-                ZipEntry nbtEntry = null;
-                ZipEntry pngEntry = null;
-                Enumeration<? extends ZipEntry> en = zip.entries();
-                while (en.hasMoreElements()) {
-                    ZipEntry e = en.nextElement();
-                    if (e.isDirectory()) continue;
-                    String ename = e.getName().toLowerCase();
-                    if (nbtEntry == null && (ename.endsWith(".nbt") || ename.endsWith(".litematic") || ename.endsWith(".schem") || ename.endsWith(".schematic"))) {
-                        nbtEntry = e;
-                    }
-                    if (pngEntry != null || !ename.endsWith(".png")) continue;
-                    pngEntry = e;
-                }
-                if (nbtEntry == null) {
-                    this.setStatus("\u2717 zip " + fileBase + " \u91cc\u6ca1\u627e\u5230\u5efa\u7b51\u6587\u4ef6", 0xFF5555);
-                    return;
-                }
-                long nbtSize = nbtEntry.getSize();
-                if (nbtSize > 0x1400000L) {
-                    this.setStatus("\u2717 \u5efa\u7b51\u592a\u5927 (" + nbtSize / 1024L / 1024L + "MB), \u4e0d\u652f\u6301\u5728\u7ebf\u9884\u89c8", 0xFFAA55);
-                    return;
-                }
-                ConstructionInfo c = new ConstructionInfo(b.buildingId);
-                c.setName(b.getDisplayName());
-                if (pngEntry != null) {
-                    is = zip.getInputStream(pngEntry);
-                    try {
-                        c.setPngData(is.readAllBytes());
-                    }
-                    finally {
-                        if (is != null) {
-                            is.close();
-                        }
-                    }
-                }
-                is = zip.getInputStream(nbtEntry);
-                try {
-                    c.setNbtData(is.readAllBytes());
-                }
-                finally {
-                    if (is != null) {
-                        is.close();
-                    }
-                }
-                GuiConstructionDetail.open(c);
-            }
-            catch (Exception e) {
-                this.setStatus("\u2717 \u89e3\u6790 zip \u5931\u8d25: " + e.getMessage(), 0xFF5555);
-                PrefabCustomAddon.LOGGER.warn("[SERVER-DETAIL] zip parse failed for {}", (Object)fileBase, (Object)e);
-            }
-        } else {
-            Path filePath = GuiExtensionPackBrowser.findServerFile(cacheDir, fileBase, ext);
-            if (filePath == null) {
-                this.setStatus("\u2717 \u627e\u4e0d\u5230\u6587\u4ef6: " + fileBase + ext, 0xFF5555);
-                return;
-            }
-            Path imgPath = GuiExtensionPackBrowser.findServerFile(cacheDir, fileBase, ".png");
-            if (imgPath == null) {
-                String ie;
-                String[] nbtEntry = new String[]{".jpg", ".jpeg", ".webp"};
-                int n = nbtEntry.length;
-                for (int i = 0; i < n && (imgPath = GuiExtensionPackBrowser.findServerFile(cacheDir, fileBase, ie = nbtEntry[i])) == null; ++i) {
-                }
-            }
-            ConstructionInfo c = new ConstructionInfo(b.buildingId);
-            c.setName(b.getDisplayName());
-            c.setLocalImagePath(imgPath);
-            c.setLocalNbtPath(filePath);
-            GuiConstructionDetail.open(c);
-        }
-    }
-
-    private static enum Tab {
-        BUILDINGS("\u5efa\u7b51"),
-        CLOUD("\u4e91\u7aef\u5efa\u7b51"),
-        SERVERS("\u670d\u52a1\u5668"),
-        FAVORITES("\u6536\u85cf"),
-        DOWNLOAD("\u4e0b\u8f7d"),
-        CHANGELOG("\u66f4\u65b0\u65e5\u5fd7");
-
-        final String label;
-
-        private Tab(String label) {
-            this.label = label;
-        }
-    }
-
-    private static final class TabState {
-        String currentCategory;
-        int scrollOffsetCards;
-        boolean categoryPanelHidden;
-        String searchText;
-
-        TabState(String cat, int page, boolean hidden, String search) {
-            this.currentCategory = cat;
-            this.scrollOffsetCards = page;
-            this.categoryPanelHidden = hidden;
-            this.searchText = search;
-        }
+    private static String formatFileSize(long bytes) {
+        if (bytes <= 0L) return "-";
+        if (bytes < 1024L) return bytes + "B";
+        if (bytes < 0x100000L) return bytes / 1024L + "KB";
+        return String.format("%.1fMB", bytes / 1024.0 / 1024.0);
     }
 }
-

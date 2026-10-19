@@ -6,6 +6,7 @@ import com.prefab.gui.controls.ExtendedButton;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.AbstractButton;
+import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 import net.minecraft.util.FormattedCharSequence;
 
@@ -45,7 +46,7 @@ public class GuiAiBlueprintHelp extends GuiBase {
     private static final int PANEL_BORDER = 0xFF555555;
 
     /** 父 Editor 引用 — 返回时还原 tab 状态. */
-    private final GuiExtensionPackEditor parent;
+    private final Screen parent;
 
     private int panelX, panelY;
 
@@ -53,7 +54,7 @@ public class GuiAiBlueprintHelp extends GuiBase {
     private String status = null;
     private int statusColor = 0x55FF55;
 
-    public GuiAiBlueprintHelp(GuiExtensionPackEditor parent) {
+    public GuiAiBlueprintHelp(Screen parent) {
         super("AI Blueprint Help");
         this.parent = parent;
         this.modifiedInitialXAxis = PANEL_W / 2;
@@ -61,7 +62,7 @@ public class GuiAiBlueprintHelp extends GuiBase {
     }
 
     /** 静态入口: Editor 调这个打开帮助屏 (顺带确保指南已导出). */
-    public static void open(GuiExtensionPackEditor parent) {
+    public static void open(Screen parent) {
         ensureDocExtracted();
         Minecraft.getInstance().setScreen(new GuiAiBlueprintHelp(parent));
     }

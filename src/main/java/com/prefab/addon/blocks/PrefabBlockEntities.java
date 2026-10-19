@@ -25,6 +25,14 @@ public class PrefabBlockEntities {
         BLOCKS.register("mini_building", () -> new MiniBuildingBlock(
             Block.Properties.of().strength(0.5f).noOcclusion()));
 
+    /**
+     * 缺失方块 ("?" 方块): 建筑 NBT 里出现本服未注册的 mod 方块 (缺依赖) 时,
+     * 预览与建造都用它占位, 让玩家一眼看出哪里缺了东西. 可正常挖掘清除.
+     */
+    public static final DeferredBlock<Block> MISSING_BLOCK =
+        BLOCKS.register("missing_block", () -> new Block(
+            Block.Properties.of().strength(0.3f).mapColor(net.minecraft.world.level.material.MapColor.COLOR_MAGENTA)));
+
     public static final net.neoforged.neoforge.registries.DeferredHolder<
         BlockEntityType<?>, BlockEntityType<MiniBuildingBlockEntity>> MINI_BUILDING_BE =
         BLOCK_ENTITIES.register("mini_building",

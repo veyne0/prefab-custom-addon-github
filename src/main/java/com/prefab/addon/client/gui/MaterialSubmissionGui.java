@@ -91,7 +91,8 @@ public final class MaterialSubmissionGui {
     private static final int CARD_H = 124;
     private static final int WINDOW_W = 480;
     private static final int WINDOW_H = 240;
-    private static final int CARDS_PER_PAGE = 4;
+    // 每页行数 (逐行列表布局, 一行一种材料)
+    private static final int CARDS_PER_PAGE = 6;
     /** 当前打开的提交界面 (供服务端账本回包 onServerState 刷新用); 关闭时置 null */
     private static State currentState = null;
 
@@ -167,10 +168,9 @@ public final class MaterialSubmissionGui {
     }
 
     private static List<MaterialRow> getPageRows(State state) {
-        if (state.rows == null) {
-            return List.of();
-        }
-        int total = state.rows.size();
+        // 分页基于"筛选后"的行, 状态筛选切换时 currentPage 会重置为 0
+        List<MaterialRow> rows = MaterialSubmissionGui.getFilteredRows(state);
+        int total = rows.size();
         if (total == 0) {
             return List.of();
         }
@@ -179,12 +179,12 @@ public final class MaterialSubmissionGui {
             from = 0;
         }
         int to = Math.min(from + 4, total);
-        return state.rows.subList(from, to);
+        return rows.subList(from, to);
     }
 
     private static int getTotalPages(State state) {
         int total;
-        int n = total = state.rows == null ? 0 : state.rows.size();
+        int n = total = MaterialSubmissionGui.getFilteredRows(state).size();
         if (total == 0) {
             return 1;
         }
@@ -212,8 +212,16 @@ public final class MaterialSubmissionGui {
         state.cardContainer.clearAllChildren();
         List<MaterialRow> pageRows = MaterialSubmissionGui.getPageRows(state);
         if (pageRows.isEmpty()) {
+            String emptyText;
+            if (state.statusFilter == 1) {
+                emptyText = PrefabCustomAddon.tr("gui.material.filter_empty_submitted", new Object[0]);
+            } else if (state.statusFilter == 2) {
+                emptyText = PrefabCustomAddon.tr("gui.material.filter_empty_unsubmitted", new Object[0]);
+            } else {
+                emptyText = PrefabCustomAddon.tr("gui.material.empty", new Object[0]);
+            }
             TextElement empty = new TextElement();
-            empty.setText(PrefabCustomAddon.tr("gui.material.empty", new Object[0]));
+            empty.setText(emptyText);
             empty.textStyle(t -> t.textColor(-7829368).textAlignHorizontal(Horizontal.CENTER));
             empty.layout(l -> l.widthPercent(100.0f).height(60.0f).justifyContent(AlignContent.CENTER));
             state.cardContainer.addChild((UIElement)empty);
@@ -252,48 +260,60 @@ public final class MaterialSubmissionGui {
         state.progressEl.textStyle(t -> t.textColor(color));
     }
 
+    /**
+     * 逐行列表布局 (和 1.20.1 版一致): 一行一种材料.
+     * [图标] [名称(占满)] [0/1236] [提交] [还差N]
+     */
     private static UIElement createCard(State state, MaterialRow row) {
-        UIElement card = new UIElement();
-        card.layout(l -> l.flexDirection(FlexDirection.COLUMN).width(96.0f).height(124.0f).paddingAll(2.0f).gapAll(0.0f).alignItems(AlignItems.CENTER));
+        UIElement rowEl = new UIElement();
+        rowEl.layout(l -> l.flexDirection(FlexDirection.ROW).widthPercent(100.0f).height(24.0f)
+            .paddingLeft(4.0f).paddingRight(4.0f).paddingTop(2.0f).paddingBottom(2.0f).gapAll(6.0f)
+            .alignItems(AlignItems.CENTER));
         int bgColor = row.remaining == 0 ? -1073728768 : -1071241690;
-        card.style(s -> s.background((IGuiTexture)new GuiTextureGroup(new IGuiTexture[]{new ColorRectTexture(bgColor), new ColorBorderTexture(1, -11184811)})));
+        rowEl.style(s -> s.background((IGuiTexture)new GuiTextureGroup(new IGuiTexture[]{new ColorRectTexture(bgColor), new ColorBorderTexture(1, -11184811)})));
+
+        // 1. 图标 (16x16 正方, ItemStackTexture 1 倍缩放, 不变形)
         UIElement iconArea = new UIElement();
-        // 图标区必须是正方形: ItemStackTexture 按 scale(width/16, height/16) 独立拉伸 xy,
-        // 旧的 92x36 扁矩形会把 16x16 物品渲染拉成扁板. 64x64 = 整数 4 倍缩放, 不变形且像素清晰
-        iconArea.layout(l -> l.width(64.0f).height(64.0f).alignItems(AlignItems.CENTER).justifyContent(AlignContent.CENTER));
+        iconArea.layout(l -> l.width(16.0f).height(16.0f));
         ItemStack displayIcon = MaterialSubmissionGui.isFallbackIcon(row.icon) ? new ItemStack((ItemLike)Items.GRAY_STAINED_GLASS_PANE) : row.icon;
         iconArea.style(s -> s.background((IGuiTexture)new ItemStackTexture(new ItemStack[]{displayIcon})));
-        card.addChild(iconArea);
+        rowEl.addChild((UIElement)iconArea);
+
+        // 2. 名称 (弹性占满, 左对齐; 已交齐=淡绿, 未知方块=橙)
         String displayName = MaterialSubmissionGui.resolveDisplayName(row);
         TextElement nameEl = new TextElement();
         nameEl.setText((Component)Component.literal((String)displayName));
         int nameColor = MaterialSubmissionGui.isFallbackIcon(row.icon) ? -21931 : (row.remaining == 0 ? -5570646 : -1);
-        nameEl.textStyle(t -> t.textColor(nameColor).textAlignHorizontal(Horizontal.CENTER).textWrap(TextWrap.WRAP));
-        nameEl.layout(l -> l.width(92.0f).height(20.0f));
-        card.addChild((UIElement)nameEl);
+        nameEl.textStyle(t -> t.textColor(nameColor).textAlignHorizontal(Horizontal.LEFT));
+        nameEl.layout(l -> l.flexGrow(1.0f).height(16.0f));
+        rowEl.addChild((UIElement)nameEl);
+
+        // 3. 进度 (固定宽, 右对齐)
         String progText = row.alreadySubmitted + " / " + row.required;
         TextElement progEl = new TextElement();
         progEl.setText((Component)Component.literal((String)progText));
         int progColor = row.remaining == 0 ? -11141291 : (row.inInv > 0 ? -21931 : -43691);
-        progEl.textStyle(t -> t.textColor(progColor).textAlignHorizontal(Horizontal.CENTER));
-        progEl.layout(l -> l.width(92.0f).height(11.0f));
-        card.addChild((UIElement)progEl);
-        UIElement bottom = new UIElement();
-        bottom.layout(l -> l.flexDirection(FlexDirection.ROW).width(92.0f).height(18.0f).alignItems(AlignItems.CENTER).gapAll(2.0f));
+        progEl.textStyle(t -> t.textColor(progColor).textAlignHorizontal(Horizontal.RIGHT));
+        progEl.layout(l -> l.width(64.0f).height(16.0f));
+        rowEl.addChild((UIElement)progEl);
+
+        // 4. 提交按钮 (固定宽)
         Button submitBtn = new Button();
         submitBtn.setText(PrefabCustomAddon.tr("gui.material.submit_btn", new Object[0]));
         submitBtn.textStyle(t -> t.textColor(-11141291).textAlignHorizontal(Horizontal.CENTER));
-        submitBtn.layout(l -> l.width(28.0f).height(16.0f));
+        submitBtn.layout(l -> l.width(34.0f).height(16.0f));
         submitBtn.setOnClick(e -> MaterialSubmissionGui.onSubmitSingle(state, row));
-        bottom.addChild((UIElement)submitBtn);
+        rowEl.addChild((UIElement)submitBtn);
+
+        // 5. 还差N (固定宽, 右对齐)
         String remainText = row.remaining == 0 ? PrefabCustomAddon.tr("gui.material.remain_done_short", new Object[0]) : String.format(Locale.ROOT, PrefabCustomAddon.tr("gui.material.remain_short", new Object[0]), row.remaining);
         TextElement remainEl = new TextElement();
         remainEl.setText((Component)Component.literal((String)remainText));
         remainEl.textStyle(t -> t.textColor(row.remaining == 0 ? -11141291 : -21931).textAlignHorizontal(Horizontal.RIGHT));
-        remainEl.layout(l -> l.flexGrow(1.0f).height(16.0f));
-        bottom.addChild((UIElement)remainEl);
-        card.addChild(bottom);
-        return card;
+        remainEl.layout(l -> l.width(56.0f).height(16.0f));
+        rowEl.addChild((UIElement)remainEl);
+
+        return rowEl;
     }
 
     private static void onSubmitSingle(State state, MaterialRow row) {
@@ -371,6 +391,29 @@ public final class MaterialSubmissionGui {
         MaterialSubmissionGui.updateProgressEl(state);
         state.progressEl.layout(l -> l.widthPercent(100.0f).height(11.0f));
         root.addChild((UIElement)state.progressEl);
+        // === 状态筛选行: 全部 / 已提交 / 未提交 (选中项金色高亮) ===
+        UIElement filterRow = new UIElement();
+        filterRow.layout(l -> l.flexDirection(FlexDirection.ROW).widthPercent(100.0f).height(13.0f).gapAll(4.0f).alignItems(AlignItems.CENTER));
+        state.statusFilterButtons = new ArrayList<Button>();
+        String[] filterKeys = new String[]{
+            "gui.material.filter_all", "gui.material.filter_submitted", "gui.material.filter_unsubmitted"};
+        for (int fi = 0; fi < filterKeys.length; ++fi) {
+            final int filterIdx = fi;
+            Button fb = new Button();
+            fb.setText(PrefabCustomAddon.tr(filterKeys[fi], new Object[0]));
+            fb.textStyle(t -> t.textColor(filterIdx == state.statusFilter ? 0xFFFF55 : 0xDDDDDD).textAlignHorizontal(Horizontal.CENTER));
+            fb.layout(l -> l.width(56.0f).heightPercent(100.0f));
+            fb.setOnClick(e -> {
+                state.statusFilter = filterIdx;
+                state.currentPage = 0;
+                MaterialSubmissionGui.refreshStatusFilterHighlight(state);
+                MaterialSubmissionGui.refreshCardsOnly(state);
+                MaterialSubmissionGui.updatePageInfoEl(state);
+            });
+            state.statusFilterButtons.add(fb);
+            filterRow.addChild((UIElement)fb);
+        }
+        root.addChild((UIElement)filterRow);
         ScrollerView scroller = new ScrollerView();
         scroller.scrollerStyle(s -> s.mode(ScrollerMode.VERTICAL).horizontalScrollDisplay(ScrollDisplay.NEVER).verticalScrollDisplay(ScrollDisplay.ALWAYS).minScrollPixel(4.0f).maxScrollPixel(40.0f));
         scroller.verticalScroller(v -> v.setScrollBarSize(3.0f));
@@ -378,7 +421,8 @@ public final class MaterialSubmissionGui {
         scroller.layout(l -> l.widthPercent(100.0f).flexGrow(1.0f));
         root.addChild((UIElement)scroller);
         state.cardContainer = new UIElement();
-        state.cardContainer.layout(l -> l.flexDirection(FlexDirection.ROW).flexWrap(FlexWrap.WRAP).alignContent(AlignContent.FLEX_START).gapAll(4.0f).paddingLeft(10.0f).paddingRight(6.0f).paddingTop(2.0f).paddingBottom(2.0f).widthPercent(100.0f).flexShrink(0.0f).minHeight(0.0f));
+        // 逐行列表: 纵向排列, 一行一种材料 (1.20.1 风格), 行宽撑满
+        state.cardContainer.layout(l -> l.flexDirection(FlexDirection.COLUMN).gapAll(3.0f).paddingLeft(4.0f).paddingRight(6.0f).paddingTop(2.0f).paddingBottom(2.0f).widthPercent(100.0f).flexShrink(0.0f).minHeight(0.0f));
         state.cardContainer.setId("__cards__");
         scroller.addScrollViewChild(state.cardContainer);
         MaterialSubmissionGui.refreshCardsOnly(state);
@@ -547,6 +591,9 @@ public final class MaterialSubmissionGui {
         List<MaterialRow> rows;
         Screen previousScreen;
         int currentPage = 0;
+        /** 状态筛选: 0=全部, 1=已提交(交齐), 2=未提交(还差) */
+        int statusFilter = 0;
+        List<Button> statusFilterButtons;
         String statusMessage = null;
         int statusColor = 0xFFFFFF;
         long statusExpireTick = 0L;
@@ -556,6 +603,37 @@ public final class MaterialSubmissionGui {
         UIElement cardContainer;
 
         private State() {
+        }
+    }
+
+    /** 按 statusFilter 过滤后的行 (0=全部; 1=已提交 remaining==0; 2=未提交 remaining>0) */
+    private static List<MaterialRow> getFilteredRows(State state) {
+        List<MaterialRow> all = state.rows;
+        if (all == null) {
+            return List.of();
+        }
+        if (state.statusFilter == 0) {
+            return all;
+        }
+        ArrayList<MaterialRow> out = new ArrayList<MaterialRow>();
+        for (MaterialRow r : all) {
+            boolean done = r.remaining == 0;
+            if (state.statusFilter == 1 && done) {
+                out.add(r);
+            } else if (state.statusFilter == 2 && !done) {
+                out.add(r);
+            }
+        }
+        return out;
+    }
+
+    private static void refreshStatusFilterHighlight(State state) {
+        if (state.statusFilterButtons == null) {
+            return;
+        }
+        for (int i = 0; i < state.statusFilterButtons.size(); ++i) {
+            boolean sel = i == state.statusFilter;
+            state.statusFilterButtons.get(i).text.textStyle(t -> t.textColor(sel ? 0xFFFF55 : 0xDDDDDD));
         }
     }
 

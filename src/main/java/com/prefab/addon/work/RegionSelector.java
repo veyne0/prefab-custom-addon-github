@@ -172,7 +172,7 @@ public class RegionSelector {
         SelectionState st = ACTIVE.remove(player.getUUID());
         if (st != null && st.callback != null) {
             st.callback.onCancelled();
-            player.sendSystemMessage(Component.literal(PrefabCustomAddon.tr("sel.cancelled")));
+            player.sendSystemMessage(PrefabCustomAddon.trc("sel.cancelled"));
         }
     }
 

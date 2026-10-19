@@ -30,11 +30,19 @@ import java.util.stream.Stream;
  * LRU 最多 {@link #TEX_CACHE_MAX} 张, 逐出即释放, 防止多图常驻显存.
  */
 public final class TerminalPhotoStore {
+    /** 全尺寸纹理缓存上限 (只有查看器用, 同屏最多 1 张 + 余量). */
     private static final int TEX_CACHE_MAX = 8;
+    /** 缩略图缓存上限 (一页网格 15~18 张 + 余量; 192x108 RGBA 约 83KB/张, 64 张 ≈ 5MB 显存). */
+    private static final int THUMB_CACHE_MAX = 64;
+    /** 缩略图最大尺寸 (网格格子 96x54, 2x 留清晰度余量). */
+    private static final int THUMB_MAX_W = 192;
+    private static final int THUMB_MAX_H = 108;
     private static final DateTimeFormatter FMT = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmssSSS");
 
-    /** name(file name) → registered texture RL, accessOrder 实现真正的 LRU. */
+    /** name(file name) → full-size texture RL, accessOrder 实现真正的 LRU. */
     private static final LinkedHashMap<String, ResourceLocation> texCache = new LinkedHashMap<>(16, 0.75f, true);
+    /** name(file name) → 缩略图 RL, 同样 LRU. 网格用缩略图, 避免全尺寸解码/显存双爆炸. */
+    private static final LinkedHashMap<String, ResourceLocation> thumbCache = new LinkedHashMap<>(16, 0.75f, true);
 
     private TerminalPhotoStore() {
     }
@@ -81,6 +89,7 @@ public final class TerminalPhotoStore {
 
     public static boolean delete(String name) {
         releaseTexture(name);
+        releaseThumbnail(name);
         try {
             return Files.deleteIfExists(photosDir().resolve(name));
         } catch (IOException e) {
@@ -148,6 +157,71 @@ public final class TerminalPhotoStore {
         if (rl != null) {
             Minecraft.getInstance().getTextureManager().release(rl);
         }
+    }
+
+    public static void releaseThumbnail(String name) {
+        ResourceLocation rl = thumbCache.remove(name);
+        if (rl != null) {
+            Minecraft.getInstance().getTextureManager().release(rl);
+        }
+    }
+
+    /**
+     * 缩略图纹理 (相册网格专用): PNG 解码后按比例缩小到 ≤192x108 再注册 GL 纹理.
+     * 解码一次后常驻 LRU 缓存, 翻页/重建 UI 不再重复解码全尺寸 PNG — 相册卡顿的根因.
+     * 必须在渲染线程调用 (UI 构建即在渲染线程).
+     */
+    public static ResourceLocation thumbnail(String name) {
+        ResourceLocation cached = thumbCache.get(name);
+        if (cached != null) {
+            return cached;
+        }
+        try {
+            Path file = photosDir().resolve(name);
+            if (Files.notExists(file)) {
+                return missing();
+            }
+            NativeImage src;
+            try (InputStream in = Files.newInputStream(file)) {
+                src = NativeImage.read(in);
+            }
+            NativeImage thumb = downscale(src, THUMB_MAX_W, THUMB_MAX_H);
+            if (thumb != src) {
+                src.close();
+            }
+            ResourceLocation rl = ResourceLocation.fromNamespaceAndPath(
+                    TerminalRegistry.MOD_ID, "photo_thumb/" + name.toLowerCase(Locale.ROOT));
+            Minecraft.getInstance().getTextureManager().register(rl, new DynamicTexture(thumb));
+            thumbCache.put(name, rl);
+            while (thumbCache.size() > THUMB_CACHE_MAX) {
+                String eldest = thumbCache.entrySet().iterator().next().getKey();
+                releaseThumbnail(eldest);
+            }
+            return rl;
+        } catch (Exception e) {
+            TerminalRegistry.LOGGER.warn("[CAMERA] 照片缩略图加载失败: {}", name, e);
+            return missing();
+        }
+    }
+
+    /** 最近邻采样缩放; 原图不超过上限时原样返回 (调用方据此跳过 close). */
+    private static NativeImage downscale(NativeImage src, int maxW, int maxH) {
+        int sw = src.getWidth(), sh = src.getHeight();
+        if (sw <= maxW && sh <= maxH) {
+            return src;
+        }
+        double scale = Math.min((double) maxW / sw, (double) maxH / sh);
+        int dw = Math.max(1, (int) Math.round(sw * scale));
+        int dh = Math.max(1, (int) Math.round(sh * scale));
+        NativeImage dst = new NativeImage(src.format(), dw, dh, false);
+        for (int y = 0; y < dh; y++) {
+            int sy = Math.min(sh - 1, (int) (y / scale));
+            for (int x = 0; x < dw; x++) {
+                int sx = Math.min(sw - 1, (int) (x / scale));
+                dst.setPixelRGBA(x, y, src.getPixelRGBA(sx, sy));
+            }
+        }
+        return dst;
     }
 
     private static ResourceLocation missing() {

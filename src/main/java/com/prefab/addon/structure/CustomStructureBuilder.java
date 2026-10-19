@@ -64,7 +64,7 @@ public class CustomStructureBuilder {
             //   - litematic .litematic: 整结构在 "Schematic" compound 里
             //   - 一些打包脚本: 包在 "data" 里
             // 这里递归查找第一个含 "blocks" + "palette" 的 CompoundTag
-            if (!root.contains("blocks", 10) || !root.contains("palette", 10)) {
+            if (!hasBlocksPalette(root)) {
                 PrefabCustomAddon.LOGGER.info("  Root has no blocks+palette, 尝试解包嵌套结构 (keys={})", root.getAllKeys());
                 CompoundTag unwrapped = findNestedStructure(root, 0);
                 if (unwrapped != null && unwrapped != root) {
@@ -72,6 +72,25 @@ public class CustomStructureBuilder {
                     root = unwrapped;
                 } else {
                     PrefabCustomAddon.LOGGER.warn("  未找到嵌套 blocks+palette, 继续用原始根");
+                }
+            }
+            // 仍没有 blocks+palette → 第三方格式 (litematic / sponge schem):
+            // 结构存在 Regions/BlockStates (litematic) 或 Schematic/Blocks (sponge) 里,
+            // 需要 NbtFormatConverter 转成 vanilla 才能解析.
+            // 之前漏了这步: 详情页 3D 预览 "所有方块均为 air", ALT 建造 "解析后无有效方块".
+            if (!hasBlocksPalette(root)) {
+                try {
+                    CompoundTag converted = com.prefab.addon.work.NbtFormatConverter.toVanilla(root);
+                    if (hasBlocksPalette(converted)) {
+                        PrefabCustomAddon.LOGGER.info("  第三方格式转换成功: {} blocks",
+                            converted.getList("blocks", Tag.TAG_LIST).size());
+                        root = converted;
+                    } else {
+                        PrefabCustomAddon.LOGGER.warn("  第三方格式转换后仍无 blocks+palette, keys={}",
+                            converted == null ? "null" : converted.getAllKeys());
+                    }
+                } catch (Throwable t) {
+                    PrefabCustomAddon.LOGGER.warn("  第三方格式转换失败: {}", t.toString());
                 }
             }
             currentStructureNbt = root;
@@ -83,12 +102,26 @@ public class CustomStructureBuilder {
     }
 
     /**
+     * blocks+palette 存在检测 (两者都必须是 ListTag).
+     *
+     * <p>老坑: {@code contains("blocks", 10)} 的 10 是 TAG_COMPOUND, 而 blocks 是
+     * ListTag (type 9), 这个判断恒 false — 导致 litematic 转换成功的结果被当成
+     * "不含 blocks" 而丢弃, 详情页 3D 预览一直是空的. 正确写法是传 TAG_LIST (9),
+     * 见 parseToPrefabStructure 里的同款判断.</p>
+     */
+    private static boolean hasBlocksPalette(CompoundTag tag) {
+        return tag != null
+            && tag.contains("blocks", Tag.TAG_LIST)
+            && tag.contains("palette", Tag.TAG_LIST);
+    }
+
+    /**
      * 递归查找第一个同时含 "blocks" 和 "palette" 的 CompoundTag.
      * 限制递归深度 5, 防止极端病态 NBT.
      */
     private CompoundTag findNestedStructure(CompoundTag tag, int depth) {
         if (depth > 5) return null;
-        if (tag.contains("blocks", 10) && tag.contains("palette", 10)) return tag;
+        if (hasBlocksPalette(tag)) return tag;
         for (String key : tag.getAllKeys()) {
             Tag child = tag.get(key);
             if (child instanceof CompoundTag childC) {
@@ -333,7 +366,8 @@ public class CustomStructureBuilder {
             if (blockName == null || blockName.isEmpty()) continue;
 
             Block block = BuiltInRegistries.BLOCK.getOptional(ResourceLocation.parse(blockName))
-                    .orElse(Blocks.AIR);
+                    // 未知方块 (缺依赖): 用 "?" 缺失方块占位; 原版 air 由下方 continue 跳过
+                    .orElse(com.prefab.addon.blocks.PrefabBlockEntities.MISSING_BLOCK.get());
             if (block == Blocks.AIR) continue;
 
             blocks.add(new BlockData(new BlockPos(x, y, z), block.defaultBlockState()));
@@ -353,11 +387,19 @@ public class CustomStructureBuilder {
                 return Blocks.AIR.defaultBlockState();
             }
             String name = tag.getString("Name");
-            Block block = BuiltInRegistries.BLOCK.getOptional(ResourceLocation.parse(name))
-                    .orElse(Blocks.AIR);
+            Block block = BuiltInRegistries.BLOCK.getOptional(ResourceLocation.parse(name)).orElse(null);
+            if (block == null) {
+                if (name.startsWith("minecraft:")) {
+                    // 原版 id 都该存在, 到不了这里; 兜底按 air
+                    return Blocks.AIR.defaultBlockState();
+                }
+                // mod 方块 (缺依赖, 如 create): 用 "?" 缺失方块占位, 让玩家一眼看出哪里缺了东西
+                PrefabCustomAddon.LOGGER.info("  readBlockState: 未知方块 '{}' (缺依赖?), 用缺失方块占位", name);
+                return com.prefab.addon.blocks.PrefabBlockEntities.MISSING_BLOCK.get().defaultBlockState();
+            }
             BlockState state = block.defaultBlockState();
 
-            if (tag.contains("Properties", 10) && block != Blocks.AIR) {
+            if (tag.contains("Properties", 10)) {
                 CompoundTag props = tag.getCompound("Properties");
                 StateDefinition<Block, BlockState> def = block.getStateDefinition();
                 for (String key : props.getAllKeys()) {
@@ -493,16 +535,13 @@ public class CustomStructureBuilder {
         if (info == null) {
             PrefabCustomAddon.LOGGER.error("[PLACE-ASYNC] 找不到建筑: {}/{}", packName, constructionId);
             if (player != null) {
-                // 多行提示: 告诉玩家 (1) 真正的"权威"是服务端 prefab-extension/ 而不是本地
-                // (2) 怎么把建筑文件放到服务端 (3) 放完后怎么同步到客户端: 按 O → 同步服务器建筑
-                player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
-                    com.prefab.addon.PrefabCustomAddon.tr("err.not_found", packName, constructionId)
-                    + " §7(源文件: " + packName + ")").withStyle(net.minecraft.ChatFormatting.RED));
-                player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
-                    com.prefab.addon.PrefabCustomAddon.tr("err.hint.pack_on_server"))
+                // 多行提示: (1) 服务端找不到该建筑 (2) 本地建筑可在浏览器「服务器」tab 一键上传
+                player.sendSystemMessage(PrefabCustomAddon.trc("err.not_found", packName, constructionId)
+                    .append(" §7(源文件: " + packName + ")")
+                    .withStyle(net.minecraft.ChatFormatting.RED));
+                player.sendSystemMessage(PrefabCustomAddon.trc("err.hint.pack_on_server")
                     .withStyle(net.minecraft.ChatFormatting.YELLOW));
-                player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
-                    com.prefab.addon.PrefabCustomAddon.tr("err.hint.sync_server"))
+                player.sendSystemMessage(PrefabCustomAddon.trc("err.hint.sync_server")
                     .withStyle(net.minecraft.ChatFormatting.YELLOW));
             }
             return false;
@@ -531,8 +570,8 @@ public class CustomStructureBuilder {
         if (blockDataList.isEmpty()) {
             PrefabCustomAddon.LOGGER.error("[PLACE-ASYNC] 解析后无有效方块");
             if (player != null) {
-                player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
-                    com.prefab.addon.PrefabCustomAddon.tr("err.parse_no_blocks")).withStyle(net.minecraft.ChatFormatting.RED));
+                player.sendSystemMessage(PrefabCustomAddon.trc("err.parse_no_blocks")
+                    .withStyle(net.minecraft.ChatFormatting.RED));
             }
             return false;
         }

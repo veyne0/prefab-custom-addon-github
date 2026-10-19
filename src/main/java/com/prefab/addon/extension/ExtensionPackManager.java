@@ -831,17 +831,17 @@ public class ExtensionPackManager {
             }
         }
 
-        // 2) 新格式：所有文件直接在 zip 根目录（.txt / .nbt / .png 平铺）
-        boolean hasRootNbt = false;
+        // 2) 新格式：所有文件直接在 zip 根目录（结构文件 / .txt / .png 平铺）
+        boolean hasRootStructure = false;
         boolean hasRootTxt = false;
         boolean hasRootPng = false;
         for (String n : allNames) {
             if (n.contains("/")) continue;          // 跳过子目录里的
-            if (n.endsWith(".nbt")) hasRootNbt = true;
+            if (isStructureExt(n)) hasRootStructure = true;
             else if (n.endsWith(".txt")) hasRootTxt = true;
             else if (n.endsWith(".png")) hasRootPng = true;
         }
-        if (hasRootNbt && (hasRootTxt || hasRootPng)) {
+        if (hasRootStructure && (hasRootTxt || hasRootPng)) {
             PrefabCustomAddon.LOGGER.info("[detectBaseFolder] step2 命中扁平根目录, base=''");
             return "";
         }
@@ -877,7 +877,7 @@ public class ExtensionPackManager {
             String folder = topFolders.iterator().next();
             long folderNbt = allNames.stream()
                 .filter(n -> n.startsWith(folder) && !n.substring(folder.length()).contains("/"))
-                .filter(n -> n.endsWith(".nbt"))
+                .filter(ExtensionPackManager::isStructureExt)
                 .count();
             if (folderNbt > 0) {
                 PrefabCustomAddon.LOGGER.info("[detectBaseFolder] step5 命中子文件夹 + 扁平: {}, {} 个 nbt", folder, folderNbt);
@@ -897,7 +897,8 @@ public class ExtensionPackManager {
 
         // 决定建筑文件来源路径：扁平格式（文件在根） vs 标准格式（construction/ 子目录）
         String constructionPath = baseFolder + "construction/";
-        boolean isFlat = constructionPath.isEmpty() && !hasConstructionSubfolder(zipFile, baseFolder);
+        // 注意: constructionPath (至少是 "construction/") 永远非空, 判扁平必须用 baseFolder 是否为空
+        boolean isFlat = baseFolder.isEmpty() && !hasConstructionSubfolder(zipFile, baseFolder);
 
         while (entries.hasMoreElements()) {
             ZipEntry entry = entries.nextElement();
@@ -968,7 +969,12 @@ public class ExtensionPackManager {
                         PrefabCustomAddon.LOGGER.warn("Failed to read TXT for {}", constructionName);
                     }
                     break;
+                // nbt / litematic / schem / schematic: 全部当"结构文件"缓存原始字节,
+                // CustomStructureBuilder 的解析器会自动识别 vanilla/litematic/sponge 格式
                 case "nbt":
+                case "litematic":
+                case "schem":
+                case "schematic":
                     ConstructionInfo nbtInfo = constructions.get(constructionName);
                     nbtInfo.setNbtEntry(entry);
                     // 立即读取并缓存NBT数据，避免ZipFile关闭后无法访问
@@ -1048,7 +1054,7 @@ public class ExtensionPackManager {
                 String base = rest.substring(0, dot);
                 String ext = rest.substring(dot + 1).toLowerCase();
                 if (firstBaseName == null) firstBaseName = base;
-                if (ext.equals("nbt")) nbtEntry = e;
+                if (isStructureExt(ext)) nbtEntry = e;
                 else if (ext.equals("txt")) txtEntry = e;
                 else if (ext.equals("png")) pngEntry = e;
             }
@@ -1114,7 +1120,13 @@ public class ExtensionPackManager {
         }
         return false;
     }
-    
+
+    /** 是否为建筑结构文件后缀: vanilla .nbt / litematic / sponge .schem / 旧版 .schematic. */
+    private static boolean isStructureExt(String name) {
+        String n = name.toLowerCase(java.util.Locale.ROOT);
+        return n.endsWith(".nbt") || n.endsWith(".litematic") || n.endsWith(".schem") || n.endsWith(".schematic");
+    }
+
     public List<ExtensionPack> getPacks() { return packs; }
 
     /**
@@ -1307,7 +1319,11 @@ public class ExtensionPackManager {
         // 兜底: STANDALONE_PACKAGE 来自单文件建筑 (LocalBuilding) 右键,
         // 单文件 NBT 不在任何 ExtensionPack 里, 必须走 LocalBuildingScanner 兜底.
         if (STANDALONE_PACKAGE.equals(packName)) {
-            return findLocalBuildingFallback(constructionId);
+            ConstructionInfo local = findLocalBuildingFallback(constructionId);
+            if (local != null) return local;
+            // 服务器本地没有单文件本体, 但客户端可能已把它打包成 <id>.zip 上传到 server-cache
+            // (服务端 packs 只含 server-cache/, 按 id 兜底即可命中上传的建筑)
+            return findByConstructionIdOnly(constructionId);
         }
         return null;
     }

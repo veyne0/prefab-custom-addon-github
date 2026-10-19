@@ -125,34 +125,8 @@ public class CustomBlueprintClientHandler {
     }
 
     /**
-     * 玩家进游戏时发欢迎消息 - 客户端路径 (覆盖纯客户端 / 单人模式).
-     * 服务端版在 {@link com.prefab.addon.PrefabCustomAddon#onPlayerLoggedIn} 里, 专用服玩家会通过那条路径收到欢迎消息.
-     * 本 listener 处理纯客户端 / 单人模式: 此时 event.entity = LocalPlayer (非 ServerPlayer), 服务端 listener 不会跑.
-     *
-     * 关键: 在整合服场景下, 物理客户端走这里 (因为 PlayerEvent 在物理端都会触发), 但服务端的
-     *      onPlayerLoggedIn 也会跑 (ServerPlayer). 为避免重复发, 用 Minecraft.hasSingleplayerServer() 区分:
-     *      - 单人模式 (hasSingleplayerServer = true): 物理服务端就是本进程 → onPlayerLoggedIn 会触发 (ServerPlayer),
-     *        客户端 listener 跳过, 避免重复.
-     *      - 整合服 (hasSingleplayerServer = false 但玩家也是 ServerPlayer): 服务端会发, 客户端 listener 也跳过.
-     *      - 纯远程客户端登录到专用服 (hasSingleplayerServer = false 且 entity 非 ServerPlayer): 服务端发,
-     *        但客户端这边要等到 sync 后才收到 → 这里再发一次 (其实会重复). 暂接受: 远端客户端发一次, 服务端也会发一次,
-     *        远端客户端会看到 2 条. 这是用 server.sendSystemMessage 的固有局限, 实际使用可接受.
-     *
-     * 实际上更简单的方案: 客户端 listener 只在 hasSingleplayerServer = true 时发 (因为单人模式的 entity 不是
-     * ServerPlayer, 服务端 onPlayerLoggedIn 不会跑), 其他情况不发 (因为服务端 onPlayerLoggedIn 已经发了).
-     *
-     * 注意: 本类标了 @EventBusSubscriber(Dist.CLIENT), 在 dedicated server 上永远不会加载本类,
-     *       所以不会发生 client API 误用问题.
+     * (旧 welcome 消息的客户端 listener 已移除: 进游戏欢迎提示不再显示)
      */
-    @SubscribeEvent
-    public static void onPlayerLoggedInClient(PlayerEvent.PlayerLoggedInEvent event) {
-        if (!event.getEntity().level().isClientSide()) return;
-        if (event.getEntity() != Minecraft.getInstance().player) return;
-        // 单人模式才在这里发 (其他情况服务端已发过)
-        if (!Minecraft.getInstance().hasSingleplayerServer()) return;
-        event.getEntity().sendSystemMessage(net.minecraft.network.chat.Component.literal(
-            com.prefab.addon.PrefabCustomAddon.tr("welcome.thanks")));
-    }
 
     private static void openGuiForStack(ItemStack stack, Player player, BlockPos pos, InteractionHand hand) {
         boolean bound = hasBound(stack);

@@ -82,6 +82,7 @@ public final class TerminalUI {
 
     public static final List<AppDef> APPS = List.of(
             new AppDef("buildings", () -> new ItemStack(Blocks.BRICKS)),
+            new AppDef("material", () -> new ItemStack(Items.PAPER)),
             new AppDef("create", () -> new ItemStack(Blocks.CRAFTING_TABLE)),
             new AppDef("recycle", () -> new ItemStack(Items.HOPPER)),
             new AppDef("storage", () -> new ItemStack(Blocks.CHEST)),
@@ -949,12 +950,12 @@ public final class TerminalUI {
         }
         CompoundTag root = new CompoundTag();
         root.put("Items", items);
-        player.getPersistentData().put("MtStorageSlots", root);
+        TerminalDeviceHandler.writePersisted(player, "MtStorageSlots", root);
     }
 
     /** 打开终端时从 PP 读回存储格 (parseOptional 对空 CompoundTag 返回 EMPTY); 兼容清理历史存入的终端. */
     private static void loadStorage(Player player, SimpleContainer storage) {
-        CompoundTag root = player.getPersistentData().getCompound("MtStorageSlots");
+        CompoundTag root = TerminalDeviceHandler.readPersisted(player, "MtStorageSlots");
         ListTag items = root.getList("Items", Tag.TAG_COMPOUND);
         for (int i = 0; i < storage.getContainerSize() && i < items.size(); i++) {
             ItemStack stack = ItemStack.parseOptional(player.registryAccess(), items.getCompound(i));

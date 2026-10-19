@@ -12,7 +12,6 @@ import net.minecraft.nbt.NbtIo;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
@@ -39,9 +38,157 @@ public class LitematicaParser {
      * 解析 .litematic 文件 → 标准 vanilla structure 格式 NBT (压缩后)
      */
     public static byte[] parseToStandardStructureBytes(Path litematicFile) throws IOException {
-        try (InputStream is = Files.newInputStream(litematicFile)) {
-            CompoundTag root = NbtIo.readCompressed(is, NbtAccounter.unlimitedHeap());
-            return convertToStandardStructure(root);
+        byte[] raw = Files.readAllBytes(litematicFile);
+        // 蓝图站 (mcschematic.top) 部分建筑下载下来其实是 JSON 格式
+        // ({"name":"","statePosArrayList":"{blockstatemap:[...],...}","requiredItems":{...}}),
+        // 只是扩展名挂了 .litematic. 按首字符 '{' 识别, 走 JSON 解析.
+        int first = 0;
+        while (first < raw.length && Character.isWhitespace(raw[first])) first++;
+        if (first < raw.length && raw[first] == '{') {
+            return convertJsonToStandardStructure(raw, litematicFile.toString());
+        }
+        CompoundTag root = readRootTag(raw, litematicFile.toString());
+        return convertToStandardStructure(root);
+    }
+
+    /**
+     * 蓝图站 JSON 格式 → 标准 vanilla structure NBT (压缩后).
+     *
+     * <pre>
+     * {
+     *   "name": "",
+     *   "statePosArrayList": "{blockstatemap:[{Name:\"minecraft:air\"},{Name:\"xxx\",Properties:{...}},...],
+     *                          endpos:{X:0,Y:0,Z:0},startpos:{X:-8,Y:-8,Z:-8},
+     *                          statelist:[I;0,0,1,...]}",
+     *   "requiredItems": { ... }
+     * }
+     * </pre>
+     * statelist 每格一个 palette 索引, 排列顺序按 vanilla/litematica 惯例:
+     * x 最快, z 其次, y 最慢 (index = (y*sizeZ + z)*sizeX + x), 相对 startpos.
+     */
+    private static byte[] convertJsonToStandardStructure(byte[] raw, String fileName) throws IOException {
+        com.google.gson.JsonObject obj;
+        try {
+            obj = com.google.gson.JsonParser.parseString(new String(raw, java.nio.charset.StandardCharsets.UTF_8))
+                .getAsJsonObject();
+        } catch (Exception e) {
+            throw new IOException("JSON 蓝图解析失败: " + e.getMessage(), e);
+        }
+        if (!obj.has("statePosArrayList") || !obj.get("statePosArrayList").isJsonPrimitive()) {
+            throw new IOException("JSON 蓝图缺少 statePosArrayList 字段");
+        }
+        // 内嵌 SNBT (无外层大括号), 包一层后用 TagParser 解析
+        CompoundTag tag;
+        try {
+            tag = new net.minecraft.nbt.TagParser(new com.mojang.brigadier.StringReader(
+                "{" + obj.get("statePosArrayList").getAsString() + "}")).readStruct();
+        } catch (Exception e) {
+            throw new IOException("JSON 蓝图 statePosArrayList 解析失败: " + e.getMessage(), e);
+        }
+
+        ListTag paletteSrc = tag.getList("blockstatemap", 10);
+        int[] states = tag.getIntArray("statelist");
+        CompoundTag start = tag.getCompound("startpos");
+        CompoundTag end = tag.getCompound("endpos");
+        if (paletteSrc.isEmpty() || states.length == 0 || start.isEmpty() || end.isEmpty()) {
+            throw new IOException("JSON 蓝图字段不完整: palette=" + paletteSrc.size()
+                + " states=" + states.length);
+        }
+        int startX = start.getInt("X"), startY = start.getInt("Y"), startZ = start.getInt("Z");
+        int endX = end.getInt("X"), endY = end.getInt("Y"), endZ = end.getInt("Z");
+        int sizeX = Math.abs(endX - startX) + 1;
+        int sizeY = Math.abs(endY - startY) + 1;
+        int sizeZ = Math.abs(endZ - startZ) + 1;
+        if ((long) sizeX * sizeY * sizeZ != states.length) {
+            throw new IOException("JSON 蓝图 statelist 数量不匹配: 期望 " + sizeX + "*" + sizeY + "*" + sizeZ
+                + "=" + ((long) sizeX * sizeY * sizeZ) + ", 实际 " + states.length
+                + " (排列顺序与预期不符?)");
+        }
+
+        CompoundTag output = new CompoundTag();
+        ListTag sizeArr = new ListTag();
+        sizeArr.add(IntTag.valueOf(sizeX));
+        sizeArr.add(IntTag.valueOf(sizeY));
+        sizeArr.add(IntTag.valueOf(sizeZ));
+        output.put("size", new IntArrayTag(new int[]{sizeX, sizeY, sizeZ}));
+
+        ListTag paletteOut = new ListTag();
+        // blockstatemap 条目本身就是 vanilla palette 格式 {Name, Properties?}, 原样拷贝
+        for (int i = 0; i < paletteSrc.size(); i++) {
+            paletteOut.add(paletteSrc.getCompound(i).copy());
+        }
+        output.put("palette", paletteOut);
+
+        ListTag blocksList = new ListTag();
+        int added = 0, skippedAir = 0;
+        for (int i = 0; i < states.length; i++) {
+            int stateIdx = states[i];
+            if (stateIdx < 0 || stateIdx >= paletteSrc.size()) {
+                continue; // 越界索引, 跳过
+            }
+            if (isAirBlock(paletteSrc.getCompound(stateIdx))) {
+                skippedAir++;
+                continue;
+            }
+            // x 最快, z 其次, y 最慢, 相对 startpos (min corner)
+            int x = i % sizeX;
+            int rem = i / sizeX;
+            int z = rem % sizeZ;
+            int y = rem / sizeZ;
+            CompoundTag blockTag = new CompoundTag();
+            blockTag.put("pos", new IntArrayTag(new int[]{x, y, z}));
+            blockTag.put("state", IntTag.valueOf(stateIdx));
+            blocksList.add(blockTag);
+            added++;
+        }
+        output.put("blocks", blocksList);
+        ListTag sizeListTag = new ListTag();
+        sizeListTag.add(IntTag.valueOf(sizeX));
+        sizeListTag.add(IntTag.valueOf(sizeY));
+        sizeListTag.add(IntTag.valueOf(sizeZ));
+        output.put("sizeList", sizeListTag);
+        output.putInt("DataVersion", 0);
+
+        PrefabCustomAddon.LOGGER.info("[LITEMATICA] JSON 蓝图转换完成: {} size={}x{}x{} palette={} added={} skippedAir={}",
+            fileName, sizeX, sizeY, sizeZ, paletteSrc.size(), added, skippedAir);
+
+        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        NbtIo.writeCompressed(output, bos);
+        return bos.toByteArray();
+    }
+
+    /**
+     * 读顶层 NBT, 自动识别 gzip 压缩 / 未压缩两种存储.
+     *
+     * <p>Litematica mod 自己写文件永远是 gzip, 但**蓝图站 (mcschematic.top) 下载的
+     * .litematic 有相当一部分是未压缩 NBT** — 直接走 NbtIo.readCompressed 会抛
+     * "ZipException: Not in GZIP format" → 转换失败 → 结构为空. 按文件头魔数
+     * (0x1F 0x8B) 分流: gzip → readCompressed; 否则 gzip 包一层再解 (writeCompressed
+     * 的读端只认 gzip, 包一层省得依赖 NbtIo.read 的映射签名).</p>
+     */
+    private static CompoundTag readRootTag(byte[] raw, String fileName) throws IOException {
+        boolean gzip = raw.length >= 2
+            && (raw[0] & 0xFF) == 0x1F && (raw[1] & 0xFF) == 0x8B;
+        if (gzip) {
+            return NbtIo.readCompressed(new ByteArrayInputStream(raw), NbtAccounter.unlimitedHeap());
+        }
+        // 未压缩 NBT: 先 gzip 包一层, 再走 readCompressed
+        PrefabCustomAddon.LOGGER.info("[LITEMATICA] {} 是未压缩 NBT (非 gzip), 自动包装后解析", fileName);
+        java.io.ByteArrayOutputStream gz = new java.io.ByteArrayOutputStream();
+        try (java.util.zip.GZIPOutputStream gos = new java.util.zip.GZIPOutputStream(gz)) {
+            gos.write(raw);
+        }
+        try {
+            return NbtIo.readCompressed(new ByteArrayInputStream(gz.toByteArray()), NbtAccounter.unlimitedHeap());
+        } catch (IOException e) {
+            // gzip 包装后仍解析失败: 打印前 16 字节帮助判断文件真实格式 (HTML? 纯文本?)
+            StringBuilder hex = new StringBuilder();
+            for (int i = 0; i < Math.min(16, raw.length); i++) {
+                hex.append(String.format("%02X ", raw[i]));
+            }
+            PrefabCustomAddon.LOGGER.error("[LITEMATICA] {} NBT 解析失败 (文件头: {}): {}",
+                fileName, hex.toString().trim(), e.getMessage());
+            throw e;
         }
     }
 
@@ -107,43 +254,55 @@ public class LitematicaParser {
             posZ = pos.getInt("z");
         }
         int sizeX, sizeY, sizeZ;
-        boolean flipX, flipY, flipZ;
         if (region.contains("Size", 10)) {
             CompoundTag size = region.getCompound("Size");
-            int rawX = size.getInt("x");
-            int rawY = size.getInt("y");
-            int rawZ = size.getInt("z");
-            // Litematica mod 自己写 size 总是 Math.abs() 出来正数, 但有些第三方工具
-            // (mcedit / 某些 litematic 编辑器) 写出来带符号. 负 size 意味着"从 min corner 反向到 max corner",
-            // 我们做两件事: (a) 把 size 翻成正数给后续 totalBlocks / bit width 计算用,
-            // (b) 在坐标解包后把对应轴翻转 —— 不然 冒险者酒馆.litematic (Size=34,-22,-44) 的 Y/Z 会被算成负的
-            // 渲染时整个建筑就"倒过来"了.
-            sizeX = Math.abs(rawX);
-            sizeY = Math.abs(rawY);
-            sizeZ = Math.abs(rawZ);
-            flipX = rawX < 0;
-            flipY = rawY < 0;
-            flipZ = rawZ < 0;
+            // litematica 规范: Size 带符号只表示 "Position 是该轴的 max corner" (从 Position 反向延伸),
+            // BlockStates 的 packed 顺序永远是正向 0..size-1, **与 size 符号无关**.
+            // 之前基于负号翻转坐标的做法是错的: 蓝图站上 Size.y<0 的文件 (21x7x16 / 18x33x16 / 59x8x58)
+            // 全被上下颠倒, 红石装置建造后因失去支撑变成掉落物. 冒险者酒馆 (34,-22,-44) 当年也是
+            // 被这个错翻弄倒的, 后来用 forceFlipY toggle 回去才显得 "正常".
+            sizeX = Math.abs(size.getInt("x"));
+            sizeY = Math.abs(size.getInt("y"));
+            sizeZ = Math.abs(size.getInt("z"));
         } else {
             throw new IOException("Region missing Size");
         }
-        // 强制 Y 翻转（用于 冒险者酒馆 这种 "Y=0 在顶部" 的反向约定文件）：
-        //   关键: 这里用 **toggle** 而不是 set, 因为上面基于 raw size 符号的逻辑
-        //   已经把 flipY 设成 true 了 (rawY < 0 时自动翻). 冒险者酒馆.litematic
-        //   的 Size.y = -22, 上面已经基于这个负号把 Y 翻了一次 (翻向**反了** —— 翻完
-        //   整栋楼上下颠倒), 所以 forceFlipY 这里的语义是 "把那次错误的翻 toggle 回来".
-        //   toggle 后 flipY = false, 不再翻, NBT 回到原始的"屋顶朝上"方向.
-        //   预览 + 实际建造走同一份 NBT, 永远一致.
-        if (forceFlipY) {
-            flipY = !flipY;
-        }
-        PrefabCustomAddon.LOGGER.info("[LITEMATICA] Region size: {}x{}x{} pos=({},{},{}) palette={} longArrayLen={} forceFlipY={} rawYFlip={}",
+        // 强制 Y 翻转 (flipY: y → sizeY-1-y): 仅用于真正 "Y=0 在顶部" 存储约定的文件.
+        boolean flipY = forceFlipY;
+        PrefabCustomAddon.LOGGER.info("[LITEMATICA] Region size: {}x{}x{} pos=({},{},{}) palette={} longArrayLen={} forceFlipY={} flipY={}",
             sizeX, sizeY, sizeZ, posX, posY, posZ, paletteSize, blockStateArr.length, forceFlipY, flipY);
 
         // bit 宽度
         int bits = Math.max(2, Integer.SIZE - Integer.numberOfLeadingZeros(paletteSize - 1));
         long mask = (1L << bits) - 1;
         long totalBlocks = (long) sizeX * sizeY * sizeZ;
+
+        // === 方块实体 (告示牌文字 / 箱子内容 / 头颅... ) ===
+        // litematic region 的 TileEntities (新版本叫 BlockEntities), 条目形如:
+        //   { Position: {x,y,z}, id: "minecraft:sign", ...方块实体NBT }
+        // 转成 vanilla structure 的 blockTag.nbt 挂到对应 block 上 —— 不转换的话
+        // 建造出来的告示牌文字全部消失 (StructureTemplate 会把 nbt load 回 BlockEntity).
+        // key 用 "x,y,z" 相对 region 坐标 (和 blocks 解包坐标同基准, flipY 在查询处补偿).
+        java.util.Map<String, CompoundTag> tileEntities = new java.util.HashMap<>();
+        for (String teKey : new String[]{"TileEntities", "BlockEntities"}) {
+            if (!region.contains(teKey, 9)) {
+                continue;
+            }
+            ListTag tes = region.getList(teKey, 10);
+            for (int i = 0; i < tes.size(); i++) {
+                CompoundTag te = tes.getCompound(i);
+                CompoundTag posTag = te.contains("Position", 10) ? te.getCompound("Position") : te.getCompound("Pos");
+                if (posTag.isEmpty()) {
+                    continue;
+                }
+                CompoundTag nbt = te.copy();
+                nbt.remove("Position");
+                nbt.remove("Pos");
+                tileEntities.put(posTag.getInt("x") + "," + posTag.getInt("y") + "," + posTag.getInt("z"), nbt);
+            }
+            PrefabCustomAddon.LOGGER.info("[LITEMATICA] TileEntities: {} entries (key={})", tileEntities.size(), teKey);
+            break;
+        }
 
         // 构造标准结构 NBT
         CompoundTag output = new CompoundTag();
@@ -188,11 +347,7 @@ public class LitematicaParser {
             long rem = blockIndex % ((long) sizeX * sizeZ);
             int z = (int) (rem / sizeX);
             int x = (int) (rem % sizeX);
-            // 负 size 文件需要把轴翻过来: 0 -> size-1, size-1 -> 0
-            // (只对 raw size < 0 的轴翻转, 不会影响正常 litematica)
-            if (flipX) x = sizeX - 1 - x;
             if (flipY) y = sizeY - 1 - y;
-            if (flipZ) z = sizeZ - 1 - z;
 
             // 跳过 air (litematica 通常把 air 放在 palette[0])
             CompoundTag paletteEntry = palette.getCompound(stateIndex);
@@ -213,6 +368,13 @@ public class LitematicaParser {
             CompoundTag blockTag = new CompoundTag();
             blockTag.put("pos", new IntArrayTag(new int[]{x, y, z}));
             blockTag.put("state", IntTag.valueOf(stateIndex));
+            if (!tileEntities.isEmpty()) {
+                // flipY 时块坐标被翻过, 查询用原始 y (tile map 按 litematic 原始坐标存)
+                CompoundTag teNbt = tileEntities.get(x + "," + (flipY ? sizeY - 1 - y : y) + "," + z);
+                if (teNbt != null) {
+                    blockTag.put("nbt", teNbt.copy());
+                }
+            }
             blocksList.add(blockTag);
             added++;
         }

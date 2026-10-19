@@ -49,6 +49,39 @@ public class TerminalDeviceHandler extends ItemStackHandler {
     /** 客户端: 当前打开 GUI 的 handler 镜像 (电量显示等客户端应用读它). */
     private static volatile @Nullable TerminalDeviceHandler clientInstance = null;
 
+    // ==================== 跨死亡持久化 (PlayerEvent.Clone 拷贝) ====================
+    // NeoForge 玩家死亡重生 = 全新实体, getPersistentData() 顶层键全部丢失
+    // (Forge 的 PERSISTED_NBT_TAG_KEY 机制在 NeoForge 已移除).
+    // 方案: 数据仍写顶层 (存档正常持久化), 在 PlayerEvent.Clone(死亡) 时把
+    // 终端数据键从旧实体手动拷到新实体 — 事件触发时旧实体数据还完整.
+
+    /** 终端跨死亡持久化的数据键 (存储格 + 设备槽). */
+    private static final String[] PERSISTED_KEYS = {"MtStorageSlots", "MtDeviceSlots"};
+
+    /** 读终端持久数据 (getPersistentData 顶层). */
+    public static CompoundTag readPersisted(net.minecraft.world.entity.player.Player player, String key) {
+        return player.getPersistentData().getCompound(key);
+    }
+
+    /** 写终端持久数据 (getPersistentData 顶层; 存档正常落盘, 死亡由 copyPersistedOnClone 保住). */
+    public static void writePersisted(net.minecraft.world.entity.player.Player player, String key, CompoundTag value) {
+        player.getPersistentData().put(key, value);
+    }
+
+    /** 死亡重生时调用: 把终端数据键从旧玩家实体拷到新实体 (PlayerEvent.Clone, isWasDeath). */
+    public static void copyPersistedOnClone(net.minecraft.world.entity.player.Player oldPlayer,
+                                            net.minecraft.world.entity.player.Player newPlayer) {
+        CompoundTag oldPd = oldPlayer.getPersistentData();
+        CompoundTag newPd = newPlayer.getPersistentData();
+        for (String key : PERSISTED_KEYS) {
+            if (oldPd.contains(key, Tag.TAG_COMPOUND)) {
+                newPd.put(key, oldPd.getCompound(key).copy());
+                TerminalRegistry.LOGGER.info("[DEVICE] 死亡拷贝: {} 已从旧实体迁移 (items={})",
+                        key, oldPd.getCompound(key).getList("Items", Tag.TAG_COMPOUND).size());
+            }
+        }
+    }
+
     public TerminalDeviceHandler(ItemStack terminal, boolean clientSide,
                                  net.minecraft.core.HolderLookup.Provider provider) {
         this(terminal, clientSide, provider, null, null);
@@ -74,10 +107,10 @@ public class TerminalDeviceHandler extends ItemStackHandler {
             String source = "none";
             boolean fromPlayerData = false;
             if (player != null) {
-                CompoundTag pd = player.getPersistentData();
-                if (pd.contains("MtDeviceSlots", Tag.TAG_COMPOUND)) {
-                    saved = pd.getCompound("MtDeviceSlots");
-                    source = "PlayerPersistentData";
+                CompoundTag savedPP = readPersisted(player, "MtDeviceSlots");
+                if (!savedPP.isEmpty()) {
+                    saved = savedPP;
+                    source = "PlayerPersistedData";
                     fromPlayerData = true;
                 }
             }
@@ -209,7 +242,7 @@ public class TerminalDeviceHandler extends ItemStackHandler {
         // ItemStack CUSTOM_DATA 可能被 NeoForge 同步层剥离 (验尸 keys=null),
         // 玩家 PersistentData 走 PERSISTED_NBT_TAG_KEY 不受 ItemStack 同步影响.
         if (player != null) {
-            player.getPersistentData().put("MtDeviceSlots", fresh.copy());
+            writePersisted(player, "MtDeviceSlots", fresh.copy());
         }
         // 诊断: 写后立即读回 + 打印 Items.size (键存在但 Items=[] 的情况之前漏判)
         CustomData verify = target.get(DataComponents.CUSTOM_DATA);

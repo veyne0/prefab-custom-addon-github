@@ -191,7 +191,14 @@ public class StructurePreviewKeyHandler {
             BlockPos oldPos = cfg.pos;
             cfg.pos = newPos = oldPos.offset(dx * step, dy * step, dz * step);
             if (isAddonPreview) {
+                long profT0 = System.nanoTime();
                 CustomStructureBuilder.offsetStructureBlocks(currentStructure, newPos, cfg.houseFacing);
+                long profDt = System.nanoTime() - profT0;
+                if (profDt > 5_000_000L) {  // >5ms 才记, 避免刷屏
+                    PrefabCustomAddon.LOGGER.warn("[PREVIEW-MOVE] offsetStructureBlocks took {}ms (blocks={})",
+                        String.format("%.2f", profDt / 1.0e6),
+                        currentStructure.getBlocks() != null ? currentStructure.getBlocks().size() : 0);
+                }
             } else {
                 StructureRenderHandler.setStructure(currentStructure, cfg);
                 StructureRenderHandler.showedMessage = true;
@@ -308,8 +315,9 @@ public class StructurePreviewKeyHandler {
                 return;
             }
         }
-        // 终端入口 (建筑终端 → 建筑选择) 不需要蓝图: 跳过蓝图扫描/检查/绑定.
-        boolean fromTerminal = CustomStructureGui.isOpenedFromTerminal();
+        // 终端入口 (建筑终端 → 建筑选择) 与蓝图广场入口 (下载的建筑) 都不需要蓝图:
+        // 跳过蓝图扫描/检查/绑定 (下载的建筑和自定义蓝图物品无关).
+        boolean fromTerminal = CustomStructureGui.isBlueprintFreeEntry();
         ItemStack blueprint = ItemStack.EMPTY;
         if (fromTerminal) {
             silent = false;  // 终端直接建造, 没有 KubeJS 蓝图上下文
@@ -338,7 +346,17 @@ public class StructurePreviewKeyHandler {
         ChallengeSessionManager.reset(player.getUUID(), constructionId);
         if (!fromTerminal) {
             // 终端入口不绑定蓝图 (没有蓝图可绑, 也不该劫持玩家已有的蓝图)
-            NetworkHandler.sendToServer(new BindConstructionPayload(packName, constructionId, false));
+            // 原生自定义蓝图不再自动绑定 (用户要求: 建造后蓝图保持未绑定, 右键仍进浏览器选建筑;
+            // 绑定改为详情页 [选择] 按钮的手动操作).
+            // KubeJS 联动蓝图保留自动绑定 —— 它们的消耗检查 (AsyncBuildManager.consumeBlueprint
+            // 按 packName/constructionId 匹配) 依赖绑定信息, 不绑会导致蓝图无法消耗变成无限蓝图.
+            ItemStack bindTarget = (CustomStructureGui.currentBlueprint != null && !CustomStructureGui.currentBlueprint.isEmpty())
+                ? CustomStructureGui.currentBlueprint : blueprint;
+            if (bindTarget.getItem() instanceof CustomBlueprintItem) {
+                PrefabCustomAddon.LOGGER.info("[PREVIEW-BUILD] native custom blueprint: skip auto-bind");
+            } else {
+                NetworkHandler.sendToServer(new BindConstructionPayload(packName, constructionId, false));
+            }
         }
         PrefabCustomAddon.LOGGER.info("[PREVIEW-BUILD] ALT pressed, sending BuildCustomStructurePayload for {}/{} at {} silent={}", new Object[]{packName, constructionId, cfg.pos, silent});
         NetworkHandler.sendToServer(new BuildCustomStructurePayload(cfg.pos, packName, constructionId, cfg.houseFacing, PlayerPreferences.get().getBuildAnimationMode(), silent));

@@ -21,13 +21,15 @@ public final class OutsourceBuilding {
     /**
      * 需要在 litematic 解析时强制 Y 翻转的子文件夹名（中文 folderName）。
      *
-     * <p>目前只有 {@code 冒险者酒馆} —— 这份 litematic 用了 "Y=0 在顶部" 的反向约定
-     * （size 是正数，但实际 Y 坐标是"屋顶→地基"方向），不翻的话整栋楼会上下颠倒。</p>
+     * <p>仅用于真正 "Y=0 在顶部" 反向约定存储的 litematic。注意 {@code 冒险者酒馆}
+     * 曾在此名单里 —— 后来确认它其实是被解析器 "负 Size.y → 自动翻转" 的错误逻辑弄倒的,
+     * 该逻辑已删除 (负 size 只影响 Position 角落归属, 块数据顺序永远正向), 它默认解析即正常,
+     * 故从名单移除。</p>
      *
-     * <p>以后遇到其他同样问题的建筑，追加 folderName 到这里即可。匹配按
+     * <p>以后遇到其他 "Y=0 在顶部" 的文件, 追加 folderName 到这里即可。匹配按
      * {@link String#equals(Object)} 精确匹配 folderName（中文名）。</p>
      */
-    private static final Set<String> FLIP_Y_FOLDER_NAMES = Set.of("冒险者酒馆");
+    private static final Set<String> FLIP_Y_FOLDER_NAMES = Set.of();
 
     /**
      * 判定某个子文件夹对应的 litematic 是否需要在解析时强制 Y 翻转。

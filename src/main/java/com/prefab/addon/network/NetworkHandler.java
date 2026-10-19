@@ -147,6 +147,29 @@ public class NetworkHandler {
         registrar.playToServer(ResetMaterialLedgerPayload.TYPE, ResetMaterialLedgerPayload.STREAM_CODEC, ResetMaterialLedgerPayload::handle);
         // 全服免材料模式同步 (OP /prefabaddon freemode 切换后广播 + 玩家登录时快照)
         registrar.playToClient(FreeBuildSyncPayload.TYPE, FreeBuildSyncPayload.STREAM_CODEC, FreeBuildSyncPayload::handle);
+        // 本地建筑上传 (客户端 → server-cache/, 分片 + ACK 流控)
+        registrar.playToServer(BuildingUploadStartPayload.TYPE, BuildingUploadStartPayload.STREAM_CODEC, (payload, ctx) -> {
+            ServerPlayer sp = (ServerPlayer) ctx.player();
+            BuildingUploadServer.getInstance().handleStart(sp, payload);
+        });
+        registrar.playToServer(BuildingUploadChunkPayload.TYPE, BuildingUploadChunkPayload.STREAM_CODEC, (payload, ctx) -> {
+            ServerPlayer sp = (ServerPlayer) ctx.player();
+            BuildingUploadServer.getInstance().handleChunk(sp, payload);
+        });
+        registrar.playToServer(BuildingUploadEndPayload.TYPE, BuildingUploadEndPayload.STREAM_CODEC, (payload, ctx) -> {
+            ServerPlayer sp = (ServerPlayer) ctx.player();
+            BuildingUploadServer.getInstance().handleEnd(sp, payload);
+        });
+        registrar.playToClient(BuildingUploadAckPayload.TYPE, BuildingUploadAckPayload.STREAM_CODEC,
+                (payload, ctx) -> BuildingUploadClient.getInstance().handleAck(payload));
+        // 服务器建筑管理 (仅 OP): 操作上行 + 数据下行
+        registrar.playToServer(BuildingManageActionPayload.TYPE, BuildingManageActionPayload.STREAM_CODEC,
+                (payload, ctx) -> {
+                    ServerPlayer sp = (ServerPlayer) ctx.player();
+                    BuildingManageServer.getInstance().handleAction(sp, payload);
+                });
+        registrar.playToClient(BuildingManageDataPayload.TYPE, BuildingManageDataPayload.STREAM_CODEC,
+                (payload, ctx) -> com.prefab.addon.client.gui.GuiServerManage.handleData(payload));
     }
 
     public static void sendToServer(BuildCustomStructurePayload payload) {
@@ -198,7 +221,7 @@ public class NetworkHandler {
             int requestedPercent = Math.max(1, Math.min(100, payload.percent()));
             if (!player.hasPermissions(2)) {
                 PrefabCustomAddon.LOGGER.warn("[BUILD-SPEED] Non-OP player {} tried to set build speed to {}%, refused", (Object)player.getName().getString(), (Object)requestedPercent);
-                player.sendSystemMessage((Component)Component.literal((String)PrefabCustomAddon.tr("err.build_speed_op", new Object[0])).withStyle(ChatFormatting.RED));
+                player.sendSystemMessage(PrefabCustomAddon.trc("err.build_speed_op").withStyle(ChatFormatting.RED));
                 return;
             }
             int oldPercent = PlayerPreferences.get().getBuildBatchPercent();
@@ -242,9 +265,9 @@ public class NetworkHandler {
             if (ExtensionPackManager.getInstance().findConstruction(payload.packName(), payload.constructionId()) == null) {
                 PrefabCustomAddon.LOGGER.error("[BUILD-REFUSE] Server has no construction '{}' in pack '{}'. Player {} tried to build it (pack only on client?)", new Object[]{payload.constructionId(), payload.packName(), player.getName().getString()});
                 if (player != null) {
-                    player.sendSystemMessage((Component)Component.literal((String)PrefabCustomAddon.tr("err.not_on_server", new Object[0])).withStyle(ChatFormatting.RED));
-                    player.sendSystemMessage((Component)Component.literal((String)PrefabCustomAddon.tr("err.hint.pack_on_server", new Object[0])).withStyle(ChatFormatting.YELLOW));
-                    player.sendSystemMessage((Component)Component.literal((String)PrefabCustomAddon.tr("err.hint.sync_server", new Object[0])).withStyle(ChatFormatting.YELLOW));
+                    player.sendSystemMessage(PrefabCustomAddon.trc("err.not_on_server").withStyle(ChatFormatting.RED));
+                    player.sendSystemMessage(PrefabCustomAddon.trc("err.hint.pack_on_server").withStyle(ChatFormatting.YELLOW));
+                    player.sendSystemMessage(PrefabCustomAddon.trc("err.hint.sync_server").withStyle(ChatFormatting.YELLOW));
                 }
             }
         });

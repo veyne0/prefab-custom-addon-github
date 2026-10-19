@@ -29,6 +29,15 @@ public final class TerminalEvents {
     private TerminalEvents() {
     }
 
+    /** 死亡重生: NeoForge 重生是新实体, getPersistentData() 顶层键会丢.
+     *  PlayerEvent.Clone(死亡) 时旧实体数据还完整, 把终端存储格/设备槽手动拷到新实体. */
+    @SubscribeEvent
+    public static void onPlayerClone(PlayerEvent.Clone event) {
+        if (event.isWasDeath() && !event.getOriginal().level().isClientSide) {
+            TerminalDeviceHandler.copyPersistedOnClone(event.getOriginal(), event.getEntity());
+        }
+    }
+
     @SubscribeEvent
     public static void onContainerClose(PlayerContainerEvent.Close event) {
         if (!(event.getEntity() instanceof ServerPlayer serverPlayer)) {
