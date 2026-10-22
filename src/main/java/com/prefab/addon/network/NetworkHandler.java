@@ -161,6 +161,78 @@ public class NetworkHandler {
         registerMessage(ResetMaterialLedgerPayload.class,
                 ResetMaterialLedgerPayload::encode, ResetMaterialLedgerPayload::decode,
                 ResetMaterialLedgerPayload::handle);
+
+        // ===== 建筑上传 (客户端 → 服务器 server-cache/) =====
+        registerMessage(BuildingUploadStartPayload.class,
+                BuildingUploadStartPayload::encode, BuildingUploadStartPayload::decode,
+                (payload, ctxSup) -> {
+                    NetworkEvent.Context ctx = ctxSup.get();
+                    ctx.enqueueWork(() -> {
+                        ServerPlayer sp = ctx.getSender();
+                        if (sp != null) BuildingUploadServer.getInstance().handleStart(sp, payload);
+                    });
+                    ctx.setPacketHandled(true);
+                });
+        registerMessage(BuildingUploadChunkPayload.class,
+                BuildingUploadChunkPayload::encode, BuildingUploadChunkPayload::decode,
+                (payload, ctxSup) -> {
+                    NetworkEvent.Context ctx = ctxSup.get();
+                    ctx.enqueueWork(() -> {
+                        ServerPlayer sp = ctx.getSender();
+                        if (sp != null) BuildingUploadServer.getInstance().handleChunk(sp, payload);
+                    });
+                    ctx.setPacketHandled(true);
+                });
+        registerMessage(BuildingUploadEndPayload.class,
+                BuildingUploadEndPayload::encode, BuildingUploadEndPayload::decode,
+                (payload, ctxSup) -> {
+                    NetworkEvent.Context ctx = ctxSup.get();
+                    ctx.enqueueWork(() -> {
+                        ServerPlayer sp = ctx.getSender();
+                        if (sp != null) BuildingUploadServer.getInstance().handleEnd(sp, payload);
+                    });
+                    ctx.setPacketHandled(true);
+                });
+
+        // ===== 服务端建筑管理 (仅 OP) =====
+        registerMessage(BuildingManageActionPayload.class,
+                BuildingManageActionPayload::encode, BuildingManageActionPayload::decode,
+                (payload, ctxSup) -> {
+                    NetworkEvent.Context ctx = ctxSup.get();
+                    ctx.enqueueWork(() -> {
+                        ServerPlayer sp = ctx.getSender();
+                        if (sp != null) BuildingManageServer.getInstance().handleAction(sp, payload);
+                    });
+                    ctx.setPacketHandled(true);
+                });
+
+        // ===== 下行: 上传 ACK / 管理数据 (走 ClientPacketHandlers, 隔离客户端类) =====
+        registerMessage(BuildingUploadAckPayload.class,
+                BuildingUploadAckPayload::encode, BuildingUploadAckPayload::decode,
+                (payload, ctxSup) -> {
+                    NetworkEvent.Context ctx = ctxSup.get();
+                    ctx.enqueueWork(() -> {
+                        if (FMLEnvironment.dist == Dist.CLIENT) {
+                            ClientPacketHandlers.handleBuildingUploadAck(payload);
+                        }
+                    });
+                    ctx.setPacketHandled(true);
+                });
+        registerMessage(BuildingManageDataPayload.class,
+                BuildingManageDataPayload::encode, BuildingManageDataPayload::decode,
+                (payload, ctxSup) -> {
+                    NetworkEvent.Context ctx = ctxSup.get();
+                    ctx.enqueueWork(() -> {
+                        if (FMLEnvironment.dist == Dist.CLIENT) {
+                            ClientPacketHandlers.handleBuildingManageData(payload);
+                        }
+                    });
+                    ctx.setPacketHandled(true);
+                });
+        // 外包建筑: 客户端 ALT 建造 → 服务端 OutsourceBuildManager 专用路径 (从 1.21.1 移植)
+        registerMessage(BuildOutsourceStructurePayload.class,
+                BuildOutsourceStructurePayload::encode, BuildOutsourceStructurePayload::decode,
+                NetworkHandler::handleBuildOutsource);
     }
 
     private static <T> void registerMessage(Class<T> type,
@@ -214,8 +286,9 @@ public class NetworkHandler {
             if (!player.hasPermissions(2)) {
                 PrefabCustomAddon.LOGGER.warn("[BUILD-SPEED] Non-OP player {} tried to set build speed to {}%, refused",
                     player.getName().getString(), requestedPercent);
-                player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
-                    PrefabCustomAddon.tr("err.build_speed_op"))
+                // 发 translatable: 客户端按玩家自己的语言解析 (服务端 tr() 会固定成服务器语言 en_us)
+                player.sendSystemMessage(net.minecraft.network.chat.Component
+                    .translatable("err.build_speed_op")
                     .withStyle(net.minecraft.ChatFormatting.RED));
                 return;
             }
@@ -235,9 +308,9 @@ public class NetworkHandler {
             // 广播给所有在线玩家 (让他们的 SettingsGui 滑条显示同步到新值)
             broadcastBuildSpeed(player.getServer(), requestedPercent);
 
-            // 给发起者一个确认消息
-            player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
-                String.format("§a[建造速度] 已设为 %d%% (全服生效)", requestedPercent))
+            // 给发起者一个确认消息 (translatable, 走 lang 键 err.build_speed_set)
+            player.sendSystemMessage(net.minecraft.network.chat.Component
+                .translatable("err.build_speed_set", requestedPercent)
                 .withStyle(net.minecraft.ChatFormatting.GREEN));
         });
         ctx.setPacketHandled(true);
@@ -265,16 +338,18 @@ public class NetworkHandler {
                 if (!ok) {
                     PrefabCustomAddon.LOGGER.warn("[BUILD-DEBUG] 启动异步建造任务失败: pack={}/{}",
                         payload.packName(), payload.constructionId());
-                    player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
-                            "§e提示: 建造启动失败").withStyle(net.minecraft.ChatFormatting.YELLOW));
+                    player.sendSystemMessage(net.minecraft.network.chat.Component
+                            .translatable("err.build_start_fail")
+                            .withStyle(net.minecraft.ChatFormatting.YELLOW));
                 } else {
                     // 建造任务已启动: 清服务端材料账本 (与客户端 StructurePreviewKeyHandler 的 reset 对齐)
                     com.prefab.addon.work.ServerMaterialLedger.reset(player, payload.constructionId());
                 }
             } catch (Exception e) {
                 PrefabCustomAddon.LOGGER.error("Build failed for {}/{}", payload.packName(), payload.constructionId(), e);
-                player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
-                        "✗ 建造失败: " + e.getMessage()).withStyle(net.minecraft.ChatFormatting.RED));
+                player.sendSystemMessage(net.minecraft.network.chat.Component
+                        .translatable("err.build_failed", e.getMessage())
+                        .withStyle(net.minecraft.ChatFormatting.RED));
             }
             // 兜底: 服务端没找到这个 construction (玩家本地有, 但服务端没有) → 明确告诉玩家
             if (com.prefab.addon.extension.ExtensionPackManager.getInstance()
@@ -283,15 +358,49 @@ public class NetworkHandler {
                         "Player {} tried to build it (pack only on client?)",
                         payload.constructionId(), payload.packName(), player.getName().getString());
                 // 多行提示, 同 CustomStructureBuilder.placeStructure 里的找不到建筑提示保持一致
-                player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
-                        PrefabCustomAddon.tr("err.not_on_server"))
+                // 全部发 translatable: 客户端按玩家语言解析
+                player.sendSystemMessage(net.minecraft.network.chat.Component
+                        .translatable("err.not_on_server")
                         .withStyle(net.minecraft.ChatFormatting.RED));
-                player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
-                        PrefabCustomAddon.tr("err.hint.pack_on_server"))
+                player.sendSystemMessage(net.minecraft.network.chat.Component
+                        .translatable("err.hint.pack_on_server")
                         .withStyle(net.minecraft.ChatFormatting.YELLOW));
-                player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
-                        PrefabCustomAddon.tr("err.hint.sync_server"))
+                player.sendSystemMessage(net.minecraft.network.chat.Component
+                        .translatable("err.hint.sync_server")
                         .withStyle(net.minecraft.ChatFormatting.YELLOW));
+            }
+        });
+        ctx.setPacketHandled(true);
+    }
+
+    /**
+     * 服务端处理: 放置外包建筑 (从 1.21.1 移植).
+     *
+     * <p>与 {@link #handleBuild} 的区别: 外包建筑不在 ExtensionPackManager 里,
+     * 由 {@link com.prefab.addon.structure.OutsourceBuildManager} 重扫
+     * {@code prefab-outsource/*.zip} 后走独立的解析 + 异步放置路径;
+     * 任务完成时按 buildingId 消耗对应的 OutsourceBlueprintItem.</p>
+     */
+    private static void handleBuildOutsource(BuildOutsourceStructurePayload payload, Supplier<NetworkEvent.Context> ctxSup) {
+        NetworkEvent.Context ctx = ctxSup.get();
+        ctx.enqueueWork(() -> {
+            ServerPlayer player = ctx.getSender();
+            if (player == null) return;
+            net.minecraft.server.level.ServerLevel level = (net.minecraft.server.level.ServerLevel) player.level();
+            PrefabCustomAddon.LOGGER.info("Building outsource structure '{}' style={} at {}",
+                    payload.buildingId(), payload.styleIndex(), payload.pos());
+            try {
+                boolean ok = com.prefab.addon.structure.OutsourceBuildManager.placeStructure(
+                        player, level, payload.buildingId(), payload.styleIndex(),
+                        payload.pos(), payload.houseFacing(), payload.animationMode());
+                if (!ok) {
+                    PrefabCustomAddon.LOGGER.warn("[OUTSOURCE-BUILD] 启动异步建造任务失败: building={}",
+                        payload.buildingId());
+                }
+            } catch (Exception e) {
+                PrefabCustomAddon.LOGGER.error("Outsource build failed for {}", payload.buildingId(), e);
+                player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
+                        "✗ 外包建筑建造失败: " + e.getMessage()).withStyle(net.minecraft.ChatFormatting.RED));
             }
         });
         ctx.setPacketHandled(true);

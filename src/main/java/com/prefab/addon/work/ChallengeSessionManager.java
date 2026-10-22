@@ -89,6 +89,28 @@ public class ChallengeSessionManager {
         return true;
     }
 
+    /**
+     * 只读枚举: 返回该玩家**有提交记录**的建筑 → (blockId → 已交数) 的拷贝快照.
+     * 与 getSubmitted 不同, 这里绝不创建空条目 (无 computeIfAbsent 副作用),
+     * 专供"提交材料"列表枚举用, 只会列出 Σ已交 > 0 的建筑.
+     */
+    public static Map<String, Map<String, Integer>> snapshotSubmissions(UUID playerId) {
+        if (!LOADED.contains(playerId)) loadFromDisk(playerId);
+        Map<String, Map<String, Integer>> out = new LinkedHashMap<>();
+        Map<String, Map<String, Integer>> playerMap = SESSIONS.get(playerId);
+        if (playerMap == null) return out;
+        for (Map.Entry<String, Map<String, Integer>> e : playerMap.entrySet()) {
+            Map<String, Integer> items = e.getValue();
+            if (items == null || items.isEmpty()) continue;
+            int sum = 0;
+            for (Integer v : items.values()) {
+                if (v != null && v > 0) sum += v;
+            }
+            if (sum > 0) out.put(e.getKey(), new LinkedHashMap<>(items));
+        }
+        return out;
+    }
+
     /** 重置某玩家的某建筑 session (例如建完后清掉, 玩家可以重新挑战) */
     public static void reset(UUID playerId, String constructionId) {
         if (!LOADED.contains(playerId)) loadFromDisk(playerId);

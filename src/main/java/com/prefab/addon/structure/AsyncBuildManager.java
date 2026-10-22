@@ -432,6 +432,19 @@ public final class AsyncBuildManager {
     }
 
     private static void onCompleted(BuildTask task) {
+        // === 建造完成 → 消耗对应蓝图 (从 1.21.1 移植) ===
+        // 规则 (跟 1.21.1 完全一致):
+        //   - 外包蓝图 (OutsourceBlueprintItem): 按 buildingId 精确匹配, 消耗
+        //   - KubeJS 联动蓝图 (player_blueprint tag 的非原生物品): 消耗 (一次性蓝图)
+        //   - mod 原生自定义蓝图 (CustomBlueprintItem): 不消耗 (绑定已写入物品, 可重复建造)
+        // onCompleted 在 server tick 线程调用, 改背包安全.
+        try {
+            consumeBlueprint(task);
+        } catch (Throwable t) {
+            PrefabCustomAddon.LOGGER.error("[BUILD-ASYNC] 消耗蓝图失败: construction={}",
+                task.constructionId, t);
+        }
+
         long elapsedMs = System.currentTimeMillis() - task.startTickMs;
         PrefabCustomAddon.LOGGER.info("[BUILD-ASYNC] 完成: player={} pack={} construction={} placed={}/{} elapsed={}ms",
             task.player.getName().getString(), task.packName, task.constructionId,
@@ -520,6 +533,194 @@ public final class AsyncBuildManager {
         if (stack.isEmpty()) return false;
         if (stack.getItem() instanceof CustomBlueprintItem) return false;
         return stack.is(PLAYER_BLUEPRINT_TAG);
+    }
+
+    /** NBT 字段名 (跟 CustomBlueprintItem 完全一致; KubeJS 蓝图绑定走 BlueprintSpecStore 规格文件). */
+
+    /**
+     * 判断 ItemStack 是否是"玩家蓝图" (兼容 mod 原生 + KubeJS 注册).
+     * mod 原生: 物品类型是 {@link CustomBlueprintItem}.
+     * KubeJS: 任意物品, 但带 {@code prefab_custom_addon:player_blueprint} tag.
+     */
+    public static boolean isPlayerBlueprint(ItemStack stack) {
+        if (stack.isEmpty()) return false;
+        if (stack.getItem() instanceof CustomBlueprintItem) return true;
+        return stack.is(PLAYER_BLUEPRINT_TAG);
+    }
+
+    /**
+     * 读绑定的 packName. 优先物品 NBT; NBT 没有时回退到规格文件
+     * {@code .blueprint-specs/<itemId>.json} —— 1.20.1 的 KubeJS 没有 setCustomData API,
+     * 生成的蓝图不烤 NBT, 绑定只存在规格文件里 (客户端右键解析就是靠这个兜底成功的,
+     * 服务端消耗必须走同一套解析, 否则永远匹配不到).
+     */
+    public static String readBoundPackName(ItemStack stack) {
+        BlueprintSpecStore.Binding b = BlueprintSpecStore.resolveBinding(stack);
+        return b != null ? b.packName() : "";
+    }
+
+    /** 读绑定的 constructionId (NBT → 规格文件兜底, 见 {@link #readBoundPackName}). */
+    public static String readBoundConstructionId(ItemStack stack) {
+        BlueprintSpecStore.Binding b = BlueprintSpecStore.resolveBinding(stack);
+        return b != null ? b.constructionId() : "";
+    }
+
+    /** 是否绑了 packName+constructionId (兼容 mod 原生 + KubeJS). */
+    public static boolean isBlueprintBound(ItemStack stack) {
+        return !readBoundPackName(stack).isEmpty() && !readBoundConstructionId(stack).isEmpty();
+    }
+
+    /** 蓝图是否绑到 info (兼容 mod 原生 + KubeJS). */
+    public static boolean isBoundToBlueprint(ItemStack stack, com.prefab.addon.extension.ConstructionInfo info) {
+        if (info == null) return false;
+        String infoPack = (info.getPack() != null)
+            ? info.getPack().getName()
+            : com.prefab.addon.extension.ExtensionPackManager.STANDALONE_PACKAGE;
+        return readBoundPackName(stack).equals(infoPack)
+            && readBoundConstructionId(stack).equals(info.getId());
+    }
+
+    /**
+     * 消耗玩家背包里绑定的蓝图 (从 1.21.1 移植).
+     *
+     * <p>双层查找策略, 兼容老版本蓝图 (老版本 bind 时用了 getPackageName(), 跟新版本 findConstruction
+     * 用的 getName() 不一致, 导致严格 isBoundTo 失败):
+     * <ol>
+     *   <li>严格查找: 用 info (getName() + getId()) 匹配 - 正常情况</li>
+     *   <li>兜底查找: 只按 constructionId 匹配 - 老版本蓝图兼容</li>
+     * </ol>
+     */
+    private static void consumeBlueprint(BuildTask task) {
+        ServerPlayer player = task.player;
+        if (player == null) return;
+        net.minecraft.world.entity.player.Inventory inv = player.getInventory();
+
+        // === 外包建筑: 走专用路径, 用 buildingId 匹配 OutsourceBlueprintItem ===
+        if (OutsourceBuildManager.OUTSOURCE_PACK_NAME.equals(task.packName)) {
+            String buildingId = OutsourceBuildManager
+                .parseBuildingIdFromConstructionId(task.constructionId);
+            PrefabCustomAddon.LOGGER.info(
+                "[BUILD-ASYNC] consumeBlueprint: outsource path, buildingId={}", buildingId);
+            OutsourceBuildManager.consumeOutsourceBlueprint(player, buildingId);
+            return;
+        }
+
+        // 用 ConstructionInfo 找蓝图 (task 没有 info, 用 packName+constructionId 反查)
+        com.prefab.addon.extension.ConstructionInfo info =
+            com.prefab.addon.extension.ExtensionPackManager.getInstance()
+                .findConstruction(task.packName, task.constructionId);
+        if (info == null) {
+            PrefabCustomAddon.LOGGER.warn("[BUILD-ASYNC] consumeBlueprint: findConstruction({}/{}) 失败, 尝试按id 兜底",
+                task.packName, task.constructionId);
+            consumeBlueprintByIdOnly(player, inv, task.constructionId);
+            return;
+        }
+
+        // 优先消耗主手选中格, 其次其他 (用 isBoundToBlueprint, 兼容 mod 原生 + KubeJS 联动)
+        int selected = inv.selected;
+        ItemStack hotbarStack = inv.getItem(selected);
+        int foundSlot = -1;
+        ItemStack foundStack = ItemStack.EMPTY;
+        if (isBoundToBlueprint(hotbarStack, info)) {
+            foundSlot = selected;
+            foundStack = hotbarStack;
+        } else {
+            for (int i = 0; i < inv.getContainerSize(); i++) {
+                ItemStack stack = inv.getItem(i);
+                if (isBoundToBlueprint(stack, info)) {
+                    foundSlot = i;
+                    foundStack = stack;
+                    break;
+                }
+            }
+        }
+        if (foundStack.isEmpty()) {
+            // 严格匹配失败 - 兜底按 constructionId 查找 (兼容老蓝图), 打印绑定值便于诊断
+            StringBuilder dump = new StringBuilder();
+            for (int i = 0; i < inv.getContainerSize(); i++) {
+                ItemStack s = inv.getItem(i);
+                if (!isPlayerBlueprint(s)) continue;
+                dump.append(String.format("  slot=%d item=%s bound=[%s/%s] count=%d; ",
+                    i, s.getItem(), readBoundPackName(s), readBoundConstructionId(s), s.getCount()));
+            }
+            PrefabCustomAddon.LOGGER.warn(
+                "[BUILD-ASYNC] consumeBlueprint: isBoundToBlueprint 失败 for {}/{}, 实际蓝图绑定: [{}], 尝试按id 兜底",
+                task.packName, task.constructionId, dump);
+            consumeBlueprintByIdOnly(player, inv, task.constructionId);
+            return;
+        }
+        doConsume(player, inv, foundSlot, foundStack, "strict " + task.packName + "/" + task.constructionId);
+    }
+
+    /**
+     * 实际执行消耗 (减少 count, 推送到客户端).
+     * <p>仅 mod 原生"自定义蓝图" ({@link CustomBlueprintItem}) 建造后<b>不消耗</b>:
+     * 绑定信息已写入物品, 同一份蓝图可反复建造.
+     * KubeJS 蓝图 (player_blueprint tag) 与外包蓝图照常消耗.</p>
+     */
+    private static void doConsume(ServerPlayer player, net.minecraft.world.entity.player.Inventory inv,
+                                  int slot, ItemStack stack, String context) {
+        // 自定义蓝图免消耗: 建造完成后保留蓝图, 便于重复建造同一建筑
+        if (stack.getItem() instanceof CustomBlueprintItem) {
+            PrefabCustomAddon.LOGGER.info(
+                "[BUILD-ASYNC] 自定义蓝图不消耗 (slot {}, ctx={}), 可重复使用",
+                slot, context);
+            return;
+        }
+        int prevCount = stack.getCount();
+        if (stack.getCount() == 1) {
+            inv.setItem(slot, ItemStack.EMPTY);
+        } else {
+            stack.setCount(stack.getCount() - 1);
+        }
+        // 强制推送到客户端: containerMenu 是 inventoryMenu 时 (玩家未开容器) 才有效
+        if (player.containerMenu != null) {
+            player.containerMenu.broadcastChanges();
+        }
+        // 兜底: 主动发 SetContainerContent 给客户端, 避免 inventoryMenu 不广播导致客户端看不见
+        if (player.connection != null) {
+            int stateId = player.containerMenu != null ? player.containerMenu.getStateId() : 0;
+            player.connection.send(new net.minecraft.network.protocol.game.ClientboundContainerSetContentPacket(
+                net.minecraft.world.inventory.InventoryMenu.CONTAINER_ID, stateId,
+                player.inventoryMenu.getItems(), ItemStack.EMPTY));
+        }
+        inv.setChanged();
+        PrefabCustomAddon.LOGGER.info("[BUILD-ASYNC] 已消耗蓝图 (slot {} was {}, ctx={}), 已强制同步客户端",
+            slot, prevCount, context);
+    }
+
+    /**
+     * 兜底方案: 不用 ConstructionInfo, 直接按 constructionId 匹配背包里的蓝图.
+     * 用于老版本蓝图 (包名字段不一致导致 info 反查失败) 的兼容.
+     */
+    private static void consumeBlueprintByIdOnly(ServerPlayer player,
+                                                 net.minecraft.world.entity.player.Inventory inv,
+                                                 String constructionId) {
+        int selected = inv.selected;
+        ItemStack hotbarStack = inv.getItem(selected);
+        int foundSlot = -1;
+        ItemStack foundStack = ItemStack.EMPTY;
+        // 优先主手. 兼容 mod 原生 + KubeJS 注册的带 tag 物品.
+        if (isPlayerBlueprint(hotbarStack)
+            && readBoundConstructionId(hotbarStack).equals(constructionId)) {
+            foundSlot = selected;
+            foundStack = hotbarStack;
+        } else {
+            for (int i = 0; i < inv.getContainerSize(); i++) {
+                ItemStack stack = inv.getItem(i);
+                if (isPlayerBlueprint(stack)
+                    && readBoundConstructionId(stack).equals(constructionId)) {
+                    foundSlot = i;
+                    foundStack = stack;
+                    break;
+                }
+            }
+        }
+        if (foundStack.isEmpty()) {
+            PrefabCustomAddon.LOGGER.warn("[BUILD-ASYNC] 兜底: 没找到id={} 的蓝图", constructionId);
+            return;
+        }
+        doConsume(player, inv, foundSlot, foundStack, "id-only " + constructionId);
     }
 
     /**

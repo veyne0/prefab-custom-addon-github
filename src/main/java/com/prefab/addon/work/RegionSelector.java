@@ -84,10 +84,7 @@ public class RegionSelector {
 
     public static void start(Player player, OnCompleted callback) {
         ACTIVE.put(player.getUUID(), new SelectionState(player.getUUID(), callback));
-        if (player instanceof net.minecraft.client.player.LocalPlayer) {
-            player.sendSystemMessage(Component.literal(
-                "§a[选择模式] §7左键=角点1, 右键=角点2, ALT=确认, CTRL=取消 §a(按住 §eSHIFT§a 临时解锁挖方块)"));
-        }
+        // 操作提示由 HUD 显示, 不再发聊天栏消息 (对齐 1.21.1)
         PrefabCustomAddon.LOGGER.info("[REGION-SELECT] Started selection for {}", player.getName().getString());
     }
 
@@ -120,31 +117,14 @@ public class RegionSelector {
         SelectionState st = ACTIVE.get(player.getUUID());
         if (st == null) return;
         st.pos1 = pos.immutable();
-        if (st.bothSelected()) {
-            // 不使用预制字符串, 走 corner1 + 角点 2
-            player.sendSystemMessage(Component.literal(
-                PrefabCustomAddon.tr("sel.corner1", formatPos(pos))
-                    + " §7| 角点 2: §f" + formatPos(st.pos2)
-                    + " §a(按 ALT 确认导出)"));
-        } else {
-            player.sendSystemMessage(Component.literal(
-                PrefabCustomAddon.tr("sel.corner1_next", formatPos(pos))));
-        }
+        // 坐标反馈由 HUD 显示, 不再发聊天栏消息 (对齐 1.21.1)
     }
 
     public static void onRightClick(Player player, BlockPos pos) {
         SelectionState st = ACTIVE.get(player.getUUID());
         if (st == null) return;
         st.pos2 = pos.immutable();
-        if (st.bothSelected()) {
-            player.sendSystemMessage(Component.literal(
-                PrefabCustomAddon.tr("sel.corner2", formatPos(pos))
-                    + " §7| 角点 1: §f" + formatPos(st.pos1)
-                    + " §a(按 ALT 确认导出)"));
-        } else {
-            player.sendSystemMessage(Component.literal(
-                PrefabCustomAddon.tr("sel.corner2_next", formatPos(pos))));
-        }
+        // 坐标反馈由 HUD 显示, 不再发聊天栏消息 (对齐 1.21.1)
     }
 
     /**
@@ -154,10 +134,10 @@ public class RegionSelector {
         SelectionState st = ACTIVE.get(player.getUUID());
         if (st == null) return;
         if (!st.bothSelected()) {
-            player.sendSystemMessage(Component.literal(PrefabCustomAddon.tr("sel.need_both")));
+            // action bar 提示 (不进聊天栏, 避免按住 ALT 时刷屏)
+            player.displayClientMessage(Component.literal(PrefabCustomAddon.tr("sel.need_both")), true);
             return;
         }
-        player.sendSystemMessage(Component.literal(PrefabCustomAddon.tr("sel.ready_export")));
         doExport(player, st);
     }
 

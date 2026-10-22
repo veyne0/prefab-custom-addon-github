@@ -38,10 +38,10 @@ import java.util.function.Consumer;
  * 候选物品按 id 前缀/子串过滤, 上限 200 条, 选中后回调 item id 字符串并
  * 关闭弹窗回到 Editor.</p>
  *
- * <p>关闭语义: 不向 GuiCreateBuildingInfo 写任何状态. 选完后用
- * {@code Minecraft.execute(...)} 延后一帧 {@code setScreen(parent)} 直接回到
- * {@link GuiExtensionPackEditor}, 不弹任何创建建筑窗口, 避免和 LDLib2 Screen
- * 事件循环冲突导致 GL 状态残留 / 双屏叠加.</p>
+ * <p>关闭语义: 不向 GuiCreateBuildingInfo 写任何状态. 选完后调
+ * {@link GuiExtensionPackEditor#open()} 静态重开编辑器 (编辑器是静态单实例模式,
+ * 所有 tab / 表单状态都在静态字段上, 重开即恢复), 不弹任何创建建筑窗口, 避免和
+ * LDLib2 Screen 事件循环冲突导致 GL 状态残留 / 双屏叠加.</p>
  */
 public final class GuiItemSearchPopup {
 
@@ -54,17 +54,22 @@ public final class GuiItemSearchPopup {
     /** 单行高. */
     private static final int ROW_H = 18;
 
-    private static GuiExtensionPackEditor pendingParent = null;
     private static int pendingCellIdx = -1;
     private static Consumer<String> pendingCallback = null;
+    /**
+     * 跨 open() 调用的搜索关键字缓存 — 玩家反复打开弹窗选不同物品时, 上次输入的
+     * 搜索关键字保留下来, 不用每次重新打字. 玩家主动清空时 (responder 收到空串)
+     * 也同步清掉, 不会"复活".
+     */
+    private static String SAVED_SEARCH_QUERY = "";
 
     private GuiItemSearchPopup() {}
 
     /**
-     * 静态入口: 父 Editor 调这个, 选完物品后回调 item id 字符串, 然后回到 Editor.
+     * 静态入口: 父 Editor 调这个, 选完物品后回调 item id 字符串, 然后重开 Editor.
+     * 编辑器已改为静态单实例 (GuiExtensionPackEditor.open()), 不再需要传实例引用.
      */
-    public static void open(GuiExtensionPackEditor parent, int cellIdx, Consumer<String> cb) {
-        pendingParent = parent;
+    public static void open(int cellIdx, Consumer<String> cb) {
         pendingCellIdx = cellIdx;
         pendingCallback = cb;
 
@@ -100,7 +105,11 @@ public final class GuiItemSearchPopup {
 
         TextField search = new TextField();
         search.setAnyString();  // 允许任意字符输入
-        search.setTextResponder(word -> rebuildList(allItems, listContainer, word));
+        search.setTextResponder(word -> {
+            // 同步更新持久缓存, 关掉弹窗再开还能恢复 (见 SAVED_SEARCH_QUERY 注释)
+            SAVED_SEARCH_QUERY = word == null ? "" : word;
+            rebuildList(allItems, listContainer, word);
+        });
         search.layout(l -> l.widthPercent(100).height(16));
         root.addChild(search);
 
@@ -155,8 +164,14 @@ public final class GuiItemSearchPopup {
         ModularUIScreen screen = new ModularUIScreen(ui, Component.literal(
             PrefabCustomAddon.tr("gui.make_blueprint.search.window_title")));
 
-        // 初始填充 (空关键字 = 前 200 个)
-        rebuildList(allItems, listContainer, "");
+        // 恢复上次搜索关键字. setText 之后 TextField 会触发 setTextResponder, 但 responder
+        // 内部又把 word 写回 SAVED_SEARCH_QUERY, 双重保险. 保险起见仍然手动 rebuildList 一次:
+        // TextField 内部的"首帧是否立即触发 responder"行为依赖 LDLib2 版本, 自己调一次避免空列表闪一帧.
+        if (!SAVED_SEARCH_QUERY.isEmpty()) {
+            search.setText(SAVED_SEARCH_QUERY);
+        }
+        // 初始填充 (空关键字 = 前 200 个; 有关键字 = 按上次搜索结果)
+        rebuildList(allItems, listContainer, SAVED_SEARCH_QUERY);
         Minecraft.getInstance().setScreen(screen);
     }
 
@@ -181,10 +196,15 @@ public final class GuiItemSearchPopup {
             for (int i = 0; i < n; i++) prefix.add(allItems.get(i));
         } else {
             for (Item it : allItems) {
-                String id = BuiltInRegistries.ITEM.getKey(it).toString().toLowerCase(Locale.ROOT);
-                if (id.startsWith(q)) {
+                // 搜索同时匹配原始 id (英文, e.g. "prefab:house1") 和翻译后的显示名
+                // (中文, e.g. "房子"), 玩家用任一语言搜都能找到.
+                String id = BuiltInRegistries.ITEM.getKey(it).toString();
+                String idLower = id.toLowerCase(Locale.ROOT);
+                String nameLower = new ItemStack(it).getHoverName().getString()
+                    .toLowerCase(Locale.ROOT);
+                if (idLower.startsWith(q) || nameLower.startsWith(q)) {
                     prefix.add(it);
-                } else if (id.contains(q)) {
+                } else if (idLower.contains(q) || nameLower.contains(q)) {
                     contains.add(it);
                 }
                 if (prefix.size() + contains.size() >= MAX_RESULTS) break;
@@ -222,8 +242,10 @@ public final class GuiItemSearchPopup {
         row.addChild(icon);
 
         // 整行用 Button 包, 点击即选中 (覆盖 icon/label 的点击区域)
+        // 用 ItemStack.getHoverName() 走 vanilla 的翻译系统, 不要再画 "minecraft:stone"
+        // 这种 raw id — 玩家看不明白.
         TextElement label = new TextElement();
-        label.setText(BuiltInRegistries.ITEM.getKey(it).toString());
+        label.setText(new ItemStack(it).getHoverName().getString());
         label.textStyle(t -> t.textColor(0xFFFFFFFF));
         label.layout(l -> l.flexGrow(1).height(14));
         row.addChild(label);
@@ -253,18 +275,11 @@ public final class GuiItemSearchPopup {
     }
 
     private static void returnToParent() {
-        // 拍快照, 然后清空静态引用, 避免重复 commit
-        GuiExtensionPackEditor parent = pendingParent;
+        // 清空静态引用, 避免重复 commit
         pendingCallback = null;
-        pendingParent = null;
         pendingCellIdx = -1;
-        // 同步切回 parent. 之前延后一帧 (Minecraft.execute) 会让 popup 那帧渲染
-        // 残留到 buffer, 下帧切屏时叠加 editor 看到的就是"两屏残影". 同步切时
-        // Minecraft 会在同一次 tick 内完成 screen 替换, 不会跨帧.
-        if (parent != null) {
-            Minecraft.getInstance().setScreen(parent);
-        } else {
-            Minecraft.getInstance().setScreen(null);
-        }
+        // 静态重开编辑器 (编辑器状态全在静态字段上, 重开即恢复). 同步切屏:
+        // Minecraft 会在同一次 tick 内完成 screen 替换, 不会跨帧残影.
+        GuiExtensionPackEditor.open();
     }
 }

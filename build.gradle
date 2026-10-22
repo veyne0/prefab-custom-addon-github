@@ -76,7 +76,21 @@ dependencies {
     // official mappings 编译的 mod jar, 不需要 fg.deobf, 直接上 classpath.
     // 发布时通过 jar-in-jar 内嵌: src/main/resources/META-INF/jarjar/ + metadata.json,
     // 玩家无需另装 LDLib2 (但其强制依赖 KotlinForForge 仍需玩家自装).
+    // 注意: libs 里这个 jar 是打过补丁的 (LGPLv3 修改版, 32 类资源路径重定向 + RLFactory),
+    // 补丁源码在 ldlib2-patch/ 目录 (Patcher.java + RLFactory.java), 分发时随仓库公开以符合 LGPL.
     implementation files('libs/ldlib2-forge-1.20.1-2.2.27+forge.1.20.1-all.jar')
+
+    // === WebP 解码 (mcschematic.top 蓝图广场预览图是 webp, ImageIO 默认解不了) ===
+    // 1.21.1 NeoForge 版用的是 gradle jarJar 插件内嵌 (见主工程 build.gradle 的注释块);
+    // 这里改走和 LDLib2 完全相同的手动 JIJ: 6 个 jar 直接放在
+    //   src/main/resources/META-INF/jarjar/ + metadata.json 登记 (GAV+版本范围 [3.12.0,4.0)).
+    // 原因: 本工程的发布 jar 由普通 jar 任务产出 (finalizedBy reobfJar), LDLib2 已占用了
+    //   META-INF/jarjar/metadata.json; 再套 gradle jarJar 任务会有覆盖 metadata 丢 LDLib2
+    //   的风险, 手动登记则两条链路共用一个 metadata, 发布流程零改动.
+    // implementation 仅提供编译期 classpath (imageio-webp 会传递带出 imageio-core/metadata
+    //   + common-*), 运行时由 JIJ 内嵌提供; 版本范围与 1.21.1 一致 — YACL 等也内嵌 3.12.0
+    //   时 Forge 会按 GAV+版本跨 mod 去重, 不会 split-package 冲突.
+    implementation 'com.twelvemonkeys.imageio:imageio-webp:3.12.0'
 
     // === 可选联动 (全 compileOnly, 运行时 Class.forName 反射探测) ===
     // Xaero's World Map / Minimap: XaeroWaypointBridge 纯反射, 不需要编译期依赖.
@@ -122,7 +136,9 @@ tasks.named('jar', Jar).configure {
                 'Implementation-Title'    : project.name,
                 'Implementation-Version'  : project.jar.archiveVersion,
                 'Implementation-Vendor'   : mod_authors,
-                'Implementation-Timestamp': new Date().format("yyyy-MM-dd'T'HH:mm:ssZ")
+                'Implementation-Timestamp': new Date().format("yyyy-MM-dd'T'HH:mm:ssZ"),
+                // 声明 mixin 配置文件 (Forge 通过 jar manifest 发现 mixin)
+                'MixinConfigs'            : 'prefab-custom-addon.mixins.json'
         ])
     }
 

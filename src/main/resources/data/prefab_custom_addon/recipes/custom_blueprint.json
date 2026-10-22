@@ -1,5 +1,5 @@
 {
-  "neoforge:conditions": [
+  "forge:conditions": [
     {
       "type": "prefab_custom_addon:custom_blueprint_recipe"
     }
@@ -22,7 +22,7 @@
     }
   },
   "result": {
-    "id": "prefab_custom_addon:custom_blueprint",
+    "item": "prefab_custom_addon:custom_blueprint",
     "count": 1
   }
 }

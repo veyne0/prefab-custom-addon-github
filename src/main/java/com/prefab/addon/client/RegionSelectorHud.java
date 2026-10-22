@@ -42,14 +42,17 @@ public class RegionSelectorHud {
         GuiGraphics g = event.getGuiGraphics();
         int screenWidth = mc.getWindow().getGuiScaledWidth();
 
-        // 文字内容 (按选区进度动态切换, 玩家更清楚当前该干嘛)
+        // 文字内容 (按选区进度动态切换; 已选角点显示具体坐标, 替代原聊天栏的角点消息)
         String mainText;
         if (cornerCount == 0) {
             mainText = "§a[选区模式] §7左键选角点1 §8| §7右键选角点2 §8| §aALT 确认 §7| §cCTRL 取消 §7| §e按住 SHIFT 临时挖方块";
         } else if (cornerCount == 1) {
-            mainText = "§a[选区模式] §7已选角点1 §e→ §7请选角点2 §8(§7右键§8) §7| §aALT 确认 §7| §cCTRL 取消";
+            mainText = "§a[选区模式] §7角点1: §f(" + st.pos1.toShortString() + ")"
+                + " §e→ §7右键选角点2 §8| §aALT 确认 §7| §cCTRL 取消";
         } else {
-            mainText = "§a[选区模式] §7已选 §f" + cornerCount + " §7个角点 §a→ 按 §fALT §a确认 §7| §cCTRL 取消";
+            mainText = "§a[选区模式] §7角点1: §f(" + st.pos1.toShortString() + ")"
+                + " §8| §7角点2: §f(" + st.pos2.toShortString() + ")"
+                + " §a→ 按 §fALT §a确认 §7| §cCTRL 取消";
         }
 
         int lineHeight = 12;

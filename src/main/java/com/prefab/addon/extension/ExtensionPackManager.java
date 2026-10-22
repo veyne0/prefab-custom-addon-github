@@ -896,8 +896,11 @@ public class ExtensionPackManager {
         Map<String, ConstructionInfo> constructions = new HashMap<>();
 
         // 决定建筑文件来源路径：扁平格式（文件在根） vs 标准格式（construction/ 子目录）
+        // 注意: 扁平判定必须用 baseFolder.isEmpty() —— base='' 时 constructionPath 恒为
+        // "construction/" 非空, 用它判 isFlat 永远 false, 根级 .nbt 永远加载不出来
+        // (上传的独立建筑 zip 就是这种格式; 对齐 1.21.1)
         String constructionPath = baseFolder + "construction/";
-        boolean isFlat = constructionPath.isEmpty() && !hasConstructionSubfolder(zipFile, baseFolder);
+        boolean isFlat = baseFolder.isEmpty() && !hasConstructionSubfolder(zipFile, baseFolder);
 
         while (entries.hasMoreElements()) {
             ZipEntry entry = entries.nextElement();
@@ -1307,7 +1310,11 @@ public class ExtensionPackManager {
         // 兜底: STANDALONE_PACKAGE 来自单文件建筑 (LocalBuilding) 右键,
         // 单文件 NBT 不在任何 ExtensionPack 里, 必须走 LocalBuildingScanner 兜底.
         if (STANDALONE_PACKAGE.equals(packName)) {
-            return findLocalBuildingFallback(constructionId);
+            ConstructionInfo local = findLocalBuildingFallback(constructionId);
+            if (local != null) return local;
+            // 服务器本地没有单文件本体, 但客户端可能已把它打包成 <id>.zip 上传到 server-cache
+            // (服务端 packs 只含 server-cache/, 按 id 兜底即可命中上传的建筑)
+            return findByConstructionIdOnly(constructionId);
         }
         return null;
     }

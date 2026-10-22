@@ -234,6 +234,11 @@ public final class GuiConstructionDetail {
         }
     }
 
+    /** 统一 [AUI-DBG] 前缀诊断日志, 方便 latest.log 过滤. */
+    private static void dbg(String format, Object... args) {
+        PrefabCustomAddon.LOGGER.info("[AUI-DBG] " + format, args);
+    }
+
     public static void open(ConstructionInfo construction) {
         // 默认: 返回按钮走 GuiExtensionPackBrowser (旧路径, 兼容)
         open(construction, null);
@@ -259,13 +264,17 @@ public final class GuiConstructionDetail {
         currentPack = construction.getPack();
         startAsyncParse(construction);
         ModularUI ui = createUI(construction);
+        // 进入界面自动检测依赖 (替代原 "检测依赖" 按钮): 左侧依赖列表直接显示 ✓/✗ + 状态栏提示
+        runDepCheck(construction);
         Minecraft.getInstance().setScreen(
             new ModularUIScreen(ui, Component.literal(construction.getName())));
     }
 
-    /** 安全取 packName, pack 为 null 时用 "local" 兜底 (单文件建筑). */
+    /** 安全取 packName, pack 为 null 或 packageName 为 null 时用 "local" 兜底 (单文件/服务器临时建筑). */
     private static String safePkg(ConstructionInfo c) {
-        return (c == null || c.getPack() == null) ? "local" : c.getPack().getPackageName();
+        if (c == null || c.getPack() == null) return "local";
+        String name = c.getPack().getPackageName();
+        return name != null ? name : "local";
     }
 
     /**
@@ -498,6 +507,10 @@ public final class GuiConstructionDetail {
             //  - 渲染器注册所有 positions → addBlocks 后能立即渲染
             //  - 此时 world 是空的, 首次 compile 0 块 → 0 ms
             renderScene.setRenderedCore(positions, null, true);
+            // 悬停方块显示原生物品 tooltip (Scene.showHoverBlockTips, 不依赖 JEI);
+            // xeiLookup 另提供 JEI/REI/EMI 查询集成
+            renderScene.setShowHoverBlockTips(true);
+            renderScene.xeiLookup();
 
             renderActive = true;
         } catch (Throwable t) {
@@ -639,8 +652,10 @@ public final class GuiConstructionDetail {
         // 返回浏览器按钮 (左侧)
         Button btnBackToBrowser = new Button().setText(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.back"));
         btnBackToBrowser.textStyle(t -> t.textAlignHorizontal(Horizontal.CENTER));
-        btnBackToBrowser.layout(l -> l.width(56).height(20));
+        // flexShrink(0): 标题栏空间不足时按钮不压缩, 由标题收缩, 保证缩略图按钮永远可见
+        btnBackToBrowser.layout(l -> l.width(56).height(20).flexShrink(0));
         btnBackToBrowser.setOnClick(e -> {
+            dbg("detail-btn back onBack={}", onBackCallback != null);
             // 优先用 caller 提供的回调 (编辑建筑 → 查看 场景下回到编辑器),
             // 没传回调才走默认的 GuiExtensionPackBrowser.
             if (onBackCallback != null) {
@@ -653,10 +668,12 @@ public final class GuiConstructionDetail {
         titleRow.addChild(btnBackToBrowser);
 
         // 标题 (居中, flexGrow 占据中间)
+        // 关键: minWidth(0) 让标题可以被压缩 (Taffy 默认最小宽度 = 文字宽度,
+        //   建筑名太长时会把后面的收藏/缩略图按钮挤出标题栏导致被裁掉)
         titleLabel = new Label();
         titleLabel.setText(construction.getName());
         titleLabel.textStyle(t -> t.textAlignHorizontal(Horizontal.CENTER));
-        titleLabel.layout(l -> l.flexGrow(1).height(20));
+        titleLabel.layout(l -> l.flexGrow(1).height(20).minWidth(0));
         titleRow.addChild(titleLabel);
 
         // 收藏按钮 (右侧, 右上角)
@@ -670,8 +687,9 @@ public final class GuiConstructionDetail {
         btnFavorite.setText(favText);
         btnFavorite.text.textStyle(t -> t.textColor(fav ? 0xFFFFDD66 : 0xFFFFFFFF));
         btnFavorite.textStyle(t -> t.textAlignHorizontal(Horizontal.CENTER));
-        btnFavorite.layout(l -> l.width(72).height(20));
+        btnFavorite.layout(l -> l.width(72).height(20).flexShrink(0));
         btnFavorite.setOnClick(e -> {
+            dbg("detail-btn favorite");
             boolean nowFav = com.prefab.addon.config.PlayerPreferences.get()
                 .toggleFavorite(pkg, construction.getId());
             String newText = com.prefab.addon.PrefabCustomAddon.tr(nowFav ? "gui.detail.favorited" : "gui.detail.favorite");
@@ -700,30 +718,21 @@ public final class GuiConstructionDetail {
         }
         btnCaptureThumb.text.textStyle(t -> t.textColor(0xFFAAFFAA));
         btnCaptureThumb.textStyle(t -> t.textAlignHorizontal(Horizontal.CENTER));
-        btnCaptureThumb.layout(l -> l.width(80).height(20));
+        btnCaptureThumb.layout(l -> l.width(80).height(20).flexShrink(0));
         btnCaptureThumb.setOnClick(e -> {
+            dbg("detail-btn capture-thumb");
             // 把 3D 预览截屏到 ThumbnailCache
             captureCurrentSceneToThumbnail();
+            // 生成成功后按钮文字切成 "更新缩略图" (再次点击 = 删旧重生成)
+            if (currentConstruction != null
+                && !currentConstruction.hasPreviewImage()
+                && com.prefab.addon.client.ThumbnailCache.hasCached(currentConstruction)) {
+                btnCaptureThumb.setText(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.update_thumb"));
+            }
         });
         titleRow.addChild(btnCaptureThumb);
 
         root.addChild(titleRow);
-        PrefabCustomAddon.LOGGER.info("[DETAIL] titleRow added (new version: Back + title + Favorite, no selector/prev/next)");
-        // 在 tick handler 里 log 实际尺寸
-        final int[] counter = {0};
-        titleRow.addEventListener(UIEvents.TICK, e -> {
-            counter[0]++;
-            if (counter[0] % 60 == 0) {
-                UIElement trParent = titleRow.getParent();
-                PrefabCustomAddon.LOGGER.info("[DETAIL] titleRow: pos=({},{}) size={}x{} rootPos=({},{}) rootSize={}x{} layoutX={} layoutY={} parent={}",
-                    (int) titleRow.getPositionX(), (int) titleRow.getPositionY(),
-                    (int) titleRow.getSizeWidth(), (int) titleRow.getSizeHeight(),
-                    (int) root.getPositionX(), (int) root.getPositionY(),
-                    (int) root.getSizeWidth(), (int) root.getSizeHeight(),
-                    (int) titleRow.getLayoutX(), (int) titleRow.getLayoutY(),
-                    trParent != null ? trParent.getClass().getSimpleName() + "(pos=" + (int)trParent.getPositionX() + "," + (int)trParent.getPositionY() + ")" : "null");
-            }
-        });
 
         // 3) Body 区: 左信息面板 + 右 3D 预览
         //   关键: 用 minHeight(0) 防止 body 被子元素的 heightPercent 撑爆
@@ -769,7 +778,8 @@ public final class GuiConstructionDetail {
         root.addChild(bodyRow);
         PrefabCustomAddon.LOGGER.info("[DETAIL] Body row added: infoScroller(140px) + sceneContainer(flexGrow=1)");
 
-        // 4) 按钮行 - 4 个按钮: Back, 检测依赖, 选择, 选择并锁定
+        // 4) 按钮行 - 3 个按钮: 删除建筑, 选择, 选择并锁定
+        //    ("检测依赖" 按钮已移除: 进入界面时 open() 自动执行 runDepCheck)
         UIElement buttonRow = new UIElement();
         buttonRow.layout(l -> l
             .flexDirection(FlexDirection.ROW)
@@ -780,18 +790,19 @@ public final class GuiConstructionDetail {
 
         // 「删除建筑」按钮: 点一下走二次确认 (LdLib 弹窗), 确认后删 .nbt/.txt/.png + 回到浏览器
         Button btnDeleteBuilding = new Button().setText("§c🗑 删除建筑");
-        btnDeleteBuilding.setOnClick(e -> confirmDeleteBuilding(construction));
+        btnDeleteBuilding.setOnClick(e -> {
+            dbg("detail-btn delete (open confirm)");
+            confirmDeleteBuilding(construction);
+        });
         btnDeleteBuilding.layout(l -> l.flexGrow(1).heightPercent(100));
         buttonRow.addChild(btnDeleteBuilding);
 
-        Button btnCheckDeps = new Button().setText(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.check_deps_btn"));
-        btnCheckDeps.setOnClick(e -> runDepCheck(construction));
-        btnCheckDeps.layout(l -> l.flexGrow(1).heightPercent(100));
-        buttonRow.addChild(btnCheckDeps);
-
         // "选择" 按钮 = 绑定当前 construction 到玩家主手 (或背包里) 的 自定义蓝图
         Button btnSelect = new Button().setText(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.select"));
-        btnSelect.setOnClick(e -> bindCurrentConstruction(construction, false));
+        btnSelect.setOnClick(e -> {
+            dbg("detail-btn select");
+            bindCurrentConstruction(construction, false);
+        });
         btnSelect.layout(l -> l.flexGrow(1).heightPercent(100));
         btnSelectRef = btnSelect;
         buttonRow.addChild(btnSelect);
@@ -807,6 +818,7 @@ public final class GuiConstructionDetail {
         lockToggleBtn.text.textStyle(t -> t.textColor(initiallyLocked ? 0xFFFFAA55 : 0xFFFFFFFF));
         lockToggleBtn.layout(l -> l.flexGrow(1).heightPercent(100));
         lockToggleBtn.setOnClick(e -> {
+            dbg("detail-btn lock-toggle");
             boolean currentlyLocked = isCurrentBlueprintLockedTo(construction);
             if (currentlyLocked) {
                 // 已锁定 → 解锁
@@ -871,6 +883,8 @@ public final class GuiConstructionDetail {
             if (parseComplete && !parseFailed && renderScene == null && !renderActive && !renderDone) {
                 initRender();
                 if (renderScene != null) {
+                    // 嫌疑点: TICK 分发窗口内 clearAllChildren + addChild (仅 render 初始化时一次)
+                    dbg("detail-tick scene swap (TICK 窗口内结构性变更)");
                     sceneContainer.clearAllChildren();
                     renderScene.layout(l -> l.widthPercent(100).heightPercent(100));
                     sceneContainer.addChild(renderScene);
@@ -939,8 +953,10 @@ public final class GuiConstructionDetail {
             }
         });
 
+        // Scene tooltip 依赖 ModularUI.player (getCloneItemStack 需要玩家), 客户端界面必须显式传入
         return ModularUI.of(UI.of(root,
-            StylesheetManager.INSTANCE.getStylesheetSafe(StylesheetManager.MC)));
+            StylesheetManager.INSTANCE.getStylesheetSafe(StylesheetManager.MC)),
+            Minecraft.getInstance().player);
     }
 
     // === 信息面板 (ScrollerView + 锁 toggle + 进度) ===
@@ -1041,8 +1057,47 @@ public final class GuiConstructionDetail {
             int colon = cleanId.indexOf(':');
             if (colon > 0) cleanId = cleanId.substring(0, colon);
             if (hasCheckResult && lastMissingMods.contains(cleanId)) {
-                // 缺失 - 红色 + 红叉
-                addValueLine(depListContainer, com.prefab.addon.PrefabCustomAddon.tr("gui.detail.dep_missing", d), 0xFF5555);
+                // 缺失 - 红字可点 + 绿色「[查询]」可点, 点任意文字打开 Modrinth 搜索弹窗.
+                // 点击区用"无背景 Button"实现: LDLib2 1.20.1 只有 Button 有 setOnClick
+                // (onClick 是 Lombok @Setter 字段), 把 base/hover/pressed 都设为 EMPTY
+                // 就是纯文字外观; 悬停时亮一块作为可点击提示.
+                final String depId = cleanId;
+                UIElement row = new UIElement();
+                row.layout(l -> l.flexDirection(dev.vfyjxf.taffy.style.FlexDirection.ROW)
+                        .widthPercent(100).height(12).gapAll(2));
+                depListContainer.addChild(row);
+                com.lowdragmc.lowdraglib2.gui.ui.elements.Button miss =
+                        new com.lowdragmc.lowdraglib2.gui.ui.elements.Button()
+                                .setText(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.dep_missing", d), false);
+                miss.textStyle(t -> t.textColor(0xFF5555));
+                miss.buttonStyle(s -> s.baseTexture(com.lowdragmc.lowdraglib2.gui.texture.IGuiTexture.EMPTY)
+                        .hoverTexture(Sprites.RECT_LIGHT)
+                        .pressedTexture(com.lowdragmc.lowdraglib2.gui.texture.IGuiTexture.EMPTY));
+                // flexGrow 撑满整行: 按钮必须有确定的布局边界才能被鼠标悬停命中,
+                // 纯内容自适应宽度在 flex 行里会被算成 0 宽 (渲染可见但点不到)
+                miss.layout(l -> l.height(12).paddingAll(0).flexGrow(1));
+                miss.setOnClick(e -> {
+                    // [DEP-CLICK] 调试: 确认红字点击是否触发
+                    com.prefab.addon.PrefabCustomAddon.LOGGER.info(
+                            "[DEP-CLICK] 缺失依赖红字被点击: {}", depId);
+                    GuiModrinthSearch.open(depId);
+                });
+                row.addChild(miss);
+                com.lowdragmc.lowdraglib2.gui.ui.elements.Button search =
+                        new com.lowdragmc.lowdraglib2.gui.ui.elements.Button().setText("[查询]", false);
+                search.textStyle(t -> t.textColor(0x55FF55));
+                search.buttonStyle(s -> s.baseTexture(com.lowdragmc.lowdraglib2.gui.texture.IGuiTexture.EMPTY)
+                        .hoverTexture(Sprites.RECT_LIGHT)
+                        .pressedTexture(com.lowdragmc.lowdraglib2.gui.texture.IGuiTexture.EMPTY));
+                // 固定宽度, 同样避免 0 宽命中不了
+                search.layout(l -> l.height(12).paddingAll(0).width(36));
+                search.setOnClick(e -> {
+                    // [DEP-CLICK] 调试: 确认 [查询] 按钮点击是否触发
+                    com.prefab.addon.PrefabCustomAddon.LOGGER.info(
+                            "[DEP-CLICK] [查询] 按钮被点击: {}", depId);
+                    GuiModrinthSearch.open(depId);
+                });
+                row.addChild(search);
             } else if (hasCheckResult) {
                 // 已安装 - 绿色 + 绿勾
                 addValueLine(depListContainer, com.prefab.addon.PrefabCustomAddon.tr("gui.detail.dep_present", d), 0x55FF55);
@@ -1091,9 +1146,15 @@ public final class GuiConstructionDetail {
     }
 
     // === 依赖检测 ===
-    private static void runDepCheck(ConstructionInfo construction) {
+    /**
+     * 检测依赖并缓存结果 + 实时重建左侧依赖列表 (✗/✓).
+     * public: 终端建筑详情页 (CustomStructureGui) 的打开流程复用同一逻辑,
+     * 保证打开后左侧 mod 列表立即显示 ✓/✗.
+     *
+     * @return 检测结果 (调用方自行决定状态栏提示)
+     */
+    public static CheckResult checkDepsAndUpdate(ConstructionInfo construction) {
         List<String> deps = construction.getDependencies();
-        PrefabCustomAddon.LOGGER.info("[DETAIL] Dep check: '{}' deps={}", construction.getName(), deps);
         CheckResult result = DependencyChecker.check(deps);
 
         // 缓存检测结果, 用于在 mod 列表后显示 ✗/✓
@@ -1104,9 +1165,7 @@ public final class GuiConstructionDetail {
             missing.add(colon > 0 ? m.substring(0, colon) : m);
         }
         lastMissingMods = missing;
-        lastCheckPackConstructionKey = (construction.getPack() != null
-            ? construction.getPack().getPackageName()
-            : "local") + "/" + construction.getId();
+        lastCheckPackConstructionKey = safePkg(construction) + "/" + construction.getId();
         PrefabCustomAddon.LOGGER.info("[DETAIL] Dep check done: missing={}, present={}",
             result.missing, result.present);
 
@@ -1116,6 +1175,13 @@ public final class GuiConstructionDetail {
             && currentDisplayedConstruction.getId().equals(construction.getId())) {
             rebuildDepList(construction);
         }
+        return result;
+    }
+
+    private static void runDepCheck(ConstructionInfo construction) {
+        List<String> deps = construction.getDependencies();
+        PrefabCustomAddon.LOGGER.info("[DETAIL] Dep check: '{}' deps={}", construction.getName(), deps);
+        CheckResult result = checkDepsAndUpdate(construction);
 
         // 简化状态消息: 顶部状态栏只显示简短结果 (依赖详情在左侧 mod 列表里用 ✗/✓ 显示)
         String shortMsg;
@@ -1223,13 +1289,9 @@ public final class GuiConstructionDetail {
     /**
      * 截屏当前 3D 预览到 ThumbnailCache.
      *
-     * <p>流程:
-     * <ol>
-     *   <li>拿到 renderScene 在屏幕上的位置和大小</li>
-     *   <li>建一个 96x96 FBO</li>
-     *   <li>把 Scene 渲染到 FBO</li>
-     *   <li>readPixels 出来, 调 ThumbnailCache.captureCurrentFrame 保存</li>
-     * </ol>
+     * <p>流程: 拿到 renderScene 在屏幕上的位置和大小, 调
+     * {@link com.prefab.addon.client.ThumbnailCache#captureRegion} 共用方法
+     * (GUI 坐标 → framebuffer 像素坐标 + glReadPixels + box-filter 缩放到 256px + 写盘).</p>
      */
     private static void captureCurrentSceneToThumbnail() {
         if (renderScene == null || currentConstruction == null) {
@@ -1247,100 +1309,24 @@ public final class GuiConstructionDetail {
                     com.prefab.addon.client.ThumbnailCache.getCacheFile(currentConstruction));
             } catch (Exception ignored) {}
         }
-        try {
-            // 1. 拿到 Scene 在屏幕上的位置
-            int sceneScreenX = (int) renderScene.getPositionX();
-            int sceneScreenY = (int) renderScene.getPositionY();
-            int sceneScreenW = (int) renderScene.getSizeWidth();
-            int sceneScreenH = (int) renderScene.getSizeHeight();
-            if (sceneScreenW <= 0 || sceneScreenH <= 0) {
-                showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.thumb_not_drawn"), 0xFF5555, 60);
-                return;
-            }
-            PrefabCustomAddon.LOGGER.info("[DETAIL] 截屏: scenePos=({},{}) size={}x{}",
-                sceneScreenX, sceneScreenY, sceneScreenW, sceneScreenH);
-
-            // 2. 在屏幕上画一个 96x96 的隐藏区域, 让 Scene 渲染到那
-            //    简单做法: 改 Scene 大小到 96x96, 触发一次重绘, 然后从 framebuffer 读
-            //    但 LDLib2 的 Scene 是通过 layout 定位, 改 size 不一定立即生效
-            //
-            //    更稳妥: 直接从 framebuffer 读 Scene 当前位置的内容
-            //    Minecraft 默认 framebuffer 是屏幕的 (guiScale 缩放后), 我们的屏幕坐标跟
-            //    framebuffer 坐标在 guiScale 下不同. 但 Scene 渲染时, PoseStack 的 translate
-            //    已经把屏幕坐标转换成 MC GUI 坐标了. 我们读 framebuffer 时用 (sceneScreenX,
-            //    sceneScreenY) 即可, 因为 glReadPixels 接受窗口坐标.
-            //
-            // 3. 实际上 glReadPixels 是从 framebuffer 当前 framebuffer 读, 坐标是相对于
-            //    framebuffer 的左下角. Minecraft 的 main framebuffer 大小 = 实际像素 (不是 GUI 单位).
-            //    我们需要 guiScale 缩放系数.
-            //
-            //    简单方案: 用 1.21.1 的 Minecraft.getInstance().getMainRenderTarget() 拿到 framebuffer,
-            //    然后用它的尺寸 + 我们的 GUI 坐标算出像素位置.
-
-            int mcWinW = Minecraft.getInstance().getWindow().getWidth();
-            int mcWinH = Minecraft.getInstance().getWindow().getHeight();
-            int guiScale = Minecraft.getInstance().options.guiScale().get();
-            if (guiScale == 0) guiScale = 1;
-            int fbW = mcWinW;
-            int fbH = mcWinH;
-            // framebuffer 坐标 = 屏幕坐标 * (实际像素 / 屏幕 GUI 像素)
-            // GUI 单位下 width=Minecraft.getInstance().getWindow().getGuiScaledWidth()
-            int guiW = Minecraft.getInstance().getWindow().getGuiScaledWidth();
-            int guiH = Minecraft.getInstance().getWindow().getGuiScaledHeight();
-            double scaleX = (double) fbW / guiW;
-            double scaleY = (double) fbH / guiH;
-            int px = (int) (sceneScreenX * scaleX);
-            int py_fb = (int) ((guiH - sceneScreenY - sceneScreenH) * scaleY);  // GL 是从下往上
-            int pw = (int) (sceneScreenW * scaleX);
-            int ph = (int) (sceneScreenH * scaleY);
-
-            // 截屏 scene 区域
-            java.nio.ByteBuffer buf = org.lwjgl.BufferUtils.createByteBuffer(pw * ph * 4);
-            org.lwjgl.opengl.GL11.glReadPixels(px, py_fb, pw, ph,
-                org.lwjgl.opengl.GL11.GL_RGBA, org.lwjgl.opengl.GL11.GL_UNSIGNED_BYTE, buf);
-
-            // 缩放到 96x96 (直接用 Java 缩放, 简单)
-            com.mojang.blaze3d.platform.NativeImage fullImg =
-                new com.mojang.blaze3d.platform.NativeImage(pw, ph, false);
-            byte[] row = new byte[pw * 4];
-            for (int y = 0; y < ph; y++) {
-                buf.position((ph - 1 - y) * pw * 4);
-                buf.get(row);
-                for (int x = 0; x < pw; x++) {
-                    int r = row[x * 4] & 0xFF;
-                    int g = row[x * 4 + 1] & 0xFF;
-                    int b = row[x * 4 + 2] & 0xFF;
-                    int a = row[x * 4 + 3] & 0xFF;
-                    int abgr = (a << 24) | (b << 16) | (g << 8) | r;
-                    fullImg.setPixelRGBA(x, y, abgr);
-                }
-            }
-            // Resize 到 96x96
-            int targetSize = 96;
-            com.mojang.blaze3d.platform.NativeImage thumb =
-                new com.mojang.blaze3d.platform.NativeImage(targetSize, targetSize, false);
-            for (int ty = 0; ty < targetSize; ty++) {
-                int sy = (int) ((double) ty / targetSize * ph);
-                for (int tx = 0; tx < targetSize; tx++) {
-                    int sx = (int) ((double) tx / targetSize * pw);
-                    thumb.setPixelRGBA(tx, ty, fullImg.getPixelRGBA(sx, sy));
-                }
-            }
-            fullImg.close();
-
-            // 写盘
-            java.nio.file.Path dir = com.prefab.addon.client.ThumbnailCache.getCacheDir();
-            java.nio.file.Files.createDirectories(dir);
-            java.nio.file.Path file = dir.resolve(
-                com.prefab.addon.client.ThumbnailCache.fingerprint(currentConstruction) + ".png");
-            thumb.writeToFile(file);
-            thumb.close();
-            com.prefab.addon.client.ThumbnailCache.notifyCompleted(
-                com.prefab.addon.client.ThumbnailCache.fingerprint(currentConstruction));
-            showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.thumb_saved", file.getFileName().toString()), 0x55FF55, 60);
-        } catch (Throwable t) {
-            PrefabCustomAddon.LOGGER.warn("[DETAIL] captureThumbnail failed: {}", t.getMessage(), t);
-            showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.screenshot_fail", t.getMessage()), 0xFF5555, 60);
+        int sceneScreenX = (int) renderScene.getPositionX();
+        int sceneScreenY = (int) renderScene.getPositionY();
+        int sceneScreenW = (int) renderScene.getSizeWidth();
+        int sceneScreenH = (int) renderScene.getSizeHeight();
+        if (sceneScreenW <= 0 || sceneScreenH <= 0) {
+            showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.thumb_not_drawn"), 0xFF5555, 60);
+            return;
+        }
+        // 共用截图: 坐标换算 + glReadPixels + box-filter 缩放到 256px + 写盘 + notifyCompleted
+        boolean ok = com.prefab.addon.client.ThumbnailCache.captureRegion(
+            sceneScreenX, sceneScreenY, sceneScreenW, sceneScreenH, currentConstruction, 256);
+        if (ok) {
+            showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.thumb_saved",
+                com.prefab.addon.client.ThumbnailCache.getCacheFile(currentConstruction)
+                    .getFileName().toString()), 0x55FF55, 60);
+        } else {
+            showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.screenshot_fail", "capture"),
+                0xFF5555, 60);
         }
     }
 
@@ -1419,7 +1405,10 @@ public final class GuiConstructionDetail {
         btnCancel.setText(net.minecraft.network.chat.Component.literal(
             "§7" + com.prefab.addon.PrefabCustomAddon.tr("gui.detail.delete_cancel")));
         btnCancel.layout(l -> l.width(80).height(20));
-        btnCancel.setOnClick(e -> Minecraft.getInstance().setScreen(null));
+        btnCancel.setOnClick(e -> {
+            dbg("detail-btn delete-cancel");
+            Minecraft.getInstance().setScreen(null);
+        });
         btnRow.addChild(btnCancel);
 
         com.lowdragmc.lowdraglib2.gui.ui.elements.Button btnOk = new com.lowdragmc.lowdraglib2.gui.ui.elements.Button();
@@ -1427,6 +1416,7 @@ public final class GuiConstructionDetail {
             "§c§l" + com.prefab.addon.PrefabCustomAddon.tr("gui.detail.delete_ok")));
         btnOk.layout(l -> l.width(100).height(20));
         btnOk.setOnClick(e -> {
+            dbg("detail-btn delete-ok");
             doDeleteBuilding(construction);
         });
         btnRow.addChild(btnOk);

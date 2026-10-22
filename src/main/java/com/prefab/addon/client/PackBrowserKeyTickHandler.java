@@ -1,6 +1,7 @@
 package com.prefab.addon.client;
 
 import com.prefab.addon.PrefabCustomAddon;
+import com.prefab.addon.client.gui.GuiBlueprintMarket;
 import com.prefab.addon.client.gui.GuiExtensionPackBrowser;
 import com.prefab.addon.client.gui.GuiExtensionPackEditor;
 import net.minecraft.client.Minecraft;
@@ -29,13 +30,19 @@ public class PackBrowserKeyTickHandler {
         // Z 键 → 拓展包管理 (浏览/下载) - 现有 6 tab 浏览器
         while (PackBrowserKeyHandler.OPEN_BROWSER.consumeClick()) {
             PrefabCustomAddon.LOGGER.info("[Z-KEY] Opening extension pack browser");
-            Minecraft.getInstance().setScreen(new GuiExtensionPackBrowser());
+            GuiExtensionPackBrowser.open();
         }
 
         // X 键 → 独立编辑器 GUI (3 tab: 创建建筑 / 编辑建筑 / 设置)
         while (PackBrowserKeyHandler.OPEN_CREATOR.consumeClick()) {
-            PrefabCustomAddon.LOGGER.info("[X-KEY] Opening extension pack editor (3-tab)");
-            Minecraft.getInstance().setScreen(new GuiExtensionPackEditor());
+            PrefabCustomAddon.LOGGER.info("[X-KEY] Opening extension pack editor");
+            GuiExtensionPackEditor.open();
+        }
+
+        // I 键 → 蓝图广场 (mcschematic.top 浏览/搜索/下载)
+        while (PackBrowserKeyHandler.OPEN_MCS_MARKET.consumeClick()) {
+            PrefabCustomAddon.LOGGER.info("[I-KEY] Opening blueprint market (mcschematic.top)");
+            GuiBlueprintMarket.open();
         }
     }
 }

@@ -180,6 +180,10 @@ public final class GuiVanillaStructureView {
         scene.useCacheBuffer(true);
         scene.syncCompile(true);
         scene.setTickWorld(false);
+        // 悬停方块显示原生物品 tooltip (不依赖 JEI; 只设置一次, 变体切换不重复);
+        // xeiLookup 另提供 JEI/REI/EMI 查询集成
+        scene.setShowHoverBlockTips(true);
+        scene.xeiLookup();
 
         // 提示文字 (3D 没加载完时显示在场景左上角) - 用 absolute 浮在 Scene 上层
         TextElement sceneHint = new TextElement();
@@ -429,6 +433,9 @@ public final class GuiVanillaStructureView {
 
             // 4) 标记要渲染的核心方块 (autoCamera=true 会根据 bounds 自动算 zoom)
             scene.setRenderedCore(positions, null, true);
+            // 悬停方块显示原生物品 tooltip (对齐 1.21.1, 不依赖 JEI)
+            scene.setShowHoverBlockTips(true);
+            scene.xeiLookup();
 
             // 5) 重新编译 cache
             scene.needCompileCache();

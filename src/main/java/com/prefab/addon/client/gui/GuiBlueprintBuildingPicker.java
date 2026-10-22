@@ -21,15 +21,12 @@ import java.util.function.Consumer;
  *
  * <p>最小化实现: 没有 tab / 翻页 / 3D 预览, 只是给玩家点一个 LocalBuilding.</p>
  *
- * <p>回调模式: 父界面 {@code GuiExtensionPackEditor} 调用
- * {@link #open(GuiExtensionPackEditor, Consumer)}, 子屏点完建筑调 {@code callback.accept(lb)} 然后
- * {@code mc.setScreen(parentGui)}, 父界面从 {@code selectedBuilding} 读结果.</p>
+ * <p>回调模式: 调用方 {@code open(Consumer)} 进入子屏, 点完建筑调 {@code callback.accept(lb)}
+ * 然后静态重开 {@link GuiExtensionPackEditor#open()} (编辑器是静态单实例, 状态不丢).</p>
  */
 public class GuiBlueprintBuildingPicker extends Screen {
 
     private static Consumer<LocalBuilding> pendingCallback = null;
-    /** 父 Editor 引用 — 点完建筑后回到父, 不会丢失 tab 状态. */
-    private static GuiExtensionPackEditor pendingParent = null;
 
     private final List<LocalBuilding> all = new ArrayList<>();
     private List<LocalBuilding> filtered = new ArrayList<>();
@@ -44,12 +41,10 @@ public class GuiBlueprintBuildingPicker extends Screen {
     private int panelX, panelY;
 
     /**
-     * 静态入口: 父界面调用这个, 进入子屏; 点完建筑后回调, 然后回到父界面.
-     * 父 Editor 引用会记下, 选完直接 setScreen(parent) 还原, tab 状态不丢.
+     * 静态入口: 进入子屏; 点完建筑后回调, 然后静态重开编辑器 (状态保留).
      */
-    public static void open(GuiExtensionPackEditor parent, Consumer<LocalBuilding> cb) {
+    public static void open(Consumer<LocalBuilding> cb) {
         pendingCallback = cb;
-        pendingParent = parent;
         Minecraft.getInstance().setScreen(new GuiBlueprintBuildingPicker());
     }
 
@@ -239,13 +234,7 @@ public class GuiBlueprintBuildingPicker extends Screen {
             }
         }
         pendingCallback = null;
-        // 回到父 Editor (保留原 tab 状态), 没有父就新开一个
-        GuiExtensionPackEditor parent = pendingParent;
-        pendingParent = null;
-        if (parent != null) {
-            Minecraft.getInstance().setScreen(parent);
-        } else {
-            Minecraft.getInstance().setScreen(new GuiExtensionPackEditor());
-        }
+        // 静态重开编辑器 (编辑器状态全在静态字段上, tab 不丢)
+        GuiExtensionPackEditor.open();
     }
 }

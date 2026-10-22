@@ -11,6 +11,78 @@
       },
       "path": "META-INF/jarjar/ldlib2-forge-1.20.1-2.2.27+forge.1.20.1-all.jar",
       "isObfuscated": false
+    },
+    {
+      "identifier": {
+        "group": "com.twelvemonkeys.imageio",
+        "artifact": "imageio-webp"
+      },
+      "version": {
+        "range": "[3.12.0,4.0)",
+        "artifactVersion": "3.12.0"
+      },
+      "path": "META-INF/jarjar/imageio-webp-3.12.0.jar",
+      "isObfuscated": false
+    },
+    {
+      "identifier": {
+        "group": "com.twelvemonkeys.imageio",
+        "artifact": "imageio-core"
+      },
+      "version": {
+        "range": "[3.12.0,4.0)",
+        "artifactVersion": "3.12.0"
+      },
+      "path": "META-INF/jarjar/imageio-core-3.12.0.jar",
+      "isObfuscated": false
+    },
+    {
+      "identifier": {
+        "group": "com.twelvemonkeys.imageio",
+        "artifact": "imageio-metadata"
+      },
+      "version": {
+        "range": "[3.12.0,4.0)",
+        "artifactVersion": "3.12.0"
+      },
+      "path": "META-INF/jarjar/imageio-metadata-3.12.0.jar",
+      "isObfuscated": false
+    },
+    {
+      "identifier": {
+        "group": "com.twelvemonkeys.common",
+        "artifact": "common-image"
+      },
+      "version": {
+        "range": "[3.12.0,4.0)",
+        "artifactVersion": "3.12.0"
+      },
+      "path": "META-INF/jarjar/common-image-3.12.0.jar",
+      "isObfuscated": false
+    },
+    {
+      "identifier": {
+        "group": "com.twelvemonkeys.common",
+        "artifact": "common-io"
+      },
+      "version": {
+        "range": "[3.12.0,4.0)",
+        "artifactVersion": "3.12.0"
+      },
+      "path": "META-INF/jarjar/common-io-3.12.0.jar",
+      "isObfuscated": false
+    },
+    {
+      "identifier": {
+        "group": "com.twelvemonkeys.common",
+        "artifact": "common-lang"
+      },
+      "version": {
+        "range": "[3.12.0,4.0)",
+        "artifactVersion": "3.12.0"
+      },
+      "path": "META-INF/jarjar/common-lang-3.12.0.jar",
+      "isObfuscated": false
     }
   ]
 }

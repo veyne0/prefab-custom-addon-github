@@ -139,6 +139,35 @@ public class MaterialCalculator {
     }
 
     /**
+     * 兜底计算: 直接从解析好的方块列表重算材料清单.
+     * calculate() 只认 vanilla palette+blocks 格式, litematic/schem 等格式会得到空 required
+     * (生存模式免材料 bug), 这时用解析出的 BlockData 列表重算.
+     */
+    public static MaterialList fromBlocks(java.util.List<com.prefab.addon.structure.CustomStructureBuilder.BlockData> blocks) {
+        MaterialList list = new MaterialList();
+        if (blocks == null || blocks.isEmpty()) return list;
+        list.totalBlocks = blocks.size();
+        for (var bd : blocks) {
+            if (bd == null || bd.state == null) continue;
+            ResourceLocation key = BuiltInRegistries.BLOCK.getKey(bd.state.getBlock());
+            if (key == null) continue;
+            String name = key.toString();
+            if (name.equals("minecraft:air") || name.equals("air") || name.endsWith(":air")) continue;
+            if (isInfrastructureBlock(name)) {
+                list.filteredInfrastructure++;
+                list.filteredTypes.merge(name, 1, Integer::sum);
+                continue;
+            }
+            list.required.merge(name, 1, Integer::sum);
+            list.nonAirBlocks++;
+        }
+        list.uniqueBlockTypes = list.required.size();
+        PrefabCustomAddon.LOGGER.info("[MATERIALS] fromBlocks fallback: total={} nonAir={} unique={}",
+                list, list.nonAirBlocks, list.uniqueBlockTypes);
+        return list;
+    }
+
+    /**
      * 计算玩家背包里某种方块有多少个 (按 block id 模糊匹配 item).
      * 注意: block id 不一定等于 item id (例如 slab, fence).
      * 我们用 block 的 Item 形式 (Block.asItem()) 来匹配.

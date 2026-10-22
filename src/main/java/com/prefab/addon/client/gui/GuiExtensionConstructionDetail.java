@@ -331,7 +331,7 @@ public final class GuiExtensionConstructionDetail {
             previewTexture.setFilter(false, false); // NEAREST
             // 关键: 纹理名要带 construction id, 否则所有 detail GUI 共用同一个纹理
             previewTextureLocation = Minecraft.getInstance().getTextureManager()
-                .register("prefab_ext_detail_preview_" + construction.getId(), previewTexture);
+                .register("prefab_ext_detail_preview_" + GuiExtensionPackBrowser.safeTextureId(construction.getId()), previewTexture);
             this.textureWidth = width;
             this.textureHeight = height;
             PrefabCustomAddon.LOGGER.info("[EXT-DETAIL] Texture registered: {} size={}x{}",

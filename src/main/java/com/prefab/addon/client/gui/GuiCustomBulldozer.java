@@ -86,7 +86,8 @@ public class GuiCustomBulldozer extends GuiBulldozer {
         int L = ItemCustomBulldozer.getLength(this.stack);
         int W = ItemCustomBulldozer.getWidth(this.stack);
         int H = ItemCustomBulldozer.getHeight(this.stack);
-        Direction facing = this.minecraft.player.getDirection().getOpposite();
+        // 区域向玩家前方延伸 (原 .getOpposite() 会生成在玩家背后, 对齐 1.21.1 修复)
+        Direction facing = this.minecraft.player.getDirection();
         CustomBulldozerPreviewRenderer.start(this.pos, L, W, H, facing, this.stack);
         this.minecraft.setScreen(null);
         this.minecraft.player.sendSystemMessage(Component.literal(
@@ -99,7 +100,8 @@ public class GuiCustomBulldozer extends GuiBulldozer {
         int W = ItemCustomBulldozer.getWidth(this.stack);
         int H = ItemCustomBulldozer.getHeight(this.stack);
         // 自定义推土机固定 noDrops = true (任何模式都不生成掉落物, 性能最优)
-        Direction facing = this.minecraft.player.getDirection().getOpposite();
+        // 区域向玩家前方延伸 (原 .getOpposite() 会生成在玩家背后, 对齐 1.21.1 修复)
+        Direction facing = this.minecraft.player.getDirection();
         com.prefab.addon.network.NetworkHandler.sendToServer(new ExecuteCustomBulldozerPayload(this.pos, L, W, H, facing, true));
         this.minecraft.setScreen(null);
     }

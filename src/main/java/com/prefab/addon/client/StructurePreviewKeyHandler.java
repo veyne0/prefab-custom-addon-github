@@ -56,6 +56,9 @@ public class StructurePreviewKeyHandler {
     @SubscribeEvent
     public static void onClientTick(TickEvent.ClientTickEvent event) {
         if (event.phase != TickEvent.Phase.END) return;
+        // === 编辑原理图模式: 按键全部由 EditModeController 自己的 tick 处理, 这里完全跳过 ===
+        // (否则编辑模式的右键=放置会被下面的 "右键取消预览" 逻辑吞掉, ESC=退出会被干扰)
+        if (EditModeController.isEditing()) return;
         Minecraft mc = Minecraft.getInstance();
         if (mc.level == null || mc.player == null) return;
 
@@ -68,7 +71,7 @@ public class StructurePreviewKeyHandler {
         boolean anyPreviewActive =
             com.prefab.addon.client.gui.CustomStructureGui.getAddonPreviewStructure() != null
             || StructureRenderHandler.currentStructure != null;
-        if (anyPreviewActive && rightDownEarly && !lastRightDown) {
+        if (anyPreviewActive && rightDownEarly && !lastRightDown && !EditModeController.shouldBlockPreviewCancel()) {
             // 关闭可能因右键开启的 GUI (例如自定义蓝图右键 → CustomStructureGui)
             if (mc.screen != null) {
                 mc.player.closeContainer();
@@ -208,12 +211,17 @@ public class StructurePreviewKeyHandler {
                 // === prefab 原版建筑预览 ===
                 // 不能调 CustomStructureBuilder.offsetStructureBlocks (那是给我们自定义建筑
                 //   设计的, prefab 原版建筑调它会破坏 prefab 自己的数据结构).
-                // 正确做法: 重新调 StructureRenderHandler.setStructure(structure, cfg) 触发
-                //   prefab 重新 bake 一次 vertex buffer (prefab 渲染靠 bake 出来的 buffer,
-                //   改 cfg.pos 不会自动重建).
-                // 关键: setStructure 内部会把 showedMessage 重置为 false → prefab 下次渲染会
+                // 关键: prefab 1.20.1 渲染 (StructureRenderHandler.newRenderPlayerLook) 里
+                //   BuildBlock.blockPos/centerOfBlock 是懒缓存 — 首帧按当时 cfg.pos 算出
+                //   绝对坐标存进字段, 之后每帧直接用缓存, 不再读 cfg.pos; 而 1.20.1 的
+                //   setStructure 只赋静态字段 (无 needsRebuild/重建逻辑), 所以只改 cfg.pos
+                //   或重调 setStructure 方块纹丝不动 (黄框 renderClickedBlock 每帧读
+                //   cfg.pos 所以会动). 必须清缓存让 prefab 下帧按 newPos 重算
+                //   (移动不改朝向, blockState 保留不清).
+                resetPrefabBlockLazyCache(currentStructure, false);
+                // setStructure 会把 showedMessage 重置为 false → prefab 下次渲染会
                 //   重新发 "右键取消预览" 那 2 条聊天消息, 每移动一次刷一次屏.
-                //   修复: 调完之后立即把 showedMessage 改回 true, 阻止 prefab 重复发.
+                //   调完之后立即改回 true, 阻止 prefab 重复发.
                 StructureRenderHandler.setStructure(currentStructure, cfg);
                 StructureRenderHandler.showedMessage = true;
             }
@@ -233,8 +241,11 @@ public class StructurePreviewKeyHandler {
                 com.prefab.addon.structure.CustomStructureBuilder.offsetStructureBlocks(
                     currentStructure, cfg.pos, cfg.houseFacing);
             } else {
-                // === prefab 原版建筑预览: 调 setStructure 重新 bake, 不要调 offsetStructureBlocks ===
-                //    同样要把 showedMessage 改回 true 阻止 prefab 重发聊天消息
+                // === prefab 原版建筑预览: 清 BuildBlock 懒缓存 (原理同移动分支) ===
+                //    旋转额外把 blockState 也清掉: 楼梯等朝向方块的 state 带 facing 属性,
+                //    prefab 渲染发现 state==null 会用 BuildBlock.SetBlockState 按
+                //    新 houseFacing 重算. showedMessage 改回 true 阻止 prefab 重发聊天消息.
+                resetPrefabBlockLazyCache(currentStructure, true);
                 StructureRenderHandler.setStructure(currentStructure, cfg);
                 StructureRenderHandler.showedMessage = true;
             }
@@ -250,6 +261,12 @@ public class StructurePreviewKeyHandler {
                 || GLFW.glfwGetKey(window, GLFW.GLFW_KEY_RIGHT_ALT) == GLFW.GLFW_PRESS;
         if (altDown) {
             if (lastAction != GLFW.GLFW_KEY_LEFT_ALT && lastAction != GLFW.GLFW_KEY_RIGHT_ALT) {
+                // 编辑原理图模式: ALT = 保存并退出编辑 (而不是触发建造)
+                if (EditModeController.isEditing()) {
+                    EditModeController.saveAndExit();
+                    lastAction = GLFW.GLFW_KEY_LEFT_ALT;
+                    return;
+                }
                 // 关键: 走"prefab 原版建造"还是"我们的自定义建造"用 isAddonPreview 判,
                 // 不要用 packName.isEmpty() — 之前就是这里错: packName 来自 currentConstruction
                 // (上次编辑的自定义建筑缓存), 即使玩家已经打开了 prefab 原版的预览,
@@ -264,6 +281,10 @@ public class StructurePreviewKeyHandler {
                     // 这样 ALT 触发的是 prefab 原版的建造流程, 不会走我们的 BuildCustomStructurePayload,
                     // 也就不会消耗玩家背包里的自定义蓝图 (我们不插手 prefab 原版的消耗逻辑).
                     triggerPrefabOriginalBuild(cfg);
+                } else if (com.prefab.addon.client.gui.CustomStructureGui.isCurrentOutsource()) {
+                    // === 外包建筑预览 (从 1.21.1 移植) ===
+                    // GuiOutsourceBuildingDetail.onPreview 设置了 outsource 上下文 → 走专用 build 路径
+                    triggerOutsourceBuildAtPreview(cfg);
                 } else {
                     triggerBuildAtPreview(cfg, currentStructure);
                 }
@@ -398,6 +419,60 @@ public class StructurePreviewKeyHandler {
     }
 
     /**
+     * ALT 在外包建筑预览中按下时, 走外包建筑专用的 build 路径 (从 1.21.1 移植).
+     *
+     * <p>与 {@link #triggerBuildAtPreview} 的区别:</p>
+     * <ul>
+     *   <li>packName/constructionId 不来自 currentConstruction, 而是 CustomStructureGui
+     *       里 setOutsourceContext 存的 buildingId + styleIndex (GuiOutsourceBuildingDetail 设置).</li>
+     *   <li>发的是 {@link com.prefab.addon.network.BuildOutsourceStructurePayload},
+     *       服务端走 OutsourceBuildManager.placeStructure, 任务完成后消耗对应的
+     *       OutsourceBlueprintItem (按 buildingId 精确匹配).</li>
+     * </ul>
+     */
+    private static void triggerOutsourceBuildAtPreview(StructureConfiguration cfg) {
+        Player player = Minecraft.getInstance().player;
+        if (player == null) return;
+        lastAction = GLFW.GLFW_KEY_LEFT_ALT;
+
+        String buildingId = com.prefab.addon.client.gui.CustomStructureGui.getCurrentOutsourceBuildingId();
+        int styleIndex = com.prefab.addon.client.gui.CustomStructureGui.getCurrentOutsourceStyleIndex();
+        if (buildingId == null || buildingId.isEmpty()) {
+            player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
+                "⚠ 外包建筑上下文丢失, 请重新打开蓝图右键").withStyle(net.minecraft.ChatFormatting.RED));
+            PrefabCustomAddon.LOGGER.warn("[OUTSOURCE-BUILD] ALT 触发时 buildingId 为空 (setOutsourceContext 没被调?)");
+            return;
+        }
+        // 校验背包里确实有对应的 OutsourceBlueprintItem (防止 GUI 直开但蓝图不在)
+        ItemStack blueprint = ItemStack.EMPTY;
+        for (int i = 0; i < player.getInventory().getContainerSize(); i++) {
+            ItemStack s = player.getInventory().getItem(i);
+            if (s.isEmpty() || !(s.getItem() instanceof com.prefab.addon.items.OutsourceBlueprintItem)) continue;
+            if (buildingId.equals(com.prefab.addon.items.OutsourceBlueprintItem.getEffectiveBuildingId(s))) {
+                blueprint = s;
+                break;
+            }
+        }
+        if (blueprint.isEmpty()) {
+            player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
+                "⚠ 背包里没有对应的外包建筑蓝图 (buildingId=" + buildingId + ")")
+                .withStyle(net.minecraft.ChatFormatting.RED));
+            return;
+        }
+        PrefabCustomAddon.LOGGER.info(
+            "[OUTSOURCE-BUILD] ALT pressed, sending BuildOutsourceStructurePayload for buildingId={} style={}/{} at {} facing {}",
+            buildingId, styleIndex, blueprint.getCount(), cfg.pos, cfg.houseFacing);
+        com.prefab.addon.network.NetworkHandler.sendToServer(
+            new com.prefab.addon.network.BuildOutsourceStructurePayload(
+                buildingId, styleIndex, cfg.pos, cfg.houseFacing,
+                com.prefab.addon.config.PlayerPreferences.get().getBuildAnimationMode()));
+        // 清预览: prefab 的 currentStructure (no-op, 之前已 null) + 我们 own 的 ADDON_PREVIEW_*
+        // (clearAddonPreviewFlag 同时会清掉 outsource 上下文)
+        StructureRenderHandler.setStructure(null, null);
+        com.prefab.addon.client.gui.CustomStructureGui.clearAddonPreviewFlag();
+    }
+
+    /**
      * ALT 在 prefab 原版建筑预览中按下时, 复用 prefab 自己的 build 流程.
      * <p>本方法做的事情和 prefab 自带的 {@code GameClientEvents.KeyInput} 一模一样:</p>
      * <pre>
@@ -445,28 +520,63 @@ public class StructurePreviewKeyHandler {
     }
 
     /**
-     * prefab 原版建筑预览时, 强制 prefab 重建 previewChunks 缓存.
-     * <p>不调这个, 玩家移动/旋转后 prefab 的 renderer 还在用旧位置的 cached mesh,
-     * 只看到黄色框在动, 实际结构不动.</p>
+     * prefab 原版建筑预览时, 强制 prefab 下一帧按当前 cfg 重新渲染.
+     * <p>不调这个, 玩家移动/旋转后只看到黄色框在动, 实际结构不动 —
+     * prefab 1.20.1 渲染用的 {@code BuildBlock.blockPos/centerOfBlock} 是懒缓存,
+     * 首帧按当时 cfg.pos 算好存字段后每帧直接复用, 不再读 cfg.pos.</p>
      *
-     * <p>实现: {@code setStructure(currentStructure, currentConfiguration)}
-     * 会把 {@code needsRebuild=true} 并清掉 {@code blockModelQuads} 缓存,
-     * 下次 render 时 prefab 会重新跑 {@code rebuildPreviewMeshes}, 用新的 {@code cfg.pos}
-     * 重新计算每个 block 的世界位置.</p>
+     * <p>实现: 先 {@link #resetPrefabBlockLazyCache} 清懒缓存, 再
+     * {@code setStructure(currentStructure, currentConfiguration)} 重新登记.
+     * 注意 1.20.1 的 setStructure 只赋静态字段, 没有 needsRebuild/blockModelQuads
+     * 那套重建逻辑 (那是 1.21.1 prefab 的行为), 清缓存才是关键.</p>
      *
-     * <p>副作用: setStructure 也会把 {@code showedMessage} 改回 {@code false},
+     * <p>副作用: setStructure 会把 {@code showedMessage} 改回 {@code false},
      * 下次 render prefab 会再次发 "右击任何方块即可移除预览" / "黄色轮廓是您单击的块"
-     * 两条聊天消息. 我们调完后立即把 {@code showedMessage} 改回 {@code true},
-     * prefab 就不会重复发了 (PrefabChatFilter 也兜底拦截这两条).</p>
+     * 两条聊天消息. 调完后立即改回 {@code true}, prefab 就不会重复发了.</p>
      */
     private static void triggerPrefabRebuild() {
         // 关键: prefab 原版预览时, 我们的 ADDON 字段是 null, prefab.currentStructure
-        // 才是真的 structure. triggerPrefabRebuild 强制 prefab 重建 cache 必须用 prefab
-        // 自己的字段. (我们自己的预览时, prefab.currentStructure = null 一直, 调它就是 no-op)
+        // 才是真的 structure. (我们自己的预览时, prefab.currentStructure = null 一直, 调它就是 no-op)
         StructureConfiguration cfg = StructureRenderHandler.currentConfiguration;
         Structure structure = StructureRenderHandler.currentStructure;
         if (cfg == null || structure == null) return;
+        resetPrefabBlockLazyCache(structure, false);
         StructureRenderHandler.setStructure(structure, cfg);
         StructureRenderHandler.showedMessage = true;
+    }
+
+    /**
+     * 清空 prefab Structure 里每个 BuildBlock 的懒缓存字段.
+     *
+     * <p>prefab 1.20.1 的 {@code StructureRenderHandler.newRenderPlayerLook} 每帧渲染时:</p>
+     * <ul>
+     *   <li>{@code block.blockPos == null} 时才按 {@code cfg.pos} + {@code cfg.houseFacing}
+     *       经 {@code PositionOffset.getRelativePosition} 重算绝对坐标, 算完存进字段;</li>
+     *   <li>{@code block.centerOfBlock == null} 时才按 blockPos 重算 (raytrace 用);</li>
+     *   <li>{@code block.getBlockState() == null} 时才用 {@code BuildBlock.SetBlockState}
+     *       按 {@code cfg.pos}/{@code cfg.houseFacing} 重算方块朝向属性.</li>
+     * </ul>
+     * 置 null 后 prefab 渲染会走这些重算路径, 预览位置/朝向立即跟上新的 cfg.
+     *
+     * @param clearState true 时连 blockState 一起清 (旋转用: 让朝向方块按新 houseFacing 重算);
+     *                   false 只清位置缓存 (移动用: 相对位置不变, state 无需重算).
+     */
+    private static void resetPrefabBlockLazyCache(Structure structure, boolean clearState) {
+        if (structure == null || structure.getBlocks() == null) return;
+        for (com.wuest.prefab.structures.base.BuildBlock block : structure.getBlocks()) {
+            clearPrefabBlockCache(block, clearState);
+            // subBlock (如楼梯的下半块等复合方块) 也是 BuildBlock, 同样有懒缓存.
+            if (block.getSubBlock() != null) {
+                clearPrefabBlockCache(block.getSubBlock(), clearState);
+            }
+        }
+    }
+
+    private static void clearPrefabBlockCache(com.wuest.prefab.structures.base.BuildBlock block, boolean clearState) {
+        block.blockPos = null;
+        block.centerOfBlock = null;
+        if (clearState) {
+            block.setBlockState(null);
+        }
     }
 }

@@ -27,6 +27,16 @@ public final class ClientPacketHandlers {
         com.prefab.addon.client.BuildAnimationRenderer.onBatchBlocksPlaced(payload);
     }
 
+    /** 建筑上传进度 ACK / 最终结果 (驱动客户端分片泵). */
+    public static void handleBuildingUploadAck(BuildingUploadAckPayload payload) {
+        BuildingUploadClient.getInstance().handleAck(payload);
+    }
+
+    /** 管理界面数据 (建筑列表 + 玩家权限) 回来: 刷新 GuiServerManage. */
+    public static void handleBuildingManageData(BuildingManageDataPayload payload) {
+        com.prefab.addon.client.gui.GuiServerManage.handleData(payload);
+    }
+
     /** 服务端材料账本快照回来: 更新客户端镜像 session + 刷新提交界面. */
     public static void handleMaterialSubmitResult(MaterialSubmitResultPayload payload) {
         net.minecraft.client.player.LocalPlayer player =

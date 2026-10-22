@@ -47,6 +47,11 @@ public final class GuiCategoryManager {
     /** 上次打开此 GUI 时登记的回调. static, 跨 Minecraft.setScreen 切换屏后仍能拿到. */
     private static ReturnCallback returnCallback = null;
 
+    /** 嵌入模式: 作为建筑浏览器"分类管理" tab 的内容构建 (根节点填满父容器而非固定 280x260). */
+    private static boolean embedded = false;
+    /** 嵌入模式下增删改分类后的刷新回调 (浏览器侧: post 重建 tab). standalone 模式为 null. */
+    private static Runnable refreshCallback = null;
+
     /** 当前状态消息 (供 status 区域显示). */
     private static String statusMessage = null;
     private static int statusColor = 0x55FF55;
@@ -54,11 +59,24 @@ public final class GuiCategoryManager {
     private GuiCategoryManager() {}
 
     /**
+     * 嵌入建筑浏览器 tab 的内容构建入口 (不带固定窗口尺寸).
+     * <p>增删改分类后通过 onRefresh 回调刷新 (浏览器侧传 post(tabRebuild) 下一拍重建, 避开 UIEvent 分发窗口).
+     * 重命名弹窗关闭后由本类直接重开浏览器恢复.
+     */
+    public static UIElement buildTabContent(Runnable onRefresh) {
+        embedded = true;
+        refreshCallback = onRefresh;
+        return buildRoot();
+    }
+
+    /**
      * 弹一个独立的 ModularUI 屏.
      * @param onReturn 关闭时回调, 通常是 reopen 创建建筑界面
      */
     public static void open(ReturnCallback onReturn) {
         returnCallback = onReturn;
+        embedded = false;
+        refreshCallback = null;
         statusMessage = null;
         statusColor = 0x55FF55;
         ModularUI ui = ModularUI.of(UI.of(buildRoot(),
@@ -73,6 +91,8 @@ public final class GuiCategoryManager {
      */
     public static void openStandalone() {
         returnCallback = null;
+        embedded = false;
+        refreshCallback = null;
         statusMessage = null;
         statusColor = 0x55FF55;
         ModularUI ui = ModularUI.of(UI.of(buildRoot(),
@@ -83,11 +103,18 @@ public final class GuiCategoryManager {
 
     private static UIElement buildRoot() {
         UIElement root = new UIElement();
-        root.layout(l -> l
-            .width(280).height(260)
-            .flexDirection(FlexDirection.COLUMN)
-            .paddingAll(6).gapAll(4)
-        );
+        if (embedded) {
+            // 嵌入浏览器 tab: 填满 tab 容器
+            root.layout(l -> l.widthPercent(100).heightPercent(100)
+                .flexDirection(FlexDirection.COLUMN)
+                .paddingAll(6).gapAll(4));
+        } else {
+            root.layout(l -> l
+                .width(280).height(260)
+                .flexDirection(FlexDirection.COLUMN)
+                .paddingAll(6).gapAll(4)
+            );
+        }
         root.style(s -> s.background(Sprites.BORDER));
         root.setOverflowVisible(false);
 
@@ -292,7 +319,7 @@ public final class GuiCategoryManager {
         buttonRow.layout(l -> l.widthPercent(100).height(20)
             .flexDirection(FlexDirection.ROW).gapAll(4));
         Button btnCancel = new Button().setText(com.prefab.addon.PrefabCustomAddon.tr("gui.category.cancel"));
-        btnCancel.setOnClick(e -> Minecraft.getInstance().setScreen(null));
+        btnCancel.setOnClick(e -> closeRenameDialog());
         btnCancel.layout(l -> l.flexGrow(1).heightPercent(100));
         buttonRow.addChild(btnCancel);
 
@@ -302,19 +329,24 @@ public final class GuiCategoryManager {
             CategoryManager mgr = CategoryManager.get();
             if (newName == null || newName.trim().isEmpty()) {
                 setStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.category.name_empty"), 0xFF5555);
-                Minecraft.getInstance().setScreen(null);
+                closeRenameDialog();
                 return;
             }
             if (newName.trim().equals(oldName)) {
                 // 没改 → 直接关掉
-                Minecraft.getInstance().setScreen(null);
+                closeRenameDialog();
                 return;
             }
             boolean ok = mgr.renameCategory(oldName, newName);
             if (ok) {
                 setStatus(com.prefab.addon.PrefabCustomAddon.tr(
                     "gui.category.renamed", oldName, newName.trim()), 0x55FF55);
-                refreshScreen();
+                if (embedded) {
+                    // 弹窗替换过浏览器屏: 重开浏览器, tab 重建后显示新列表 + 状态
+                    closeRenameDialog();
+                } else {
+                    refreshScreen();
+                }
             } else {
                 setStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.category.rename_fail"), 0xFF5555);
             }
@@ -330,10 +362,23 @@ public final class GuiCategoryManager {
         Minecraft.getInstance().setScreen(new ModularUIScreen(ui, Component.literal(titleStr)));
     }
 
-    /** 刷新当前屏 (重新走 buildRoot). 增删分类后用. */
+    /** 刷新当前屏. 增删分类后用: 嵌入模式走浏览器回调 (post 下一拍重建 tab), standalone 直接重开. */
     private static void refreshScreen() {
+        if (embedded && refreshCallback != null) {
+            refreshCallback.run();
+            return;
+        }
         // 直接重建 ModularUI 屏
         openStandaloneInternal();
+    }
+
+    /** 从重命名弹窗返回: 嵌入模式重开浏览器 (弹窗替换过浏览器屏), standalone 直接关屏. */
+    private static void closeRenameDialog() {
+        if (embedded) {
+            GuiExtensionPackBrowser.open();
+        } else {
+            Minecraft.getInstance().setScreen(null);
+        }
     }
 
     private static void openStandaloneInternal() {

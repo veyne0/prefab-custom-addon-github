@@ -50,7 +50,7 @@ public class CustomStructureBuilder {
                 currentStructureNbt = null;
                 return;
             }
-            CompoundTag root = NbtIo.readCompressed(new ByteArrayInputStream(construction.getNbtData()));
+            CompoundTag root = readNbtAuto(construction.getNbtData());
 
             PrefabCustomAddon.LOGGER.info("Loaded custom structure: {} (root keys={}, size={}, blocks={}, palette={})",
                     construction.getName(),
@@ -59,21 +59,7 @@ public class CustomStructureBuilder {
                     root.getList("blocks", 10).size(),
                     root.getList("palette", 10).size());
 
-            // 兼容: 某些工具的 NBT 顶层不在根, 而是包在嵌套 key 里:
-            //   - vanilla .nbt 文件: 整结构在 "structure" compound 里
-            //   - litematic .litematic: 整结构在 "Schematic" compound 里
-            //   - 一些打包脚本: 包在 "data" 里
-            // 这里递归查找第一个含 "blocks" + "palette" 的 CompoundTag
-            if (!root.contains("blocks", 10) || !root.contains("palette", 10)) {
-                PrefabCustomAddon.LOGGER.info("  Root has no blocks+palette, 尝试解包嵌套结构 (keys={})", root.getAllKeys());
-                CompoundTag unwrapped = findNestedStructure(root, 0);
-                if (unwrapped != null && unwrapped != root) {
-                    PrefabCustomAddon.LOGGER.info("  解包成功, 找到嵌套的 blocks+palette");
-                    root = unwrapped;
-                } else {
-                    PrefabCustomAddon.LOGGER.warn("  未找到嵌套 blocks+palette, 继续用原始根");
-                }
-            }
+            root = ensureVanillaStructure(root);
             currentStructureNbt = root;
 
         } catch (IOException e) {
@@ -83,12 +69,88 @@ public class CustomStructureBuilder {
     }
 
     /**
+     * blocks+palette 存在检测 (两者都必须是 ListTag).
+     *
+     * <p>老坑: {@code contains("blocks", 10)} 的 10 是 TAG_COMPOUND, 而 blocks 是
+     * ListTag (type 9), 这个判断恒 false — 导致 litematic 转换成功的结果被当成
+     * "不含 blocks" 而丢弃, 详情页 3D 预览一直是空的. 正确写法是传 TAG_LIST (9).</p>
+     */
+    private static boolean hasBlocksPalette(CompoundTag tag) {
+        return tag != null
+            && tag.contains("blocks", Tag.TAG_LIST)
+            && tag.contains("palette", Tag.TAG_LIST);
+    }
+
+    /**
+     * 读 NBT: 先按 gzip 压缩读 (vanilla 结构文件/标准 litematic), 失败再按未压缩读
+     * (蓝图站下载的部分 .litematic / .schem 根本没压缩, readCompressed 直接抛 ZipException).
+     */
+    private static CompoundTag readNbtAuto(byte[] data) throws IOException {
+        try {
+            return NbtIo.readCompressed(new ByteArrayInputStream(data));
+        } catch (IOException e) {
+            try (java.io.DataInputStream in = new java.io.DataInputStream(
+                    new java.io.BufferedInputStream(new ByteArrayInputStream(data)))) {
+                return NbtIo.read(in);
+            }
+        }
+    }
+
+    /**
+     * 把任意来源的 NBT 归一化成 vanilla blocks+palette 结构:
+     * <ol>
+     *   <li>嵌套解包 (vanilla "structure" / litematic "Schematic" / 打包脚本 "data")</li>
+     *   <li>第三方格式现场转换 (litematic / sponge schem / WE legacy schem, 走 NbtFormatConverter)</li>
+     * </ol>
+     * 3D 预览 ({@code loadStructureFromNbt}) 和世界粘贴预览 ({@code parseToPrefabStructure})
+     * 两条链路都必须走这步 — 之前只修了 3D 那条, 导致 3D 能看但"预览"按钮报"建筑为空".
+     */
+    static CompoundTag ensureVanillaStructure(CompoundTag root) {
+        // 兼容: 某些工具的 NBT 顶层不在根, 而是包在嵌套 key 里:
+        //   - vanilla .nbt 文件: 整结构在 "structure" compound 里
+        //   - litematic .litematic: 整结构在 "Schematic" compound 里
+        //   - 一些打包脚本: 包在 "data" 里
+        // 这里递归查找第一个含 "blocks" + "palette" 的 CompoundTag
+        if (!hasBlocksPalette(root)) {
+            PrefabCustomAddon.LOGGER.info("  Root has no blocks+palette, 尝试解包嵌套结构 (keys={})", root.getAllKeys());
+            CompoundTag unwrapped = findNestedStructure(root, 0);
+            if (unwrapped != null && unwrapped != root) {
+                PrefabCustomAddon.LOGGER.info("  解包成功, 找到嵌套的 blocks+palette");
+                root = unwrapped;
+            } else {
+                PrefabCustomAddon.LOGGER.warn("  未找到嵌套 blocks+palette, 继续用原始根");
+            }
+        }
+        // 仍没有 blocks+palette → 第三方格式 (litematic / sponge schem / WE legacy schem):
+        // 结构存在 Regions/BlockStates (litematic) 或 Schematic/Blocks (sponge) 里,
+        // 需要 NbtFormatConverter 转成 vanilla 才能解析.
+        // 蓝图站下载的建筑 nbtData 是原始 .litematic / .schem 文件字节, 不转的话
+        // 详情页 3D 预览 "所有方块均为 air", ALT 建造 "解析后无有效方块".
+        if (!hasBlocksPalette(root)) {
+            try {
+                CompoundTag converted = com.prefab.addon.work.NbtFormatConverter.toVanilla(root);
+                if (hasBlocksPalette(converted)) {
+                    PrefabCustomAddon.LOGGER.info("  第三方格式转换成功: {} blocks",
+                        converted.getList("blocks", Tag.TAG_COMPOUND).size());
+                    root = converted;
+                } else {
+                    PrefabCustomAddon.LOGGER.warn("  第三方格式转换后仍无 blocks+palette, keys={}",
+                        converted == null ? "null" : converted.getAllKeys());
+                }
+            } catch (Throwable t) {
+                PrefabCustomAddon.LOGGER.warn("  第三方格式转换失败: {}", t.toString());
+            }
+        }
+        return root;
+    }
+
+    /**
      * 递归查找第一个同时含 "blocks" 和 "palette" 的 CompoundTag.
      * 限制递归深度 5, 防止极端病态 NBT.
      */
-    private CompoundTag findNestedStructure(CompoundTag tag, int depth) {
+    private static CompoundTag findNestedStructure(CompoundTag tag, int depth) {
         if (depth > 5) return null;
-        if (tag.contains("blocks", 10) && tag.contains("palette", 10)) return tag;
+        if (hasBlocksPalette(tag)) return tag;
         for (String key : tag.getAllKeys()) {
             Tag child = tag.get(key);
             if (child instanceof CompoundTag childC) {
@@ -333,7 +395,8 @@ public class CustomStructureBuilder {
             if (blockName == null || blockName.isEmpty()) continue;
 
             Block block = BuiltInRegistries.BLOCK.getOptional(new ResourceLocation(blockName))
-                    .orElse(Blocks.AIR);
+                    // 未知方块 (缺依赖): 用 "?" 缺失方块占位; 原版 air 由下方 continue 跳过
+                    .orElse(com.prefab.addon.blocks.PrefabBlocks.MISSING_BLOCK.get());
             if (block == Blocks.AIR) continue;
 
             blocks.add(new BlockData(new BlockPos(x, y, z), block.defaultBlockState()));
@@ -353,8 +416,16 @@ public class CustomStructureBuilder {
                 return Blocks.AIR.defaultBlockState();
             }
             String name = tag.getString("Name");
-            Block block = BuiltInRegistries.BLOCK.getOptional(new ResourceLocation(name))
-                    .orElse(Blocks.AIR);
+            Block block = BuiltInRegistries.BLOCK.getOptional(new ResourceLocation(name)).orElse(null);
+            if (block == null) {
+                if (name.startsWith("minecraft:")) {
+                    // 原版 id 都该存在, 到不了这里; 兜底按 air
+                    return Blocks.AIR.defaultBlockState();
+                }
+                // mod 方块 (缺依赖, 如 create): 用 "?" 缺失方块占位, 让玩家一眼看出哪里缺了东西
+                PrefabCustomAddon.LOGGER.info("  readBlockState: 未知方块 '{}' (缺依赖?), 用缺失方块占位", name);
+                return com.prefab.addon.blocks.PrefabBlocks.MISSING_BLOCK.get().defaultBlockState();
+            }
             BlockState state = block.defaultBlockState();
 
             if (tag.contains("Properties", 10) && block != Blocks.AIR) {
@@ -475,16 +546,17 @@ public class CustomStructureBuilder {
         if (info == null) {
             PrefabCustomAddon.LOGGER.error("[PLACE-ASYNC] 找不到建筑: {}/{}", packName, constructionId);
             if (player != null) {
-                // 多行提示: 告诉玩家 (1) 真正的"权威"是服务端 prefab-extension/ 而不是本地
-                // (2) 怎么把包放到服务端 (3) 放完后怎么同步到客户端: 按 O → 同步拓展包
-                player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
-                    com.prefab.addon.PrefabCustomAddon.tr("err.not_found", packName, constructionId)
-                    + " §7(包名 " + packName + ")").withStyle(net.minecraft.ChatFormatting.RED));
-                player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
-                    com.prefab.addon.PrefabCustomAddon.tr("err.hint.pack_on_server"))
+                // 多行提示 (全部发 translatable: 客户端按玩家语言解析)
+                // (1) 找不到建筑 (2) 怎么上传到服务端 (3) 上传后无需手动同步
+                player.sendSystemMessage(net.minecraft.network.chat.Component
+                    .translatable("err.not_found", packName, constructionId)
+                    .append(net.minecraft.network.chat.Component.literal(" §7(包名 " + packName + ")"))
+                    .withStyle(net.minecraft.ChatFormatting.RED));
+                player.sendSystemMessage(net.minecraft.network.chat.Component
+                    .translatable("err.hint.pack_on_server")
                     .withStyle(net.minecraft.ChatFormatting.YELLOW));
-                player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
-                    com.prefab.addon.PrefabCustomAddon.tr("err.hint.sync_server"))
+                player.sendSystemMessage(net.minecraft.network.chat.Component
+                    .translatable("err.hint.sync_server")
                     .withStyle(net.minecraft.ChatFormatting.YELLOW));
             }
             return false;
@@ -495,8 +567,9 @@ public class CustomStructureBuilder {
         if (currentStructureNbt == null) {
             PrefabCustomAddon.LOGGER.error("[PLACE-ASYNC] 加载 NBT 失败: {}", constructionId);
             if (player != null) {
-                player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
-                    "§c✗ 加载建筑失败: " + constructionId).withStyle(net.minecraft.ChatFormatting.RED));
+                player.sendSystemMessage(net.minecraft.network.chat.Component
+                    .translatable("err.load_failed", constructionId)
+                    .withStyle(net.minecraft.ChatFormatting.RED));
             }
             return false;
         }
@@ -513,8 +586,9 @@ public class CustomStructureBuilder {
         if (blockDataList.isEmpty()) {
             PrefabCustomAddon.LOGGER.error("[PLACE-ASYNC] 解析后无有效方块");
             if (player != null) {
-                player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
-                    com.prefab.addon.PrefabCustomAddon.tr("err.parse_no_blocks")).withStyle(net.minecraft.ChatFormatting.RED));
+                player.sendSystemMessage(net.minecraft.network.chat.Component
+                    .translatable("err.parse_no_blocks")
+                    .withStyle(net.minecraft.ChatFormatting.RED));
             }
             return false;
         }
@@ -657,6 +731,17 @@ public class CustomStructureBuilder {
             new java.util.WeakHashMap<>();
 
     /**
+     * 每个建筑里 BuildBlock 的"原始 (未旋转) BlockState"缓存.
+     *
+     * <p>offsetStructureBlocks 在每次方向键移动时都会被调 (不只旋转时), 如果每次都把
+     * 当前 state 转 steps 步, 移动 N 次就多转 N×90° — 楼梯/原木/活塞这类朝向方块
+     * 预览越动越歪 (ALT 建造是服务端从 NBT 重新解析, 不受影响, 所以"建造出来正常").
+     * 每次从原始 state 转到目标 steps 才是幂等的.</p>
+     */
+    private static final java.util.Map<com.wuest.prefab.structures.base.Structure, java.util.Map<com.wuest.prefab.structures.base.BuildBlock, BlockState>> STRUCTURE_ORIGINAL_STATE =
+            new java.util.WeakHashMap<>();
+
+    /**
      * 外部代码把 structure 对应的
      * localPos map 注入. 不调这个, {@link #offsetStructureBlocks} 会 warn 后 return,
      * KeyHandler 移动/旋转预览时 blockPos 不更新 → 预览卡原位置.
@@ -743,8 +828,15 @@ public class CustomStructureBuilder {
             //    关键: state 也要跟着转, 否则预览跟实际放置不匹配 (预览里楼梯朝向 A,
             //    实际放下去后楼梯朝向 B). 跟 AsyncBuildManager.setBlock 用同一个 BlockStateRotator
             //    保证两边公式一致.
-            if (steps != 0 && bb.getBlockState() != null) {
-                bb.setBlockState(BlockStateRotator.rotateY(bb.getBlockState(), steps));
+            //    必须从"原始 state"出发 (见 STRUCTURE_ORIGINAL_STATE 注释), 不能累计旋转;
+            //    steps==0 时也要还原回原始 state (转了一圈回到 SOUTH).
+            BlockState originalState = STRUCTURE_ORIGINAL_STATE
+                    .computeIfAbsent(structure, s -> new java.util.HashMap<>())
+                    .computeIfAbsent(bb, b -> b.getBlockState());
+            if (originalState != null) {
+                bb.setBlockState(steps == 0
+                        ? originalState
+                        : BlockStateRotator.rotateY(originalState, steps));
             }
             bb.blockPos = new BlockPos(
                 basePos.getX() + centerX + rx,
@@ -774,15 +866,18 @@ public class CustomStructureBuilder {
      *  - properties（可选，特殊方块需要）
      */
     public static com.wuest.prefab.structures.base.Structure parseToPrefabStructure(ConstructionInfo construction) {
-        // 1. 加载 NBT
+        // 1. 加载 NBT (自动 gzip/未压缩) + 归一化 (嵌套解包 + 第三方格式转换)
         CompoundTag nbt;
         try {
             if (construction.getNbtData() == null) {
                 throw new IOException("No NBT data for: " + construction.getId());
             }
-            nbt = NbtIo.readCompressed(new ByteArrayInputStream(construction.getNbtData()));
+            nbt = ensureVanillaStructure(readNbtAuto(construction.getNbtData()));
         } catch (IOException e) {
             PrefabCustomAddon.LOGGER.error("Failed to load NBT for {}", construction.getId(), e);
+            return null;
+        } catch (Throwable t) {
+            PrefabCustomAddon.LOGGER.error("Failed to normalize NBT for {}", construction.getId(), t);
             return null;
         }
 

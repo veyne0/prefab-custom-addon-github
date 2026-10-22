@@ -24,6 +24,8 @@ import com.prefab.addon.extension.ExtensionPackManager;
 import com.prefab.addon.structure.AsyncBuildManager;
 import com.prefab.addon.structure.CustomStructureBuilder;
 import com.prefab.addon.structure.CustomStructureBuilder.BlockData;
+import com.prefab.addon.work.DependencyChecker;
+import com.prefab.addon.work.DependencyChecker.CheckResult;
 import com.prefab.addon.work.MaterialCalculator;
 import com.prefab.addon.work.NbtStructureParser;
 import com.wuest.prefab.structures.base.Structure;
@@ -33,6 +35,7 @@ import com.wuest.prefab.structures.render.StructureRenderHandler;
 import dev.vfyjxf.taffy.style.AlignContent;
 import dev.vfyjxf.taffy.style.FlexDirection;
 import net.minecraft.client.Minecraft;
+import com.lowdragmc.lowdraglib2.math.Size;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.network.chat.Component;
@@ -123,6 +126,14 @@ public class CustomStructureGui {
     private static volatile com.wuest.prefab.structures.base.Structure ADDON_PREVIEW_STRUCTURE = null;
     private static volatile com.wuest.prefab.structures.config.StructureConfiguration ADDON_PREVIEW_CONFIG = null;
 
+    // === 外包建筑预览上下文 (从 1.21.1 移植) ===
+    // GuiOutsourceBuildingDetail.onPreview 启动预览时把 buildingId/styleIndex 存这里,
+    // ALT 建造时 StructurePreviewKeyHandler 读 isCurrentOutsource() 决定走哪条 build 路径.
+    // 跟 currentConstruction (普通自定义建筑) 互斥: 不会同时 setCurrentConstruction + setOutsourceContext.
+    private static volatile boolean currentIsOutsource = false;
+    private static volatile String currentOutsourceBuildingId = null;
+    private static volatile int currentOutsourceStyleIndex = 0;
+
     // === 增量渲染状态 ===
     private static Scene renderScene;
     private static TrackedDummyWorld renderWorld;
@@ -150,6 +161,24 @@ public class CustomStructureGui {
     private static String statusMsg = null;
     private static int statusColor = 0x55FF55;
 
+    /** 从建筑终端打开 (openFromTerminal): 关闭 GUI 时自动重开终端而非返回浏览器 */
+    private static boolean fromTerminal = false;
+
+    // === 蓝图广场入口标记 (从 1.21.1 移植) ===
+    // 从蓝图广场 (GuiBlueprintMarket) 点已下载建筑进来时 = true:
+    //   跟终端入口一样是"无蓝图建造" — ALT 建造跳过背包自定义蓝图检查/绑定
+    //   (下载的建筑和自定义蓝图物品无关, 不该要求玩家拿着蓝图).
+    // 与 fromTerminal 分开: 关闭行为不同 — 终端要重开终端, 广场直接关屏回世界;
+    // 走 closeScreen 关闭时重开蓝图广场 (浏览位置/分类/搜索都保留).
+    private static boolean noBlueprintEntry = false;
+
+    /** 关闭 GUI 时返回上一级的回调 (浏览器蓝图模式进入时传入); null = 默认关闭到游戏. */
+    private static Runnable onBackCallback = null;
+
+    // === 依赖检测结果 (open 时自动跑一次, 侧边栏依赖行按结果显示 ✓/✗) ===
+    private static boolean depChecked = false;
+    private static List<String> depMissingIds = null;
+
     private CustomStructureGui() {}
 
     /**
@@ -168,7 +197,18 @@ public class CustomStructureGui {
      * @param openPos 玩家右键蓝图时的位置 (用于构建位置)
      */
     public static void open(ConstructionInfo construction, ItemStack blueprint, BlockPos openPos) {
+        open(construction, blueprint, openPos, null);
+    }
+
+    /**
+     * 打开自定义建筑选择界面 (带返回回调).
+     *
+     * @param onBack 关闭 GUI 时的返回回调 (例如浏览器蓝图模式传"重开浏览器"); null = 直接退出到游戏
+     */
+    public static void open(ConstructionInfo construction, ItemStack blueprint, BlockPos openPos,
+                            Runnable onBack) {
         resetState();
+        onBackCallback = onBack;
         currentConstruction = construction;
         currentBlueprint = blueprint;
         currentOpenPos = openPos == null ? BlockPos.ZERO : openPos;
@@ -183,10 +223,110 @@ public class CustomStructureGui {
         PrefabCustomAddon.LOGGER.info("[CUSTOM-GUI-V2] open: construction='{}' id='{}' challengeMode={}",
             construction.getName(), construction.getId(), challengeMode);
 
+        runDepCheckSilently(construction);
         startAsyncParse(construction);
         ModularUI ui = createUI(construction);
         Minecraft.getInstance().setScreen(
             new ModularUIScreen(ui, Component.literal(construction.getName())));
+    }
+
+    /**
+     * 从建筑终端打开指定建筑 (1.21.1 对齐).
+     * 与 {@link #open} 的区别: 不携带蓝图, 关闭时自动重开终端, 打开前自动跑依赖检测.
+     */
+    public static void openFromTerminal(ConstructionInfo construction, BlockPos openPos) {
+        resetState();
+        fromTerminal = true;
+        currentConstruction = construction;
+        currentBlueprint = null;
+        currentOpenPos = openPos == null ? BlockPos.ZERO : openPos;
+        challengeMode = shouldConsumeMaterials();
+
+        PrefabCustomAddon.LOGGER.info("[CUSTOM-GUI-V2] openFromTerminal: construction='{}' id='{}' challengeMode={}",
+            construction.getName(), construction.getId(), challengeMode);
+
+        runDepCheckSilently(construction);
+        startAsyncParse(construction);
+        ModularUI ui = createUI(construction);
+        runAutoDepCheck(construction);
+        Minecraft.getInstance().setScreen(
+            new ModularUIScreen(ui, Component.literal(construction.getName())));
+    }
+
+    /**
+     * 从蓝图广场 (GuiBlueprintMarket) 点已下载建筑直跳打开 (1.21.1 对齐).
+     * 无蓝图建造模式: ALT 建造不要求/不绑定自定义蓝图 (同终端入口),
+     * 关闭时直接回游戏或重开蓝图广场.
+     */
+    public static void openFromMarket(ConstructionInfo construction, BlockPos openPos) {
+        open(construction, null, openPos);
+        // open() 内部 resetState() 会清标记, 这里在 setScreen 之前补上
+        noBlueprintEntry = true;
+    }
+
+    /** 打开时自动跑一次依赖检测, 结果供侧边栏依赖行着色 (✗ 缺失红 / ✓ 已装绿), 不弹提示. */
+    private static void runDepCheckSilently(ConstructionInfo c) {
+        depChecked = false;
+        depMissingIds = null;
+        List<String> deps = c.getDependencies();
+        if (deps == null || deps.isEmpty()) {
+            depChecked = true;
+            return;
+        }
+        try {
+            CheckResult result = DependencyChecker.check(deps);
+            if (result != null && result.missing != null) {
+                depMissingIds = new ArrayList<>();
+                for (String m : result.missing) {
+                    // 防御: missing 元素理论上已是干净 modid, 这里仍截断冒号兜底
+                    String clean = m;
+                    int colon = clean.indexOf(':');
+                    if (colon > 0) clean = clean.substring(0, colon);
+                    depMissingIds.add(clean);
+                }
+            }
+        } catch (Throwable t) {
+            PrefabCustomAddon.LOGGER.warn("[CUSTOM-GUI-V2] dep check failed (non-fatal)", t);
+        }
+        depChecked = true;
+    }
+
+    /** 打开时自动跑一次依赖检测, 结果显示在状态栏 (1.21.1 对齐). */
+    private static void runAutoDepCheck(ConstructionInfo c) {
+        List<String> deps = c.getDependencies();
+        DependencyChecker.CheckResult result = GuiConstructionDetail.checkDepsAndUpdate(c);
+        if (result.missing.isEmpty()) {
+            showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.dep_check_pass",
+                result.present.size(), (deps == null ? 0 : deps.size())), 0x55FF55, 200);
+        } else {
+            showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.dep_check_done"), 0xFFAA55, 200);
+        }
+    }
+
+    /** 统一关闭入口: 优先走返回回调 (浏览器蓝图模式返回浏览器), fromTerminal 时自动重开建筑终端. */
+    private static void closeScreen() {
+        PrefabCustomAddon.LOGGER.info("[AUI-DBG] custom-gui closeScreen onBack={} fromTerminal={}",
+            onBackCallback != null, fromTerminal);
+        Minecraft.getInstance().setScreen(null);
+        Runnable back = onBackCallback;
+        onBackCallback = null;
+        if (back != null) {
+            back.run();
+            return;
+        }
+        if (fromTerminal) {
+            fromTerminal = false;
+            com.prefab.addon.terminal.client.gui.TerminalGui.selectBuildingsOnReopen();
+            com.prefab.addon.terminal.network.TerminalPayloads.sendReopenTerminal();
+        } else if (noBlueprintEntry) {
+            noBlueprintEntry = false;
+            // 从蓝图广场打开时重开蓝图广场 (浏览位置/分类/搜索都保留)
+            GuiBlueprintMarket.open();
+        }
+    }
+
+    public static boolean isFromTerminal() {
+        return fromTerminal;
     }
 
     private static void resetState() {
@@ -214,6 +354,10 @@ public class CustomStructureGui {
         statusTick = 0;
         statusMsg = null;
         challengeMode = false;
+        fromTerminal = false;
+        noBlueprintEntry = false;
+        depChecked = false;
+        depMissingIds = null;
     }
 
     private static void startAsyncParse(ConstructionInfo construction) {
@@ -238,8 +382,18 @@ public class CustomStructureGui {
                     List<BlockData> blocks = CustomStructureBuilder.getInstance().parseStructureBlocks();
                     try {
                         materialList = MaterialCalculator.calculate(nbtData);
+                        // 兜底: calculate 只认 vanilla palette+blocks 格式, litematic/schem
+                        // 会得到空 required (生存模式免材料 bug). 用解析好的方块列表重算.
+                        if ((materialList == null || materialList.required.isEmpty())
+                                && blocks != null && !blocks.isEmpty()) {
+                            materialList = MaterialCalculator.fromBlocks(blocks);
+                        }
                         nbtInfo = NbtStructureParser.parse(nbtData);
                     } catch (Throwable t) {
+                        // 计算异常也兜底 (materialList=null 同样会免材料)
+                        if (blocks != null && !blocks.isEmpty()) {
+                            materialList = MaterialCalculator.fromBlocks(blocks);
+                        }
                         PrefabCustomAddon.LOGGER.warn("[CUSTOM-GUI-V2] Material/info parse failed (non-fatal)", t);
                     }
                     long ms = System.currentTimeMillis() - t0;
@@ -277,7 +431,7 @@ public class CustomStructureGui {
         }
     }
 
-    private static void initRender() {
+    private static void initRender(int panelW, int panelH) {
         if (parseResult == null || parseResult.isEmpty()) {
             renderDone = true;
             return;
@@ -326,8 +480,20 @@ public class CustomStructureGui {
             renderScene.syncCompile(true);
             renderScene.setTickWorld(false);
 
-            renderScene.createScene(renderWorld);
+            // FBO 渲染器: Immediate 渲染器的 unProject/glReadPixels 用 GUI 顶部原点 y,
+            // 而 GL 是底部原点 - trace 反投影会镜像错位 (tooltip/选中乱跳);
+            // FBOWorldSceneRenderer.drawScene 内部做了 (1 - (mouseY-y)/height) 翻转修正.
+            // fboSize 按面板尺寸 x GUI 缩放传入, 保证宽高比一致 (不拉伸) 且清晰.
+            var mc = Minecraft.getInstance();
+            int scale = (int) mc.getWindow().getGuiScale();
+            int fboW = Math.min(2048, Math.max(16, panelW * Math.max(1, scale)));
+            int fboH = Math.min(2048, Math.max(16, panelH * Math.max(1, scale)));
+            renderScene.createScene(renderWorld, true, Size.of(fboW, fboH));
             renderScene.setRenderedCore(positions, null, true);
+            // 悬停方块显示原生物品 tooltip (Scene.showHoverBlockTips, 不依赖 JEI);
+            // xeiLookup 另提供 JEI/REI/EMI 查询集成
+            renderScene.setShowHoverBlockTips(true);
+            renderScene.xeiLookup();
 
             renderActive = true;
         } catch (Throwable t) {
@@ -464,7 +630,7 @@ public class CustomStructureGui {
                     try { scene.releaseRendererResource(); } catch (Throwable ignored) {}
                 }
             } finally {
-                Minecraft.getInstance().setScreen(null);
+                closeScreen();
             }
         });
         btnCancel.layout(l -> l.flexGrow(1).heightPercent(100));
@@ -484,10 +650,46 @@ public class CustomStructureGui {
             buttonRow.addChild(btnPreview);
         }
 
+        // 只对 KubeJS 蓝图隐藏缩略图/更换建筑按钮 (对齐 1.21.1 的 [关闭][预览] 布局);
+        // 自定义蓝图右键、终端入口保持原有按钮不动.
+        // 注意: isHandledBlueprint 对原生 CustomBlueprintItem 也返回 true (语义是"拦截右键"),
+        // 这里必须再排除原生, 只认 KubeJS 注册的带 player_blueprint tag 的物品.
+        boolean isKubeBlueprint = currentBlueprint != null && !currentBlueprint.isEmpty()
+                && !(currentBlueprint.getItem() instanceof com.prefab.addon.items.CustomBlueprintItem)
+                && com.prefab.addon.client.CustomBlueprintClientHandler.isHandledBlueprint(currentBlueprint);
+
+        if (!isKubeBlueprint) {
+        // 缩略图按钮: 把右侧 3D 预览截屏存成建筑缩略图 (浏览器卡片/终端用)
+        // 无图="生成缩略图" / 已有缓存="更新缩略图" / 建筑自带原图="已带原图"(禁用)
+        // 对齐 GuiConstructionDetail 的同名按钮, 自定义蓝图 + 终端两个入口都能用
+        Button btnThumb = new Button();
+        if (construction.hasPreviewImage()) {
+            btnThumb.setText(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.has_thumb"));
+            btnThumb.setActive(false);
+        } else {
+            btnThumb.setText(com.prefab.addon.PrefabCustomAddon.tr(
+                com.prefab.addon.client.ThumbnailCache.hasCached(construction)
+                    ? "gui.detail.update_thumb" : "gui.detail.generate_thumb"));
+            btnThumb.setOnClick(e -> {
+                captureCurrentSceneToThumbnail();
+                // 生成成功后把按钮文字切成 "更新缩略图"
+                if (currentConstruction != null && !currentConstruction.hasPreviewImage()
+                    && com.prefab.addon.client.ThumbnailCache.hasCached(currentConstruction)) {
+                    btnThumb.setText(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.update_thumb"));
+                }
+            });
+        }
+        btnThumb.layout(l -> l.flexGrow(1).heightPercent(100));
+        buttonRow.addChild(btnThumb);
+        } // end if (!isKubeBlueprint)
+
         // 更换建筑按钮
         // 需求: 跳到建筑浏览器 (第1张图, 左侧 tab 栏 + 建筑卡片网格),
         //       而不是直接进入某个建筑的详情 (之前: GuiConstructionDetail.openFirstAvailable()).
         // 流程: 关闭当前 CustomStructureGui, 释放 3D 渲染资源, 打开建筑浏览器.
+        // 从建筑终端打开时不显示"更换建筑"按钮 (对齐 1.21.1: 关闭后自动重开终端)
+        // KubeJS 蓝图也不显示 (对齐 1.21.1 的 KubeJS 蓝图右键布局)
+        if (!fromTerminal && !isKubeBlueprint) {
         Button btnChange = new Button().setText(com.prefab.addon.PrefabCustomAddon.tr("gui.custom.change"));
         btnChange.setOnClick(e -> {
             if (renderScene != null) renderScene.releaseRendererResource();
@@ -514,6 +716,7 @@ public class CustomStructureGui {
             btnChange.setText(com.prefab.addon.PrefabCustomAddon.tr("gui.custom.locked"));
         }
         buttonRow.addChild(btnChange);
+        } // end if (!fromTerminal && !isKubeBlueprint)
 
         root.addChild(buttonRow);
 
@@ -539,7 +742,7 @@ public class CustomStructureGui {
 
             // parse 完成后初始化 render
             if (parseComplete && !parseFailed && renderScene == null && !renderActive && !renderDone) {
-                initRender();
+                initRender((int) sceneContainer.getSizeWidth(), (int) sceneContainer.getSizeHeight());
                 if (renderScene != null) {
                     sceneContainer.clearAllChildren();
                     renderScene.layout(l -> l.widthPercent(100).heightPercent(100));
@@ -596,8 +799,10 @@ public class CustomStructureGui {
             updateMainButtonState();
         });
 
+        // Scene tooltip 依赖 ModularUI.player (getCloneItemStack 需要玩家), 客户端界面必须显式传入
         return ModularUI.of(UI.of(root,
-            StylesheetManager.INSTANCE.getStylesheetSafe(StylesheetManager.MC)));
+            StylesheetManager.INSTANCE.getStylesheetSafe(StylesheetManager.MC)),
+            Minecraft.getInstance().player);
     }
 
     // === 左侧信息侧边栏 (排版/颜色对齐 GuiConstructionDetail.createInfoScroller, 只读无检测交互) ===
@@ -648,7 +853,7 @@ public class CustomStructureGui {
         addField(content, com.prefab.addon.PrefabCustomAddon.tr("gui.detail.format"),
             construction.getFormatDisplay());
 
-        // 依赖 mod (本界面无"检测依赖"按钮, 只列出; 未检测显示白色)
+        // 依赖 mod (open 时已自动检测, 按结果显示 ✗ 缺失红 / ✓ 已装绿)
         List<String> deps = construction.getDependencies();
         addFieldLabel(content, com.prefab.addon.PrefabCustomAddon.tr("gui.detail.dep_label",
             deps == null ? 0 : deps.size()));
@@ -656,7 +861,55 @@ public class CustomStructureGui {
             addValueLine(content, com.prefab.addon.PrefabCustomAddon.tr("gui.detail.deps_none"), 0xAAAAAA);
         } else {
             for (String d : deps) {
-                addValueLine(content, com.prefab.addon.PrefabCustomAddon.tr("gui.detail.dep_unknown", d), 0xFFFFFF);
+                String cleanId = d;
+                int colon = cleanId.indexOf(':');
+                if (colon > 0) cleanId = cleanId.substring(0, colon);
+                if (depChecked && depMissingIds != null && depMissingIds.contains(cleanId)) {
+                    // 缺失 - 红字可点 + 绿色「[查询]」可点 (与浏览器详情页同款实现).
+                    // 点击区用"无背景 Button" (LDLib2 只有 Button 有 setOnClick),
+                    // base/pressed 全 EMPTY = 纯文字外观, 悬停亮起; flexGrow/固定宽度
+                    // 保证按钮有布局边界, 否则 0 宽命中不了鼠标.
+                    final String depId = cleanId;
+                    UIElement row = new UIElement();
+                    row.layout(l -> l.flexDirection(dev.vfyjxf.taffy.style.FlexDirection.ROW)
+                            .widthPercent(100).height(12).gapAll(2));
+                    content.addChild(row);
+                    com.lowdragmc.lowdraglib2.gui.ui.elements.Button miss =
+                            new com.lowdragmc.lowdraglib2.gui.ui.elements.Button()
+                                    .setText(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.dep_missing", d), false);
+                    miss.textStyle(t -> t.textColor(0xFF5555));
+                    miss.buttonStyle(s -> s.baseTexture(com.lowdragmc.lowdraglib2.gui.texture.IGuiTexture.EMPTY)
+                            .hoverTexture(com.lowdragmc.lowdraglib2.gui.ui.styletemplate.Sprites.RECT_LIGHT)
+                            .pressedTexture(com.lowdragmc.lowdraglib2.gui.texture.IGuiTexture.EMPTY));
+                    miss.layout(l -> l.height(12).paddingAll(0).flexGrow(1));
+                    miss.setOnClick(e -> {
+                        // [DEP-CLICK] 调试: 确认红字点击是否触发
+                        com.prefab.addon.PrefabCustomAddon.LOGGER.info(
+                                "[DEP-CLICK] 蓝图界面缺失依赖红字被点击: {}", depId);
+                        GuiModrinthSearch.open(depId);
+                    });
+                    row.addChild(miss);
+                    com.lowdragmc.lowdraglib2.gui.ui.elements.Button search =
+                            new com.lowdragmc.lowdraglib2.gui.ui.elements.Button().setText("[查询]", false);
+                    search.textStyle(t -> t.textColor(0x55FF55));
+                    search.buttonStyle(s -> s.baseTexture(com.lowdragmc.lowdraglib2.gui.texture.IGuiTexture.EMPTY)
+                            .hoverTexture(com.lowdragmc.lowdraglib2.gui.ui.styletemplate.Sprites.RECT_LIGHT)
+                            .pressedTexture(com.lowdragmc.lowdraglib2.gui.texture.IGuiTexture.EMPTY));
+                    search.layout(l -> l.height(12).paddingAll(0).width(36));
+                    search.setOnClick(e -> {
+                        // [DEP-CLICK] 调试: 确认 [查询] 按钮点击是否触发
+                        com.prefab.addon.PrefabCustomAddon.LOGGER.info(
+                                "[DEP-CLICK] 蓝图界面 [查询] 按钮被点击: {}", depId);
+                        GuiModrinthSearch.open(depId);
+                    });
+                    row.addChild(search);
+                } else if (depChecked) {
+                    // 已安装 - 绿色
+                    addValueLine(content, com.prefab.addon.PrefabCustomAddon.tr("gui.detail.dep_present", d), 0x55FF55);
+                } else {
+                    // 检测异常兜底 - 白色
+                    addValueLine(content, com.prefab.addon.PrefabCustomAddon.tr("gui.detail.dep_unknown", d), 0xFFFFFF);
+                }
             }
         }
 
@@ -717,8 +970,19 @@ public class CustomStructureGui {
         return new int[]{ maxX - minX + 1, maxY - minY + 1, maxZ - minZ + 1 };
     }
 
+    /** 依赖缺失时禁止提交材料与建造 (runDepCheckSilently 已在打开时跑过检测). */
+    private static boolean depMissing() {
+        return depChecked && depMissingIds != null && !depMissingIds.isEmpty();
+    }
+
     /** 建造按钮 (或挑战模式下的"提交材料"/"预览"按钮) 点击处理 */
     private static void handleMainButtonClick() {
+        // 依赖缺失 → 提交材料/预览/建造全部阻止 (缺 mod 建出来也是残缺方块)
+        if (depMissing()) {
+            showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.custom.dep_missing_block",
+                String.join(", ", depMissingIds)), 0xFF5555, 200);
+            return;
+        }
         if (challengeMode) {
             // 挑战模式: 按钮在材料未交齐时显示 "提交材料", 交齐后变成 "预览".
             // 用 checkMaterialsReady() 决定当前按下去是哪种行为.
@@ -852,6 +1116,12 @@ public class CustomStructureGui {
     private static void performBuildOrPreview() {
         if (currentConstruction == null) return;
 
+        // 依赖缺失 → 阻止建造 (兜底: 覆盖预览 ALT 建造等其它入口)
+        if (depMissing()) {
+            showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.custom.dep_missing_block",
+                String.join(", ", depMissingIds)), 0xFF5555, 200);
+            return;
+        }
         // 多人模式下, 服务器没有这个拓展包 → 阻止
         if (!com.prefab.addon.extension.ExtensionPackManager.isBuildable(currentConstruction)) {
             showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.custom.no_server_pack"), 0xFF5555, 200);
@@ -951,6 +1221,10 @@ public class CustomStructureGui {
         LAST_ADDON_STRUCTURE_REF.set(null);
         ADDON_PREVIEW_STRUCTURE = null;
         ADDON_PREVIEW_CONFIG = null;
+        // 外包建筑上下文也清 (预览结束, 两条路径都不再活跃)
+        currentIsOutsource = false;
+        currentOutsourceBuildingId = null;
+        currentOutsourceStyleIndex = 0;
     }
 
     /**
@@ -973,12 +1247,91 @@ public class CustomStructureGui {
         }
     }
 
+    // ============== 外包建筑预览上下文 (从 1.21.1 移植) ==============
+
+    /**
+     * 当前预览是不是来自 {@link com.prefab.addon.client.gui.GuiOutsourceBuildingDetail}.
+     * ALT 建造时, {@link com.prefab.addon.client.StructurePreviewKeyHandler} 用这个
+     * 决定走 {@code triggerOutsourceBuildAtPreview} 还是 {@code triggerBuildAtPreview}.
+     */
+    public static boolean isCurrentOutsource() {
+        return currentIsOutsource;
+    }
+
+    /** 当前预览对应的 buildingId (例如 {@code 投影_中式茶楼}). */
+    public static String getCurrentOutsourceBuildingId() {
+        return currentOutsourceBuildingId;
+    }
+
+    /** 当前预览对应的风格索引 (0-based). */
+    public static int getCurrentOutsourceStyleIndex() {
+        return currentOutsourceStyleIndex;
+    }
+
+    /**
+     * 由 {@link com.prefab.addon.client.gui.GuiOutsourceBuildingDetail#onPreview} 在启动
+     * 预览时调用. 跟 {@link #setCurrentConstruction} 互斥 (不要同时调).
+     */
+    public static void setOutsourceContext(String buildingId, int styleIndex) {
+        currentIsOutsource = true;
+        currentOutsourceBuildingId = buildingId;
+        currentOutsourceStyleIndex = styleIndex;
+        // 同时把普通 custom 的 currentConstruction 显式置 null, 防止 ALT 分支误判
+        // "上一个 custom 建筑还在", 走错 build 路径
+        currentConstruction = null;
+    }
+
     private static boolean checkMaterialsReady() {
         if (materialList == null || materialList.required.isEmpty()) return true;
         net.minecraft.client.player.LocalPlayer player = Minecraft.getInstance().player;
         if (player == null) return false;
         return com.prefab.addon.work.ChallengeSessionManager.isReady(
             player.getUUID(), currentConstruction.getId(), materialList.required);
+    }
+
+    /**
+     * 截屏当前 3D 预览到 ThumbnailCache (自定义蓝图/终端详情页的缩略图按钮).
+     *
+     * <p>流程与 {@link GuiConstructionDetail#captureCurrentSceneToThumbnail} 相同:
+     * 拿 renderScene 的屏幕位置和大小, 调
+     * {@link com.prefab.addon.client.ThumbnailCache#captureRegion}
+     * (GUI 坐标 → framebuffer 像素坐标 + glReadPixels + box-filter 缩放到 256px + 写盘).</p>
+     */
+    private static void captureCurrentSceneToThumbnail() {
+        if (renderScene == null || currentConstruction == null) {
+            showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.thumb_not_ready"), 0xFF5555, 60);
+            return;
+        }
+        if (currentConstruction.hasPreviewImage()) {
+            showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.thumb_has_orig"), 0xFFAA55, 60);
+            return;
+        }
+        if (com.prefab.addon.client.ThumbnailCache.hasCached(currentConstruction)) {
+            // 已有缓存, 删除旧的再生成
+            try {
+                java.nio.file.Files.deleteIfExists(
+                    com.prefab.addon.client.ThumbnailCache.getCacheFile(currentConstruction));
+            } catch (Exception ignored) {}
+        }
+        int sceneScreenX = (int) renderScene.getPositionX();
+        int sceneScreenY = (int) renderScene.getPositionY();
+        int sceneScreenW = (int) renderScene.getSizeWidth();
+        int sceneScreenH = (int) renderScene.getSizeHeight();
+        if (sceneScreenW <= 0 || sceneScreenH <= 0) {
+            showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.thumb_not_drawn"), 0xFF5555, 60);
+            return;
+        }
+        // 共用截图: 坐标换算 + glReadPixels + box-filter 缩放到 256px + 写盘 + notifyCompleted
+        boolean ok = com.prefab.addon.client.ThumbnailCache.captureRegion(
+            sceneScreenX, sceneScreenY, sceneScreenW, sceneScreenH, currentConstruction, 256);
+        if (ok) {
+            showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.thumb_saved",
+                com.prefab.addon.client.ThumbnailCache.getCacheFile(currentConstruction)
+                    .getFileName().toString()), 0x55FF55, 60);
+        } else {
+            showStatus(com.prefab.addon.PrefabCustomAddon.tr("gui.detail.screenshot_fail", "capture"),
+                0xFF5555, 60);
+        }
     }
 
     private static void showStatus(String msg, int color, int ticks) {

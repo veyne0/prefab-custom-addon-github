@@ -98,6 +98,14 @@ public class NbtFormatConverter {
                 && root.contains("BlockData", Tag.TAG_BYTE_ARRAY)) {
             return "sponge_v2";
         }
+        // MCEdit / 老 Schematica legacy .schem (数字 ID, 无 palette, 无 Version):
+        // Blocks=byte[] 每格一个数字 ID, Data=byte[] 每格一个 metadata,
+        // 可选 Materials="Alpha" / WEOffsetX|Y|Z / TileEntities / Entities.
+        // 和 sponge v2 的区别: sponge 有 Version+Palette+BlockData, legacy 全都没有.
+        if (root.contains("Blocks", Tag.TAG_BYTE_ARRAY) && root.contains("Data", Tag.TAG_BYTE_ARRAY)
+                && isAnyNumeric(root, "Width") && isAnyNumeric(root, "Height") && isAnyNumeric(root, "Length")) {
+            return "legacy_mcedit";
+        }
         // Vanilla structure: 有 "palette" (ListTag) + "blocks" (ListTag)
         if (root.contains("palette", Tag.TAG_LIST) && root.contains("blocks", Tag.TAG_LIST)) {
             return "vanilla";
@@ -154,6 +162,9 @@ public class NbtFormatConverter {
                 case "sponge_v2":
                     PrefabCustomAddon.LOGGER.info("[NBT-DEBUG] Converting sponge_v2 → vanilla");
                     return spongeV2ToVanilla(root);
+                case "legacy_mcedit":
+                    PrefabCustomAddon.LOGGER.info("[NBT-DEBUG] Converting legacy_mcedit (数字 ID .schem) → vanilla");
+                    return legacyMceditToVanilla(root);
                 default:
                     PrefabCustomAddon.LOGGER.warn("[NBT-DEBUG] 格式为 {}, 不转换直接返回原 NBT", fmt);
                     return root;  // vanilla / unknown
@@ -162,6 +173,348 @@ public class NbtFormatConverter {
             PrefabCustomAddon.LOGGER.error("[NBT-DEBUG] 转换 {} 到 vanilla 失败: {}", fmt, t.getMessage(), t);
             return root;
         }
+    }
+
+    // ===================================================================
+    // MCEdit / 老 Schematica legacy .schem (数字 ID, 无 palette)
+    // ===================================================================
+    /**
+     * 格式 (1.7-1.12 时代 WorldEdit/MCEdit .schematic, 蓝图站上仍有不少):
+     *   顶层: {"Width","Height","Length" (short), "Blocks": byte[] (每格一个数字 ID 0-255),
+     *          "Data": byte[] (每格一个 metadata 0-15), "Materials": "Alpha",
+     *          可选 TileEntities / Entities / WEOffsetX|Y|Z}
+     *   没有 Version/Palette/BlockData —— 这是它和 sponge v2 的关键区别.
+     *
+     * 顺序: index = (y * Length + z) * Width + x (x 最快, z 其次, y 最慢) — 与 litematica 一致.
+     *
+     * 1.13 扁平化后数字 ID 不复存在, 这里内置一张常用 ID+metadata → 现代方块名映射表.
+     * 未收录的 ID 回退 stone 并 warn (宁可多块石头, 别整栋楼消失).
+     */
+    private static final java.util.Map<Long, CompoundTag> LEGACY_STATES = new java.util.HashMap<>();
+    /** 16 色染料顺序 (metadata 0-15) */
+    private static final String[] DYE_COLORS = {
+        "white","orange","magenta","light_blue","yellow","lime","pink","gray","light_gray",
+        "cyan","purple","blue","brown","green","red","black"};
+    /** 原木 6 种 */
+    private static final String[] WOODS = {"oak","spruce","birch","jungle","acacia","dark_oak"};
+    /** 台阶/木头种类 (meta&7 / &5) */
+    private static final String[] SLAB_TYPES = {"stone","sandstone","oak","cobblestone","brick",
+        "stone_brick","nether_brick","quartz"};
+    /** 原木/骨块轴向 (meta>>2)&3 / meta&3 */
+    private static final String[] AXIS = {"y","x","z"};
+    /** 台阶朝向 (meta&3): 升坡方向 = 面朝 */
+    private static final String[] STAIR_FACE = {"east","west","south","north"};
+    /** 上下朝向方块 (meta&7): 活塞/发射器/投掷器/漏斗/观察者 */
+    private static final String[] FACE_FULL = {"down","up","north","south","west","east"};
+    /** 箱子/熔炉类 (meta&7): 2-5 = 北南西东, 0/1 无效取北 */
+    private static final String[] FACE_NSWE = {"north","north","north","south","west","east"};
+    /** 南瓜/栅栏门/带釉陶土 (meta&3) */
+    private static final String[] FACE_SWNE = {"south","west","north","east"};
+
+    /** 添加一条映射: (id<<4|meta) → {Name: minecraft:<name>, Properties?} */
+    private static void lg(int id, int meta, String name, String... props) {
+        CompoundTag tag = new CompoundTag();
+        tag.putString("Name", "minecraft:" + name);
+        if (props.length > 0 && props.length % 2 == 0) {
+            CompoundTag p = new CompoundTag();
+            for (int i = 0; i < props.length; i += 2) p.putString(props[i], props[i + 1]);
+            tag.put("Properties", p);
+        }
+        LEGACY_STATES.put(((long) id << 4) | (meta & 0xF), tag);
+    }
+
+    /** 16 色一排 (id, 后缀): 如 35 wool → white_wool..black_wool */
+    private static void lgColors(int id, String suffix) {
+        for (int i = 0; i < 16; i++) lg(id, i, DYE_COLORS[i] + suffix);
+    }
+
+    static {
+        lg(1,0,"stone"); lg(1,1,"granite"); lg(1,2,"polished_granite");
+        lg(1,3,"diorite"); lg(1,4,"polished_diorite"); lg(1,5,"andesite"); lg(1,6,"polished_andesite");
+        lg(2,0,"grass_block");
+        lg(3,0,"dirt"); lg(3,1,"coarse_dirt"); lg(3,2,"podzol","snowy","false");
+        lg(4,0,"cobblestone");
+        for (int i=0;i<6;i++) lg(5,i,WOODS[i]+"_planks");
+        lg(7,0,"bedrock");
+        lg(8,0,"water"); lg(9,0,"water"); lg(10,0,"lava"); lg(11,0,"lava");
+        lg(12,0,"sand"); lg(12,1,"red_sand");
+        lg(13,0,"gravel");
+        lg(14,0,"gold_ore"); lg(15,0,"iron_ore"); lg(16,0,"coal_ore");
+        lg(19,0,"sponge"); lg(19,1,"wet_sponge");
+        lg(20,0,"glass");
+        lg(21,0,"lapis_ore"); lg(22,0,"lapis_block");
+        lg(24,0,"sandstone"); lg(24,1,"chiseled_sandstone"); lg(24,2,"cut_sandstone");
+        lg(25,0,"note_block");
+        lg(27,0,"powered_rail"); lg(28,0,"detector_rail"); lg(30,0,"cobweb");
+        lg(31,0,"dead_bush"); lg(31,1,"grass"); lg(31,2,"fern");
+        lg(32,0,"dead_bush");
+        lg(37,0,"dandelion");
+        lg(38,0,"poppy"); lg(38,1,"blue_orchid"); lg(38,2,"allium"); lg(38,3,"azure_bluet");
+        lg(38,4,"red_tulip"); lg(38,5,"orange_tulip"); lg(38,6,"white_tulip"); lg(38,7,"pink_tulip");
+        lg(38,8,"oxeye_daisy");
+        lg(39,0,"brown_mushroom"); lg(40,0,"red_mushroom");
+        lg(41,0,"gold_block"); lg(42,0,"iron_block");
+        lg(45,0,"bricks"); lg(46,0,"tnt"); lg(47,0,"bookshelf"); lg(48,0,"mossy_cobblestone");
+        lg(49,0,"obsidian"); lg(50,0,"torch");
+        lg(52,0,"spawner");
+        lg(55,0,"redstone_wire"); lg(56,0,"diamond_ore"); lg(57,0,"diamond_block");
+        lg(58,0,"crafting_table");
+        lg(60,0,"farmland","moisture","7");
+        lg(65,0,"ladder");  // facing 在 mapLegacyState 动态处理
+        lg(66,0,"rail");
+        lg(70,0,"stone_pressure_plate"); lg(72,0,"oak_pressure_plate");
+        lg(73,0,"redstone_ore"); lg(74,0,"redstone_ore","lit","true");
+        lg(75,0,"redstone_torch","lit","false");
+        lg(76,0,"redstone_torch","lit","true");
+        lg(79,0,"ice"); lg(80,0,"snow_block"); lg(82,0,"clay"); lg(83,0,"sugar_cane");
+        lg(85,0,"oak_fence");
+        lg(87,0,"netherrack"); lg(88,0,"soul_sand"); lg(89,0,"glowstone");
+        lg(97,0,"infested_stone");
+        lg(98,0,"stone_bricks"); lg(98,1,"mossy_stone_bricks");
+        lg(98,2,"cracked_stone_bricks"); lg(98,3,"chiseled_stone_bricks");
+        lg(99,0,"brown_mushroom_block"); lg(100,0,"red_mushroom_block");
+        lg(101,0,"iron_bars"); lg(102,0,"glass_pane"); lg(103,0,"melon");
+        lg(106,0,"vine");
+        lg(110,0,"mycelium"); lg(111,0,"lily_pad"); lg(112,0,"nether_bricks");
+        lg(113,0,"nether_brick_fence");
+        lg(121,0,"end_stone"); lg(122,0,"dragon_egg");
+        lg(123,0,"redstone_lamp"); lg(124,0,"redstone_lamp","lit","true");
+        lg(133,0,"emerald_block");
+        lg(139,0,"cobblestone_wall"); lg(139,1,"mossy_cobblestone_wall");
+        lg(152,0,"redstone_block"); lg(153,0,"nether_quartz_ore");
+        lg(155,0,"quartz_block"); lg(155,1,"chiseled_quartz_block");
+        lg(155,2,"quartz_pillar","axis","y"); lg(155,3,"quartz_pillar","axis","x"); lg(155,4,"quartz_pillar","axis","z");
+        lg(165,0,"slime_block");
+        lg(168,0,"prismarine"); lg(168,1,"prismarine_bricks"); lg(168,2,"dark_prismarine");
+        lg(169,0,"sea_lantern"); lg(170,0,"hay_block");
+        lg(172,0,"terracotta"); lg(173,0,"coal_block"); lg(174,0,"packed_ice");
+        lg(179,0,"red_sandstone"); lg(179,1,"chiseled_red_sandstone"); lg(179,2,"cut_red_sandstone");
+        lg(201,0,"purpur_block"); lg(202,0,"purpur_pillar"); lg(206,0,"end_stone_bricks");
+        lg(213,0,"magma_block"); lg(214,0,"nether_wart_block"); lg(215,0,"red_nether_bricks");
+        lgColors(35,"_wool");            // 羊毛 16 色
+        lgColors(95,"_stained_glass");   // 染色玻璃
+        lgColors(159,"_terracotta");     // 陶瓦 (stained_hardened_clay)
+        lgColors(160,"_stained_glass_pane");
+        lgColors(171,"_carpet");         // 地毯
+        lgColors(251,"_concrete");       // 混凝土
+        lgColors(252,"_concrete_powder");
+        for (int i=0;i<16;i++) lg(235+i, i, DYE_COLORS[i]+"_glazed_terracotta"); // 带釉陶土
+    }
+
+    /**
+     * 数字 ID + metadata → 现代方块状态. 返回 null = air (id 0).
+     * 特殊 id 在这里动态处理 (原木轴向/台阶/楼梯/朝向类), 其余查静态表.
+     */
+    private static CompoundTag mapLegacyState(int id, int meta) {
+        switch (id) {
+            case 0: return null;
+            case 6: { // 树苗: 种类 meta&7, 成熟 meta&8
+                if ((meta & 7) < 6) return st(WOODS[meta & 7] + "_sapling",
+                        "stage", (meta & 8) != 0 ? "1" : "0");
+                break;
+            }
+            case 17: { // 原木: 种类 meta&3, 轴向 (meta>>2)&3
+                return st(WOODS[meta & 3] + "_log", "axis", AXIS[(meta >> 2) & 3]);
+            }
+            case 162: { // 1.6+ 新原木: 0 acacia, 1 dark_oak
+                return st(((meta & 1) == 0 ? "acacia" : "dark_oak") + "_log",
+                        "axis", AXIS[(meta >> 2) & 3]);
+            }
+            case 18: { // 树叶: 种类 meta&3, 持久 meta&4
+                return st(WOODS[meta & 3] + "_leaves",
+                        "persistent", (meta & 4) != 0 ? "true" : "false");
+            }
+            case 161: { // 1.6+ 新树叶
+                return st(((meta & 1) == 0 ? "acacia" : "dark_oak") + "_leaves",
+                        "persistent", (meta & 4) != 0 ? "true" : "false");
+            }
+            case 43: case 44: case 125: case 126: case 182: { // 双层/普通台阶
+                boolean dbl = (id == 43 || id == 125);
+                String name;
+                if (id == 182) name = "red_sandstone_slab";
+                else if (id == 43 || id == 44) name = SLAB_TYPES[meta & 7] + "_slab";
+                else name = WOODS[Math.min(5, meta & 7)] + "_slab";
+                if (dbl) {
+                    return st(name, "type", "double");
+                }
+                return st(name, "type", (meta & 8) != 0 ? "top" : "bottom");
+            }
+            case 53: return stairs("oak_stairs", meta);
+            case 67: return stairs("cobblestone_stairs", meta);
+            case 108: return stairs("brick_stairs", meta);
+            case 109: return stairs("stone_brick_stairs", meta);
+            case 114: return stairs("nether_brick_stairs", meta);
+            case 128: return stairs("sandstone_stairs", meta);
+            case 134: return stairs("spruce_stairs", meta);
+            case 135: return stairs("birch_stairs", meta);
+            case 136: return stairs("jungle_stairs", meta);
+            case 163: return stairs("acacia_stairs", meta);
+            case 164: return stairs("dark_oak_stairs", meta);
+            case 156: return stairs("quartz_stairs", meta);
+            case 180: return stairs("red_sandstone_stairs", meta);
+            case 203: return stairs("purpur_stairs", meta);
+            case 54: case 146: case 130: { // 箱子/陷阱箱/末影箱: facing
+                return st(id == 54 ? "chest" : id == 146 ? "trapped_chest" : "ender_chest",
+                        "facing", FACE_NSWE[meta & 7]);
+            }
+            case 61: case 62: { // 熔炉 (62 = 点燃)
+                return st("furnace", "facing", FACE_NSWE[meta & 7],
+                        "lit", id == 62 ? "true" : "false");
+            }
+            case 23: return st("dispenser", "facing", FACE_FULL[meta & 7]);
+            case 33: return st("piston", "facing", FACE_FULL[meta & 7],
+                    "extended", (meta & 8) != 0 ? "true" : "false");
+            case 34: return st("piston_head", "facing", FACE_FULL[meta & 7]);
+            case 154: return st("hopper", "facing", FACE_FULL[meta & 7], "enabled", "true");
+            case 158: return st("dropper", "facing", FACE_FULL[meta & 7]);
+            case 218: return st("observer", "facing", FACE_FULL[meta & 7], "powered", "true");
+            case 86: return st("carved_pumpkin", "facing", FACE_SWNE[meta & 3]);
+            case 91: return st("jack_o_lantern", "facing", FACE_SWNE[meta & 3]);
+            case 107: return st("oak_fence_gate", "facing", FACE_SWNE[meta & 3],
+                    "in_wall", "false", "open", "false");
+            case 183: case 184: case 185: case 186: case 187: {
+                return st(WOODS[id - 183] + "_fence_gate", "facing", FACE_SWNE[meta & 3],
+                        "in_wall", "false", "open", "false");
+            }
+            case 167: { // 铁活板门
+                return st("iron_trapdoor", "facing", FACE_SWNE[meta & 3],
+                        "open", (meta & 4) != 0 ? "true" : "false",
+                        "half", (meta & 8) != 0 ? "top" : "bottom");
+            }
+            case 216: { // 骨块: 轴向
+                return st("bone_block", "axis", AXIS[meta & 3]);
+            }
+            case 78: { // 雪片: 层数 meta 0-8
+                return st("snow", "layers", String.valueOf(Math.max(1, Math.min(8, meta))));
+            }
+            case 59: return st("wheat", "age", String.valueOf(meta & 7));
+            case 81: return st("cactus", "age", String.valueOf(meta & 3));
+            case 175: { // 双高植物: 0 sunflower..5 peony, 上半 &8
+                String[] dp = {"sunflower","lilac","tall_grass","large_fern","rose_bush","peony"};
+                if ((meta & 7) < 6) return st(dp[meta & 7],
+                        "half", (meta & 8) != 0 ? "upper" : "lower");
+                break;
+            }
+            default: break;
+        }
+        CompoundTag t = LEGACY_STATES.get(((long) id << 4) | (meta & 0xF));
+        if (t == null) t = LEGACY_STATES.get(((long) id << 4));
+        return t;
+    }
+
+    /** 楼梯: facing meta&3, 半砖 meta&8 */
+    private static CompoundTag stairs(String name, int meta) {
+        return st(name, "facing", STAIR_FACE[meta & 3],
+                "half", (meta & 8) != 0 ? "top" : "bottom",
+                "shape", "straight", "waterlogged", "false");
+    }
+
+    /** 构造 {Name: minecraft:<name>, Properties?} */
+    private static CompoundTag st(String name, String... props) {
+        CompoundTag tag = new CompoundTag();
+        tag.putString("Name", "minecraft:" + name);
+        if (props.length > 0 && props.length % 2 == 0) {
+            CompoundTag p = new CompoundTag();
+            for (int i = 0; i < props.length; i += 2) p.putString(props[i], props[i + 1]);
+            tag.put("Properties", p);
+        }
+        return tag;
+    }
+
+    /** 未收录 ID 的 warn 去重 */
+    private static final java.util.Set<Integer> WARNED_LEGACY_IDS = new java.util.HashSet<>();
+
+    /**
+     * 预览转换的方块数上限. 超过就跳过转换 (上层显示"结构为空").
+     * 逐块 CompoundTag 的 vanilla NBT 每块约 200-300 字节堆内存,
+     * 千万级方块直接 OOM —— 而且 OOM 会波及渲染线程把整个游戏带崩 (实测连带 Xaero 崩溃).
+     */
+    private static final long MAX_PREVIEW_BLOCKS = 2_000_000L;
+
+    /** 共享的过大守卫: 返回 true 表示超限, 已记日志 */
+    private static boolean tooBig(long total, String fmt) {
+        if (total > MAX_PREVIEW_BLOCKS) {
+            PrefabCustomAddon.LOGGER.warn("[NBT-DEBUG] {} 建筑过大: {} 方块 > 上限 {}, 跳过转换 (不预览, 防止 OOM 崩游戏)",
+                    fmt, total, MAX_PREVIEW_BLOCKS);
+            return true;
+        }
+        return false;
+    }
+
+    public static CompoundTag legacyMceditToVanilla(CompoundTag root) {
+        int sizeX = readAnyInt(root, "Width");
+        int sizeY = readAnyInt(root, "Height");
+        int sizeZ = readAnyInt(root, "Length");
+        if (sizeX <= 0 || sizeY <= 0 || sizeZ <= 0) {
+            PrefabCustomAddon.LOGGER.warn("[NBT-DEBUG] legacy schem 尺寸异常: {}x{}x{}", sizeX, sizeY, sizeZ);
+            return root;
+        }
+        if (tooBig((long) sizeX * sizeY * sizeZ, "legacy schem")) {
+            return root;
+        }
+        byte[] blocks = root.getByteArray("Blocks");
+        byte[] data = root.getByteArray("Data");
+        long total = (long) sizeX * sizeY * sizeZ;
+        if (blocks.length < total) {
+            PrefabCustomAddon.LOGGER.warn("[NBT-DEBUG] legacy schem Blocks 长度不足: {} < {}", blocks.length, total);
+        }
+
+        ListTag vanillaPalette = new ListTag();
+        ListTag vanillaBlocks = new ListTag();
+        // "id:meta" → palette 索引, 相同状态复用同一 palette 条目
+        java.util.Map<Long, Integer> stateToIndex = new java.util.HashMap<>();
+        int added = 0, skippedAir = 0, unmapped = 0;
+
+        for (int y = 0; y < sizeY; y++) {
+            for (int z = 0; z < sizeZ; z++) {
+                for (int x = 0; x < sizeX; x++) {
+                    int idx = (y * sizeZ + z) * sizeX + x;
+                    if (idx >= blocks.length) continue;
+                    int id = blocks[idx] & 0xFF;
+                    int meta = idx < data.length ? (data[idx] & 0xF) : 0;
+                    CompoundTag state = mapLegacyState(id, meta);
+                    if (state == null) { skippedAir++; continue; }
+                    if (state.getString("Name").equals("minecraft:stone")
+                            && !LEGACY_STATES.containsKey(((long) id << 4) | (meta & 0xF))
+                            && !LEGACY_STATES.containsKey((long) id << 4)
+                            && id != 1 && id != 97) {
+                        // 未收录 ID → stone 兜底, warn 一次每个 ID
+                        if (WARNED_LEGACY_IDS.add(id)) {
+                            PrefabCustomAddon.LOGGER.warn("[NBT-DEBUG] legacy schem 未收录的方块 ID {} (meta {}), 用 stone 兜底", id, meta);
+                        }
+                        unmapped++;
+                    }
+                    long key = ((long) id << 4) | meta;
+                    Integer palIdx = stateToIndex.get(key);
+                    if (palIdx == null) {
+                        palIdx = vanillaPalette.size();
+                        vanillaPalette.add(state.copy());
+                        stateToIndex.put(key, palIdx);
+                    }
+                    CompoundTag block = new CompoundTag();
+                    block.put("pos", new IntArrayTag(new int[]{x, y, z}));
+                    block.putInt("state", palIdx);
+                    vanillaBlocks.add(block);
+                    added++;
+                }
+            }
+        }
+        PrefabCustomAddon.LOGGER.info("[NBT-DEBUG] legacy schem 转换完成: size={}x{}x{} palette={} added={} skippedAir={} unmapped={}",
+                sizeX, sizeY, sizeZ, vanillaPalette.size(), added, skippedAir, unmapped);
+
+        ListTag sizeList = new ListTag();
+        sizeList.add(IntTag.valueOf(sizeX));
+        sizeList.add(IntTag.valueOf(sizeY));
+        sizeList.add(IntTag.valueOf(sizeZ));
+
+        CompoundTag vanilla = new CompoundTag();
+        vanilla.put("size", new IntArrayTag(new int[]{sizeX, sizeY, sizeZ}));
+        vanilla.put("sizeList", sizeList);
+        vanilla.put("palette", vanillaPalette);
+        vanilla.put("blocks", vanillaBlocks);
+        vanilla.putInt("DataVersion", 3465);  // 1.20.1
+        copyMetaFields(root, vanilla);
+        return vanilla;
     }
 
     // ===================================================================
@@ -225,6 +578,9 @@ public class NbtFormatConverter {
         int sizeX = Math.abs(sizeArr[0]);
         int sizeY = Math.abs(sizeArr[1]);
         int sizeZ = Math.abs(sizeArr[2]);
+        if (tooBig((long) sizeX * sizeY * sizeZ, "litematica")) {
+            return root;
+        }
         PrefabCustomAddon.LOGGER.info("[NBT-DEBUG] Litematica Size=({}x{}x{}), Pos={}",
                 sizeX, sizeY, sizeZ, java.util.Arrays.toString(posArr));
 

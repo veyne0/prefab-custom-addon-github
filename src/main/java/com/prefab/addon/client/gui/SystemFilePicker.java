@@ -4,6 +4,8 @@ import com.lowdragmc.lowdraglib2.gui.holder.ModularUIScreen;
 import com.lowdragmc.lowdraglib2.gui.ui.ModularUI;
 import com.lowdragmc.lowdraglib2.gui.ui.UI;
 import com.lowdragmc.lowdraglib2.gui.ui.UIElement;
+import dev.vfyjxf.taffy.style.AlignContent;
+import dev.vfyjxf.taffy.style.AlignItems;
 import com.lowdragmc.lowdraglib2.gui.ui.data.Horizontal;
 import com.lowdragmc.lowdraglib2.gui.ui.data.ScrollerMode;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Button;
@@ -487,7 +489,7 @@ public final class SystemFilePicker {
         // === 主滚动区: 内部 content + 外层 ScrollerView (风格指南 §2) ===
         UIElement content = new UIElement();
         content.layout(l -> l
-            .width(440)
+            .widthPercent(100)
             .paddingAll(4)
             .gapAll(2)
             .flexDirection(FlexDirection.COLUMN)
@@ -498,6 +500,12 @@ public final class SystemFilePicker {
         ScrollerView scrollerView = new ScrollerView();
         scrollerView.layout(l -> l.width(456).height(280));
         scrollerView.addScrollViewChild(content);
+        // viewContainer 布局显式固定: 纵向排列 + 顶部起始 (不依赖 LDLib2 默认值,
+        // 防止个别环境下内容被贴到底部 / 溢出可视区却滚不回去)
+        scrollerView.viewContainer.layout(l -> l
+            .flexDirection(FlexDirection.COLUMN)
+            .alignItems(AlignItems.FLEX_START)
+            .justifyContent(AlignContent.FLEX_START));
         scrollerView.scrollerStyle(style -> style.mode(ScrollerMode.VERTICAL));
         scrollerView.verticalScroller(scroller -> scroller.setScrollBarSize(15f));
 

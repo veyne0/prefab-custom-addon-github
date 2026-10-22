@@ -202,6 +202,12 @@ public class LocalBuildingScanner {
         return gameDir.resolve("prefab-download");
     }
 
+    /** 获取蓝图广场下载目录 (prefab-mcs/, 与 McsApiClient.downloadDir() 一致, 从 1.21.1 移植). */
+    public static Path getMcsRoot() {
+        Path gameDir = Minecraft.getInstance().gameDirectory.toPath();
+        return gameDir.resolve("prefab-mcs");
+    }
+
     /** 获取老拓展包工作区根目录 (prefab-work/), 兼容旧版本. */
     public static Path getWorkRoot() {
         Path gameDir = Minecraft.getInstance().gameDirectory.toPath();
@@ -376,12 +382,20 @@ public class LocalBuildingScanner {
         // 先扫 prefab-extension/ (本地的优先, 后扫会被覆盖, 所以先扫)
         Path extRoot = getExtensionRoot();
         Path dlRoot = getDownloadRoot();
+        Path mcsRoot = getMcsRoot();
         Path workRoot = getWorkRoot();
         for (LocalBuilding lb : scanDir(extRoot, "extension")) {
             byId.put(lb.id, lb);
         }
         for (LocalBuilding lb : scanDir(dlRoot, "download")) {
             // prefab-extension 里已有同名建筑, 跳过
+            if (!byId.containsKey(lb.id)) {
+                byId.put(lb.id, lb);
+            }
+        }
+        // 蓝图广场下载目录 (prefab-mcs/, 同样单文件三件套) — 必须算进来,
+        // 否则广场下载的建筑在"编辑建筑"列表 / ALT 建造兜底查找里"找不到建筑" (1.21.1 对齐)
+        for (LocalBuilding lb : scanDir(mcsRoot, "mcs")) {
             if (!byId.containsKey(lb.id)) {
                 byId.put(lb.id, lb);
             }

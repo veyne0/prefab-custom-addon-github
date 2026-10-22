@@ -42,6 +42,28 @@ public class SpongeSchematicParser {
     }
 
     /**
+     * .schem / .schematic → 标准 vanilla 结构 NBT 字节 (独立建筑上传打包用).
+     * 失败 (读不了/不是 sponge 格式/转换出错) 返回 null.
+     */
+    public static byte[] parseToStandardStructureBytes(Path schemFile) {
+        try {
+            if (schemFile == null || !Files.exists(schemFile)) return null;
+            CompoundTag root = readRoot(schemFile);
+            if (root == null) return null;
+            String fmt = com.prefab.addon.work.NbtFormatConverter.detectFormat(root);
+            if (!fmt.startsWith("sponge_")) return null;
+            CompoundTag vanilla = com.prefab.addon.work.NbtFormatConverter.toVanilla(root);
+            if (vanilla == null) return null;
+            ByteArrayOutputStream bos = new ByteArrayOutputStream();
+            NbtIo.writeCompressed(vanilla, bos);
+            return bos.toByteArray();
+        } catch (Exception e) {
+            PrefabCustomAddon.LOGGER.warn("[SCHEM] 转 vanilla NBT 失败 ({}): {}", schemFile, e.toString());
+            return null;
+        }
+    }
+
+    /**
      * 加载 .schem / .schematic 文件, 转 vanilla NBT, 包装成 ExtensionPack 直接加到 packs 列表里.
      * (1.21.1 的 ExtensionPackManager.scanExtensionPacks 风格)
      */

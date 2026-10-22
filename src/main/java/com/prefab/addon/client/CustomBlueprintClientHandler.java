@@ -22,7 +22,6 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
-import net.minecraftforge.event.entity.player.PlayerEvent;
 import net.minecraftforge.event.entity.player.PlayerInteractEvent;
 
 /**
@@ -79,8 +78,10 @@ public class CustomBlueprintClientHandler {
         ItemStack stack = event.getItemStack();
         if (!isHandledBlueprint(stack)) return;
 
-        // 客户端拦截: 取消事件, 自己开 GUI
+        // 客户端拦截: 取消事件, 自己开 GUI.
+        // setCancellationResult 告诉 vanilla "已成功处理", 阻止它继续走 useItem 再次触发 RightClickItem (双开根源).
         event.setCanceled(true);
+        event.setCancellationResult(net.minecraft.world.InteractionResult.sidedSuccess(true));
         BlockPos pos = player.blockPosition().above();
         openGuiForStack(stack, player, pos, event.getHand());
     }
@@ -94,42 +95,22 @@ public class CustomBlueprintClientHandler {
         if (!isHandledBlueprint(stack)) return;
 
         event.setCanceled(true);
+        // 同上: 阻止取消后 vanilla 继续 useItem → RightClickItem 二次触发
+        event.setCancellationResult(net.minecraft.world.InteractionResult.sidedSuccess(true));
         // 关键: 用点击面之上 1 格作为建筑原点 (避免该位置是草方块导致 Prefab 跳过 by=0 层)
         BlockPos pos = event.getPos().above();
         openGuiForStack(stack, player, pos, event.getHand());
     }
 
-    /**
-     * 玩家进游戏时发欢迎消息 - 客户端路径 (覆盖纯客户端 / 单人模式).
-     * 服务端版在 {@link com.prefab.addon.PrefabCustomAddon#onPlayerLoggedIn} 里, 专用服玩家会通过那条路径收到欢迎消息.
-     * 本 listener 处理纯客户端 / 单人模式: 此时 event.entity = LocalPlayer (非 ServerPlayer), 服务端 listener 不会跑.
-     *
-     * 关键: 在整合服场景下, 物理客户端走这里 (因为 PlayerEvent 在物理端都会触发), 但服务端的
-     *      onPlayerLoggedIn 也会跑 (ServerPlayer). 为避免重复发, 用 Minecraft.hasSingleplayerServer() 区分:
-     *      - 单人模式 (hasSingleplayerServer = true): 物理服务端就是本进程 → onPlayerLoggedIn 会触发 (ServerPlayer),
-     *        客户端 listener 跳过, 避免重复.
-     *      - 整合服 (hasSingleplayerServer = false 但玩家也是 ServerPlayer): 服务端会发, 客户端 listener 也跳过.
-     *      - 纯远程客户端登录到专用服 (hasSingleplayerServer = false 且 entity 非 ServerPlayer): 服务端发,
-     *        但客户端这边要等到 sync 后才收到 → 这里再发一次 (其实会重复). 暂接受: 远端客户端发一次, 服务端也会发一次,
-     *        远端客户端会看到 2 条. 这是用 server.sendSystemMessage 的固有局限, 实际使用可接受.
-     *
-     * 实际上更简单的方案: 客户端 listener 只在 hasSingleplayerServer = true 时发 (因为单人模式的 entity 不是
-     * ServerPlayer, 服务端 onPlayerLoggedIn 不会跑), 其他情况不发 (因为服务端 onPlayerLoggedIn 已经发了).
-     *
-     * 注意: 本类标了 @Mod.EventBusSubscriber(Dist.CLIENT), 在 dedicated server 上永远不会加载本类,
-     *       所以不会发生 client API 误用问题.
-     */
-    @SubscribeEvent
-    public static void onPlayerLoggedInClient(PlayerEvent.PlayerLoggedInEvent event) {
-        if (!event.getEntity().level().isClientSide()) return;
-        if (event.getEntity() != Minecraft.getInstance().player) return;
-        // 单人模式才在这里发 (其他情况服务端已发过)
-        if (!Minecraft.getInstance().hasSingleplayerServer()) return;
-        event.getEntity().sendSystemMessage(net.minecraft.network.chat.Component.literal(
-            com.prefab.addon.PrefabCustomAddon.tr("welcome.thanks")));
-    }
-
     private static void openGuiForStack(ItemStack stack, Player player, BlockPos pos, InteractionHand hand) {
+        // 防双开: 右键方块时, RightClickBlock 取消后 vanilla 仍可能继续走 useItem 触发 RightClickItem,
+        // 导致 GUI 一帧内开两次 → 第一个屏幕的 REMOVED 迟到清掉第二个屏幕的静态状态
+        // (表现为: 打开后 tab/筛选按钮全部无响应, 重开 UI 才恢复).
+        if (net.minecraft.client.Minecraft.getInstance().screen != null) {
+            PrefabCustomAddon.LOGGER.info(
+                "[AUI-DBG] openGuiForStack skipped (screen already open, 重复触发拦截) pos={}", pos);
+            return;
+        }
         // 绑定解析: 物品栈 NBT 优先 (玩家绑定过的) → .blueprint-specs 规格文件兜底
         // (新生成的 KubeJS 蓝图脚本不再用 setCustomData 烤默认 NBT, 那个 API 1.20.1 没有)
         BlueprintSpecStore.Binding binding = AsyncBuildManager.resolveKubeJSBlueprintBinding(stack);

@@ -1,6 +1,7 @@
 package com.prefab.addon.client.gui;
 
 import com.lowdragmc.lowdraglib2.gui.holder.ModularUIScreen;
+import com.lowdragmc.lowdraglib2.gui.texture.SpriteTexture;
 import com.lowdragmc.lowdraglib2.gui.ui.ModularUI;
 import com.lowdragmc.lowdraglib2.gui.ui.UI;
 import com.lowdragmc.lowdraglib2.gui.ui.UIElement;
@@ -74,7 +75,6 @@ public class GuiCustomStructureSelection {
     private TextElement progressMsgEl;
     private ProgressBar progressBar;
     private Button btnBack;
-    private Button btnCheckDeps;
     private Label titleEl;
 
     public GuiCustomStructureSelection() {
@@ -194,13 +194,6 @@ public class GuiCustomStructureSelection {
         btnCancel.layout(l -> l.flexGrow(1).heightPercent(100));
         buttonRow.addChild(btnCancel);
 
-        btnCheckDeps = new Button().setText("🔍 依赖");
-        btnCheckDeps.setOnClick(e -> {
-            if (this.view == View.BUILDINGS) runDepCheckAll();
-        });
-        btnCheckDeps.layout(l -> l.flexGrow(1).heightPercent(100));
-        buttonRow.addChild(btnCheckDeps);
-
         btnBack = new Button().setText("← 返回");
         btnBack.setOnClick(e -> refreshPacksView());
         btnBack.layout(l -> l.flexGrow(1).heightPercent(100));
@@ -235,7 +228,6 @@ public class GuiCustomStructureSelection {
             this.currentItems.add(p);
         }
         if (btnBack != null) btnBack.setDisplay(false);
-        updateCheckDepsButton();
         rebuildList();
     }
 
@@ -251,8 +243,9 @@ public class GuiCustomStructureSelection {
             }
         }
         if (btnBack != null) btnBack.setDisplay(true);
-        updateCheckDepsButton();
-        rebuildList();
+        // 进入 BUILDINGS 视图自动检测依赖 (替代原 "🔍 依赖" 按钮);
+        // runDepCheckAll 内部会 rebuildList (显示 ✓/✗ marker)
+        runDepCheckAll();
     }
 
     private ExtensionPack findPackById(String id) {
@@ -261,12 +254,6 @@ public class GuiCustomStructureSelection {
             if (id.equals(p.getPackageName())) return p;
         }
         return null;
-    }
-
-    private void updateCheckDepsButton() {
-        if (this.btnCheckDeps == null) return;
-        // BUILDINGS 才可用
-        // LDLib2 Button 用 isEnabled() 控制
     }
 
     private void updateViewHeader() {
@@ -329,6 +316,17 @@ public class GuiCustomStructureSelection {
         final boolean finalBuildable = buildable;
         final String finalTitle = title;
         final String finalSubtitle = subtitle;
+
+        // 行首缩略图 (仅 BUILDINGS 视图): 磁盘缓存缩略图 / pack 自带预览图
+        if (this.view == View.BUILDINGS && item instanceof ConstructionInfo ci) {
+            var tex = com.prefab.addon.client.ThumbnailCache.getOrLoadTexture(ci);
+            if (tex != null) {
+                UIElement icon = new UIElement();
+                icon.layout(l -> l.width(28).height(28));
+                icon.style(s -> s.background(SpriteTexture.of(tex)));
+                row.addChild(icon);
+            }
+        }
 
         // 主标题 (按钮形式, 点击进入)
         Button mainBtn = new Button();

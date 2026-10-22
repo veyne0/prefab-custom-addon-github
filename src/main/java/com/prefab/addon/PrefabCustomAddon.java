@@ -5,12 +5,16 @@ import com.prefab.addon.config.CustomBlueprintRecipeCondition;
 import com.prefab.addon.extension.ExtensionPackManager;
 import com.prefab.addon.items.CustomBlueprintItem;
 import com.prefab.addon.items.ItemCustomBulldozer;
+import com.prefab.addon.items.OutsourceBlueprintItem;
 import com.prefab.addon.network.NetworkHandler;
 import com.prefab.addon.network.ServerPackSyncServer;
+import com.prefab.addon.outsource.OutsourceBuildingLoader;
+import com.prefab.addon.terminal.TerminalRegistry;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.item.CreativeModeTab;
 import net.minecraft.world.item.CreativeModeTabs;
 import net.minecraft.world.item.Item;
+import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.ItemStack;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.common.crafting.CraftingHelper;
@@ -29,6 +33,8 @@ import net.minecraftforge.registries.ForgeRegistries;
 import net.minecraftforge.registries.RegistryObject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.nio.file.Path;
 
 @Mod(PrefabCustomAddon.MOD_ID)
 public class PrefabCustomAddon {
@@ -60,6 +66,12 @@ public class PrefabCustomAddon {
 
     public static final RegistryObject<Item> CUSTOM_BLUEPRINT = ITEMS.register("custom_blueprint",
             () -> new CustomBlueprintItem(new Item.Properties().stacksTo(1)));
+
+    // 缺失方块 ("?" 方块) 的物品形态: 创造栏可拿, 方便服主手动替换/演示 (从 1.21.1 移植)
+    public static final RegistryObject<Item> MISSING_BLOCK_ITEM = ITEMS.register("missing_block",
+            () -> new BlockItem(com.prefab.addon.blocks.PrefabBlocks.MISSING_BLOCK.get(),
+                    new Item.Properties()));
+
     // 4 耐久推土机 (跟原版 prefab 一致), 区域大小存 NBT
     public static final RegistryObject<Item> CUSTOM_BULLDOZER = ITEMS.register("custom_bulldozer",
             () -> {
@@ -68,6 +80,48 @@ public class PrefabCustomAddon {
                 LOGGER.info("[CUSTOM_BULLDOZER-DEBUG] 注册 ID = {}", MOD_ID + ":custom_bulldozer");
                 return item;
             });
+
+    // 外包建筑蓝图 (从 1.21.1 移植) —— 8 个 Item 实例,每个对应 投影/ 下的一个子文件夹。
+    //  玩家把 投影.zip 放进 prefab-outsource/ 后,扫描器用 "投影_<子文件夹名>" 作为 buildingId,
+    //  这里每个 Item 硬编码自己的 buildingId,所以创造栏里的 8 个蓝图只能打开对应建筑。
+    //  客户端右键打开 GUI 的逻辑在 OutsourceBuildingClientHandler (Dist.CLIENT 拦截右键),
+    //  本类 (common) 不引用 client 类, 避免 dedicated server 加载崩溃.
+    public static final RegistryObject<Item> OUTSOURCE_BLUEPRINT_MEDIEVAL = ITEMS.register(
+        "outsource_blueprint_medieval_house",
+        () -> new OutsourceBlueprintItem("投影_中世纪小屋", new Item.Properties().stacksTo(1)));
+    public static final RegistryObject<Item> OUTSOURCE_BLUEPRINT_TAVERN = ITEMS.register(
+        "outsource_blueprint_adventurer_tavern",
+        () -> new OutsourceBlueprintItem("投影_冒险者酒馆", new Item.Properties().stacksTo(1)));
+    public static final RegistryObject<Item> OUTSOURCE_BLUEPRINT_SHOP = ITEMS.register(
+        "outsource_blueprint_shop",
+        () -> new OutsourceBlueprintItem("投影_商店", new Item.Properties().stacksTo(1)));
+    public static final RegistryObject<Item> OUTSOURCE_BLUEPRINT_SMALL = ITEMS.register(
+        "outsource_blueprint_small_building",
+        () -> new OutsourceBlueprintItem("投影_小建筑", new Item.Properties().stacksTo(1)));
+    public static final RegistryObject<Item> OUTSOURCE_BLUEPRINT_LIGHT_TREE = ITEMS.register(
+        "outsource_blueprint_light_tree",
+        () -> new OutsourceBlueprintItem("投影_棱光树", new Item.Properties().stacksTo(1)));
+    public static final RegistryObject<Item> OUTSOURCE_BLUEPRINT_FORGE = ITEMS.register(
+        "outsource_blueprint_forge_workshop",
+        () -> new OutsourceBlueprintItem("投影_锻造工坊", new Item.Properties().stacksTo(1)));
+    public static final RegistryObject<Item> OUTSOURCE_BLUEPRINT_LINGSHUI = ITEMS.register(
+        "outsource_blueprint_lingshui_inn",
+        () -> new OutsourceBlueprintItem("投影_陵水旅馆", new Item.Properties().stacksTo(1)));
+    public static final RegistryObject<Item> OUTSOURCE_BLUEPRINT_WINDMILL = ITEMS.register(
+        "outsource_blueprint_windmill_building",
+        () -> new OutsourceBlueprintItem("投影_风车建筑", new Item.Properties().stacksTo(1)));
+
+    /** 8 个外包建筑蓝图集中列表(创造栏填充 + 其他模块复用) */
+    public static final java.util.List<RegistryObject<Item>> OUTSOURCE_BLUEPRINTS = java.util.List.of(
+        OUTSOURCE_BLUEPRINT_MEDIEVAL,
+        OUTSOURCE_BLUEPRINT_TAVERN,
+        OUTSOURCE_BLUEPRINT_SHOP,
+        OUTSOURCE_BLUEPRINT_SMALL,
+        OUTSOURCE_BLUEPRINT_LIGHT_TREE,
+        OUTSOURCE_BLUEPRINT_FORGE,
+        OUTSOURCE_BLUEPRINT_LINGSHUI,
+        OUTSOURCE_BLUEPRINT_WINDMILL
+    );
 
 
     /**
@@ -87,6 +141,12 @@ public class PrefabCustomAddon {
             .displayItems((params, output) -> {
                 output.accept(CUSTOM_BLUEPRINT.get());
                 output.accept(CUSTOM_BULLDOZER.get());
+                output.accept(TerminalRegistry.TERMINAL.get());
+                output.accept(MISSING_BLOCK_ITEM.get());
+                // 外包建筑蓝图 (从 1.21.1 移植): 8 个硬编码 buildingId 的蓝图物品
+                for (RegistryObject<Item> b : OUTSOURCE_BLUEPRINTS) {
+                    output.accept(b.get());
+                }
             })
             .build());
 
@@ -94,12 +154,17 @@ public class PrefabCustomAddon {
         IEventBus modEventBus = FMLJavaModLoadingContext.get().getModEventBus();
         ITEMS.register(modEventBus);
         CREATIVE_TABS.register(modEventBus);
+        // 缺失方块 ("?" 方块, 从 1.21.1 移植)
+        com.prefab.addon.blocks.PrefabBlocks.BLOCKS.register(modEventBus);
 
         // 注册配置文件 (common config: prefab_custom_addon-common.toml)
         ModLoadingContext.get().registerConfig(net.minecraftforge.fml.config.ModConfig.Type.COMMON, AddonConfig.COMMON_SPEC);
 
         // SimpleChannel 不依赖事件, 直接注册全部网络包
         NetworkHandler.register();
+
+        // 现代终端 (LDLib2 UI): 注册物品/创造栏/网络通道
+        TerminalRegistry.register(modEventBus);
 
         modEventBus.addListener(this::commonSetup);
         modEventBus.addListener(this::clientSetup);
@@ -114,6 +179,29 @@ public class PrefabCustomAddon {
 
     private void commonSetup(final FMLCommonSetupEvent event) {
         LOGGER.info("Prefab Custom Addon common setup");
+
+        // [BUILTIN] 外包建筑 (从 1.21.1 移植): 把 mod 内置的 投影.zip 写到 <gameDir>/prefab-outsource/,
+        //  让 OutsourceBuildingLoader 扫到, 8 个硬编码 ID 才能匹配上。
+        //  在 commonSetup 阶段做 (而不是 onServerStarting):
+        //  - commonSetup 在专用服/整合服/客户端三边都会触发一次, 统一处理
+        //  - 写盘用 enqueueWork 推到主线程, 避免 mod loading 阶段的并发 IO
+        event.enqueueWork(() -> {
+            try {
+                Path gameDir = net.minecraftforge.fml.loading.FMLPaths.GAMEDIR.get();
+                boolean ok = com.prefab.addon.outsource.BuiltinPackExtractor.extract(gameDir);
+                if (ok) {
+                    // 内置包覆盖了旧版, 立刻重新扫描, 让 GUI 第一次打开就能看到 8 个建筑
+                    int n = OutsourceBuildingLoader.getInstance().scan(gameDir);
+                    LOGGER.info("[BUILTIN] 内置包解包完成, 重新扫描发现 {} 个建筑", n);
+                } else {
+                    // 内置资源缺失 (例如用户 build 时漏放了 投影.zip),
+                    // 仍然扫一下外部目录 —— 玩家可能自己手动放了一份
+                    OutsourceBuildingLoader.getInstance().scan(gameDir);
+                }
+            } catch (Throwable t) {
+                LOGGER.error("[BUILTIN] commonSetup 内置包解包异常: {}", t.getMessage(), t);
+            }
+        });
     }
 
     private void clientSetup(final FMLClientSetupEvent event) {
@@ -176,23 +264,23 @@ public class PrefabCustomAddon {
         if (event.getTabKey() == CreativeModeTabs.INGREDIENTS) {
             event.accept(CUSTOM_BLUEPRINT.get());
             event.accept(CUSTOM_BULLDOZER.get());
+            event.accept(TerminalRegistry.TERMINAL.get());
         }
     }
 
     public void onServerStarting(final ServerStartingEvent event) {
         LOGGER.info("Initializing extension pack manager");
         ExtensionPackManager.getInstance().initialize(event.getServer());
+        // 加载玩家上传权限表 (config/prefab_custom_addon/upload_perms.json)
+        com.prefab.addon.network.BuildingManageServer.getInstance().loadPerms();
+        // 外包建筑 (从 1.21.1 移植): 扫描 <serverDir>/prefab-outsource/ 下的 .zip
+        // 1.20.1 适配: MinecraftServer.getServerDirectory() 返回 File, 转 Path
+        OutsourceBuildingLoader.getInstance().scan(event.getServer().getServerDirectory().toPath());
     }
 
     /**
      * 玩家进服后, 服务端把拓展包清单推给该玩家, 触发客户端自动拉取。
      * 同时把当前全服建造速度也推一份, 让客户端 SettingsGui 滑条值与服务端同步。
-     *
-     * 额外: 给该玩家发一条欢迎消息到聊天栏, 告诉玩家按 O 可以打开本模组设置界面.
-     *   - 服务端发 sendSystemMessage: 玩家客户端能直接看到, 不需要网络包.
-     *   - 一次只发 1 次 (该 listener 在登录事件触发一次).
-     *   - 注意: 在整合服里玩家既走这里(服务端路径), 又走 onPlayerLoggedInClient(客户端路径).
-     *     为避免重复发, 这里只在服务端路径里发 (entity 是 ServerPlayer 实例 = 整合服/专用服的服务端逻辑).
      */
     public void onPlayerLoggedIn(final PlayerEvent.PlayerLoggedInEvent event) {
         if (event.getEntity() instanceof ServerPlayer sp) {
@@ -203,15 +291,14 @@ public class PrefabCustomAddon {
                 sp, new com.prefab.addon.network.SyncBuildSpeedPayload(serverBuildSpeed));
             PrefabCustomAddon.LOGGER.info("[BUILD-SPEED] Sent initial build speed {}% to player {}",
                 serverBuildSpeed, sp.getName().getString());
-
-            // === 欢迎消息 (服务端路径, 整合服/专用服的玩家) ===
-            sp.sendSystemMessage(net.minecraft.network.chat.Component.literal(tr("welcome.thanks")));
         }
     }
 
     public void onPlayerLoggedOut(final PlayerEvent.PlayerLoggedOutEvent event) {
         if (event.getEntity() instanceof ServerPlayer sp) {
             ServerPackSyncServer.getInstance().onPlayerLeave(sp);
+            // 清掉该玩家的建筑上传会话 (防退出后残留半截会话)
+            com.prefab.addon.network.BuildingUploadServer.getInstance().onPlayerLeave(sp);
         }
     }
 
@@ -227,9 +314,12 @@ public class PrefabCustomAddon {
                     .requires(src -> src.hasPermission(2))  // OP 权限
                     .executes(ctx -> {
                         int n = com.prefab.addon.extension.ExtensionPackManager.getInstance().reload();
+                        // 外包建筑 (从 1.21.1 移植): 重新扫描 prefab-outsource/
+                        // 1.20.1 适配: getServerDirectory() 返回 File, 转 Path
+                        int ob = OutsourceBuildingLoader.getInstance().scan(ctx.getSource().getServer().getServerDirectory().toPath());
                         ctx.getSource().sendSuccess(
                             () -> net.minecraft.network.chat.Component.literal(
-                                tr("sel.pack_rescanned")), true);
+                                tr("sel.pack_rescanned") + " (§a外包建筑: " + ob + " 座)"), true);
                         // 重扫后, 给所有在线玩家重发 manifest (他们会自动拿到新包)
                         for (net.minecraft.server.level.ServerPlayer sp :
                                 ctx.getSource().getServer().getPlayerList().getPlayers()) {

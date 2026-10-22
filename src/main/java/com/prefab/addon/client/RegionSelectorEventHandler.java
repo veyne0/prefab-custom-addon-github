@@ -243,20 +243,31 @@ public class RegionSelectorEventHandler {
             return;
         }
 
+        // 边沿触发: 只在按下瞬间触发一次, 按住不重复触发 (之前每 tick 重复触发会刷屏掉帧)
+        boolean altDown = com.mojang.blaze3d.platform.InputConstants.isKeyDown(window, GLFW.GLFW_KEY_LEFT_ALT)
+            || com.mojang.blaze3d.platform.InputConstants.isKeyDown(window, GLFW.GLFW_KEY_RIGHT_ALT);
+        boolean ctrlPress = ctrlDown && !lastCtrlDown;
+        boolean altPress = altDown && !lastAltDown;
+        lastCtrlDown = ctrlDown;
+        lastAltDown = altDown;
+
         // CTRL 取消 (用 CTRL 不用 ESC, 避免和原版暂停菜单冲突)
-        if (ctrlDown) {
+        if (ctrlPress) {
             RegionSelector.cancel(mc.player);
             return;
         }
         // ALT 确认 (左 ALT 或右 ALT 都可以)
-        if (com.mojang.blaze3d.platform.InputConstants.isKeyDown(window, GLFW.GLFW_KEY_LEFT_ALT)
-            || com.mojang.blaze3d.platform.InputConstants.isKeyDown(window, GLFW.GLFW_KEY_RIGHT_ALT)) {
+        if (altPress) {
             RegionSelector.confirm(mc.player);
         }
     }
 
     /** 上次手动热重载时间 (纳秒), 防止按住 CTRL+R 重复触发 */
     private static long lastManualReloadNs = 0L;
+
+    /** 上 tick CTRL/ALT 按键状态, 用于边沿触发检测 */
+    private static boolean lastCtrlDown = false;
+    private static boolean lastAltDown = false;
 
     @SubscribeEvent
     public static void onRenderLevel(RenderLevelStageEvent event) {

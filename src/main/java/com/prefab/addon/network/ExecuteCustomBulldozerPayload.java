@@ -103,10 +103,13 @@ public record ExecuteCustomBulldozerPayload(
             stack.hurtAndBreak(1, sp, e -> e.broadcastBreakEvent(slot));
         }
 
-        sp.sendSystemMessage(net.minecraft.network.chat.Component.literal(
-            "§a✓ 推土机已清除 " + cleared + " 个方块 ("
-            + payload.length() + "x" + payload.width() + "x" + payload.height() + ")"
-            + (skipDrops ? " §7[无掉落物]" : "")));
+        // 发 translatable: 客户端按玩家语言解析 (服务端拼中文字符串会固定成中文)
+        var msg = net.minecraft.network.chat.Component.translatable(
+            "err.bulldozer_cleared", cleared, payload.length(), payload.width(), payload.height());
+        if (skipDrops) {
+            msg.append(net.minecraft.network.chat.Component.translatable("err.bulldozer_nodrops"));
+        }
+        sp.sendSystemMessage(msg);
     }
 
     /**

@@ -1,75 +1,123 @@
 package com.prefab.addon.client.gui;
 
+import com.lowdragmc.lowdraglib2.gui.holder.ModularUIScreen;
+import com.lowdragmc.lowdraglib2.gui.texture.SpriteTexture;
+import com.lowdragmc.lowdraglib2.gui.ui.ModularUI;
+import com.lowdragmc.lowdraglib2.gui.ui.UI;
+import com.lowdragmc.lowdraglib2.gui.ui.UIElement;
+import com.lowdragmc.lowdraglib2.gui.ui.data.ScrollerMode;
+import com.lowdragmc.lowdraglib2.gui.ui.elements.Button;
+import com.lowdragmc.lowdraglib2.gui.ui.elements.ItemSlot;
+import com.lowdragmc.lowdraglib2.gui.ui.elements.Label;
+import com.lowdragmc.lowdraglib2.gui.ui.elements.ScrollerView;
+import com.lowdragmc.lowdraglib2.gui.ui.elements.TextField;
+import com.lowdragmc.lowdraglib2.gui.ui.event.UIEvents;
+import com.lowdragmc.lowdraglib2.gui.ui.style.StylesheetManager;
+import com.lowdragmc.lowdraglib2.gui.ui.styletemplate.Sprites;
+import com.mojang.blaze3d.platform.NativeImage;
 import com.prefab.addon.PrefabCustomAddon;
+import com.prefab.addon.client.EditModeController;
 import com.prefab.addon.config.BuildAnimationMode;
 import com.prefab.addon.config.CategoryManager;
 import com.prefab.addon.config.PlayerPreferences;
 import com.prefab.addon.extension.ConstructionInfo;
 import com.prefab.addon.extension.LocalBuilding;
 import com.prefab.addon.extension.LocalBuildingScanner;
-import com.prefab.addon.work.PackCreator;
-import com.wuest.prefab.gui.GuiBase;
-import com.wuest.prefab.gui.controls.ExtendedButton;
 import com.prefab.addon.integration.KubeJSIntegration;
+import com.prefab.addon.items.CustomBlueprintItem;
+import com.prefab.addon.structure.CustomStructureBuilder;
+import com.prefab.addon.work.RegionSelector;
+import com.prefab.addon.client.gui.GuiCreateBuildingInfo.InGamePickResult;
+import com.prefab.addon.client.gui.GuiCreateBuildingInfo.NbtPickResult;
+import com.wuest.prefab.structures.base.BuildBlock;
+import com.wuest.prefab.structures.base.Structure;
+import com.wuest.prefab.structures.config.StructureConfiguration;
+import dev.vfyjxf.taffy.style.AlignContent;
+import dev.vfyjxf.taffy.style.AlignItems;
+import dev.vfyjxf.taffy.style.FlexDirection;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.gui.GuiGraphics;
-import net.minecraft.client.gui.components.AbstractButton;
-import net.minecraft.client.gui.components.EditBox;
+import net.minecraft.client.renderer.texture.DynamicTexture;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.ListTag;
+import net.minecraft.nbt.NbtIo;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.tags.TagKey;
+import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.state.BlockState;
 
+import javax.imageio.ImageIO;
 import java.awt.Desktop;
-import java.awt.FileDialog;
-import java.io.File;
+import java.awt.Graphics2D;
+import java.awt.RenderingHints;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
+import java.io.DataInputStream;
+import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
+import java.util.function.IntConsumer;
+import java.util.function.IntSupplier;
 
 /**
- * X 键打开的独立 GUI (浏览器样式).
+ * X 键打开的建筑制作编辑器 — LDLib2 ModularUI 整体重写版 (从 1.21.1 同名实现移植).
  *
- * 不动现有的"建筑选择界面" GuiExtensionPackBrowser (6 tab: 建筑/云端/服务器/收藏/下载/原版).
- * 本 GUI 是 X 键专用, 只有 2 个 tab: 创建建筑 / 编辑建筑.
- *   - "创建建筑" tab: 在白色背景上用 GuiGraphics 绘制 EditBox + 按钮.
- *   - "编辑建筑" tab: 从 prefab-extension/ 扫描三件套建筑, 以卡片网格显示, 每张卡片有"查看"和"编辑"按钮.
+ * <p>布局 (整屏 100%):</p>
+ * <pre>
+ *   ┌────────┬────────────────────────────────────┐
+ *   │ 创建建筑│ [各 tab 顶部行: 搜索框 / 标题 / 操作] │
+ *   │ 编辑建筑│ ┌─ 表单 / 卡片滚动区 ─────────────┐ │
+ *   │ 设置    │ │ ...                            │ │
+ *   │ 制作蓝图│ └──────────────────────────────┘ │
+ *   │ 蓝图管理│                     [底部操作按钮] │
+ *   └────────┴────────────────────────────────────┘
+ *   状态栏: 最近一次操作结果 (h=12)
+ * </pre>
  *
- * 复用 GuiCreateBuildingInfo 的业务逻辑 (doSave / doDelete / openNbtPicker / 等),
- * 表单字段值在 GuiCreateBuildingInfo static 字段上传递 (package-private 访问).
+ * <p>与旧版 (GuiBase 手绘) 的差异:</p>
+ * <ul>
+ *   <li>整体重写为 LDLib2 ModularUI 静态单实例模式 (照抄 1.21.1 版结构);</li>
+ *   <li>分页 / 搜索 / tab / 制作蓝图表单状态全部静态持久化, 关掉重开不丢;</li>
+ *   <li>设置 tab 改为单页滚动 (去掉旧版 2 页翻页), 保留 "自动检测依赖" toggle;</li>
+ *   <li>外部签名 {@link #buildDetailInfo(LocalBuilding)} /
+ *       {@link #startSchematicEdit(LocalBuilding)} / {@link #open(Tab)} 保持不变.</li>
+ * </ul>
+ *
+ * <p>与 1.21.1 蓝本的差异 (1.20.1 功能保留):</p>
+ * <ul>
+ *   <li>创建建筑 tab 保留 "删除" 按钮 (GuiCreateBuildingInfo.doDelete);</li>
+ *   <li>设置 tab 保留 "自动检测依赖" toggle (PlayerPreferences.autoDepCheckOnOpen);</li>
+ *   <li>制作蓝图保留 配方非空校验 (need_recipe) +
+ *       外部建筑复制到 blueprint-buildings/ (source="blueprint") +
+ *       migrateLegacyBlueprintBuildings 迁移; locked toggle 已移除 (spec.locked 强制 true);</li>
+ *   <li>蓝图管理删除联动 BlueprintSpecStore 规格文件 + deleteBlueprintBuilding;</li>
+ *   <li>舍弃 1.21.1 的 AI 帮助按钮 (GuiAiBlueprintHelp 1.20.1 不存在) 与
+ *       "▍ 建造材料" 装饰段 (无对应控件).</li>
+ * </ul>
  */
-public class GuiExtensionPackEditor extends GuiBase {
+public final class GuiExtensionPackEditor {
 
-    // === 布局常量 (与 Browser 一致) ===
-    private static final int PANEL_W = 400;
-    private static final int PANEL_H = 240;
-    private static final int TABS_W = 72;        // 左侧 tab 宽度
-    private static final int SEARCH_H = 18;      // 顶部标题栏高
-    /** Tab 名称的最大宽度 - 中文 2 字节字符, 1 字符约 6px. */
-    private static final int TAB_H = 24;
-
-    // === 颜色 (与 Browser 一致) ===
-    private static final int PANEL_BG = 0xFF1A1A1A;       // 主面板深灰
-    private static final int PANEL_BORDER = 0xFF555555;   // 边框
-    private static final int TAB_BG_HOVER = 0xFF2A4A6A;   // tab hover
-    private static final int TAB_BG_ACTIVE = 0xFF3A6AAA;  // tab 选中 (蓝)
-    private static final int TAB_FG = 0xFFFFFFFF;         // tab 文字
-    private static final int CONTENT_BG = 0xFFFFFFFF;     // 右内容区纯白
-    private static final int LABEL_COLOR = 0xFF202020;     // 字段标签 (深色, 配白底)
-    private static final int TITLE_COLOR = 0xFF333333;     // 标题
-    private static final int HINT_COLOR = 0xFF707070;      // 提示
-    private static final int BTN_BG = 0xFFE8E8E8;          // 按钮底色
-    private static final int BTN_BG_HOVER = 0xFFC8D8E8;    // 按钮 hover
-    private static final int BTN_BG_PRIMARY = 0xFF6A8FB5;  // 主按钮
-    private static final int BTN_BG_DANGER = 0xFFB56A6A;   // 危险按钮
-    private static final int CARD_BG = 0xFFE0E0E0;        // 卡片底色
-    private static final int CARD_BORDER = 0xFFAAAAAA;    // 卡片边框
-    private static final int CARD_HOVER = 0xFFC8D8E8;      // 卡片 hover
-
-    // === 5 个 Tab (制作蓝图 / 蓝图管理 都依赖 KubeJS, 未装时一起隐藏) ===
+    // === 5 个 Tab ===
     public enum Tab {
         CREATE("创建建筑"),
         EDIT("编辑建筑"),
@@ -79,158 +127,51 @@ public class GuiExtensionPackEditor extends GuiBase {
         final String label;
         Tab(String label) { this.label = label; }
     }
-    private Tab currentTab = Tab.CREATE;
 
-    // === 面板位置 (与 Browser 一致) ===
-    private int grayBoxX, grayBoxY;
+    // === 布局常量 ===
+    private static final int TAB_W = 62;       // 左侧 tab 列宽
+    private static final int THUMB = 40;       // 编辑建筑卡片缩略图边长
 
-    // === "创建建筑" tab 的 EditBox 和按钮 ===
-    // 字段与建筑终端"创建建筑"对齐: 可编辑只有建筑名 (标识符自动用建筑名生成);
-    // 尺寸/依赖为只读展示 (选完 NBT/选区后由 GuiCreateBuildingInfo 自动回填), 作者/描述不再展示
-    private EditBox edName, edDeps, edSize;
-    /** 只读 EditBox: 显示当前已选的 NBT 建筑文件路径 / 选区信息. */
-    private EditBox edNbtFile;
-    /** 只读 EditBox: 显示当前已选的图标文件名 (玩家按"选图标"按钮选完后回填). */
-    private EditBox edIconFile;
-    /** 只读 EditBox: 显示当前选中的分类. 旁边 3 个按钮: ‹ 上一个 / › 下一个 / + 管理分类. */
-    private EditBox edCategory;
-    private ExtendedButton btnSelectNbt, btnInGame, btnIcon, btnSave, btnReset, btnDelete;
-    private ExtendedButton btnSelectNbtPrimary;
-    private ExtendedButton btnCatPrev, btnCatNext, btnCatAdd;
-    /** EditBox 状态: 用来在切到创建 tab 时从 GuiCreateBuildingInfo 同步. */
-    private boolean createFormInited = false;
-    /** 创建 tab 第一行按钮的 Y 坐标, 状态消息绘制在该行之上 (避免与按钮重叠). */
-    private int createBtn1Y = 0;
-    /** 创建 tab 状态消息占位行的 Y 坐标. 0 = 未初始化. */
-    private int createStatusY = 0;
-    /** 创建 tab 支持格式提示行 (.nbt / .schem / .litematic) 的 Y 坐标. 0 = 未初始化. */
-    private int createFormatHintY = 0;
+    // === 全局状态 (界面单实例, 重开保留) ===
+    private static Tab currentTab = Tab.CREATE;
+    /** 编辑建筑 tab: 搜索关键字 + 页码 (0-based, 跨开屏保留). */
+    private static String editSearch = "";
+    private static int editPage = 0;
+    /** 蓝图管理 tab: 页码 (0-based). */
+    private static int mgmtPage = 0;
 
-    // === "编辑建筑" tab 的数据 ===
-    private List<LocalBuilding> editBuildings = new ArrayList<>();
-    /** 搜索过滤后的建筑 (派生自 editBuildings, 跟随搜索框刷新). */
-    private List<LocalBuilding> editFiltered = new ArrayList<>();
-    /** 搜索关键字 (小写). 空 = 不过滤. */
-    private String editSearch = "";
-    /** 当前页 (1-based). */
-    private int editPage = 1;
-    /** 每页卡片数 (2 列 × 实际行数, 算出来). */
-    private int editPageSize = 8;
-    /** 搜索框 EditBox. */
-    private EditBox edSearch;
-    /** 搜索框矩形: 用于点击聚焦 (渲染时也算) */
-    private int[] edSearchRect = new int[]{0, 0, 0, 0};
-    /** 卡片矩形 (grayBoxX, grayBoxY, cardX, cardY, cardW, cardH) 列表, 用于点击检测. */
-    private List<int[]> editCardRects = new ArrayList<>();
-    /** "查看" 按钮矩形列表 (每张卡一个) -> 与 editCardRects 索引对应. */
-    private List<int[]> editViewBtnRects = new ArrayList<>();
-    /** "编辑" 按钮矩形列表. */
-    private List<int[]> editEditBtnRects = new ArrayList<>();
-    /** 翻页按钮矩形: [prevX, prevY, prevW, prevH, nextX, nextY, nextW, nextH]. */
-    private int[] editPagingRects = new int[]{0, 0, 0, 0, 0, 0, 0, 0};
-
-    // === "设置" tab 状态 ===
-    /** 设置页控件矩形缓存. */
-    // settingsToggleRect[i] = 第 i 个 toggle 行的 [x, y, w, h].
-    // 索引: 0=自动检测依赖, 1=强制启用 KubeJS 联动.
-    private int[][] settingsToggleRect = new int[][]{
-        {0,0,0,0}, // 0: 打开建筑时自动检测依赖
-        {0,0,0,0}, // 1: 强制启用 KubeJS 联动 (调试用)
-    };
-    /** 建造动画 mode 切换按钮的 [x, y, w, h]. 点击循环切换 OFF→FALL→RAIN→THROW→OFF. */
-    private int[] settingsModeCycleRect = new int[]{0, 0, 0, 0};
-    private int[] settingsResetRect = new int[]{0, 0, 0, 0};
-    private int[] settingsDoneRect = new int[]{0, 0, 0, 0};
-    /** 设置 tab 当前页 (1=偏好+性能/动画, 2=快捷操作). */
-    private int settingsPage = 1;
-    /** 设置 tab 翻页按钮矩形: [prevX, prevY, prevW, prevH, nextX, nextY, nextW, nextH]. */
-    private int[] settingsPagingRects = new int[]{0, 0, 0, 0, 0, 0, 0, 0};
-    private int settingsStatusTick = 0;
-    private String settingsStatus = null;
-    private int settingsStatusColor = 0x55FF55;
-
-    // === "制作蓝图" tab 的字段 ===
-    private EditBox edBlueprintName;       // 显示名 (玩家填的)
-    // 命名空间 / 物品 id 都不再让玩家填 — 简化:
-    //   - 命名空间固定 player_pack
-    //   - 物品 id 固定 player_blueprint, 已存在则自动加序号 (_2, _3, ...)
-    //   之前 3 个输入框太繁琐, 玩家根本不在意 ns / id, 只关心显示名.
-    // private EditBox edBlueprintNamespace;  // 隐藏
-    // private EditBox edBlueprintItemId;     // 隐藏
+    // === "制作蓝图" tab 状态 (静态: 关掉 GUI 重开不丢) ===
+    private static String SAVED_BLUEPRINT_NAME = "";
     /** 选中的建筑 (NBT 来源, 单文件建筑或 zip 包内的). null = 没选. */
-    private com.prefab.addon.extension.LocalBuilding selectedBuilding;
+    private static LocalBuilding selectedBuilding;
     /** 选中的贴图源文件 (玩家电脑上的 .png). null = 没选. */
-    private java.nio.file.Path selectedTextureSource;
-    /** 9 槽配方: 9 个 null-or-itemId. */
-    private final java.util.List<String> recipeItems = new java.util.ArrayList<>(java.util.Arrays.asList(null, null, null, null, null, null, null, null, null));
-    /** 锁定 (默认 true, 蓝图一旦生成不可 rebind). */
-    private boolean blueprintLocked = true;
-    /** 控件矩形缓存. */
-    private int[] mbSelectBuildingFileRect = new int[]{0,0,0,0};  // 选外部 NBT 文件
-    private int[] mbSelectInGameRect = new int[]{0,0,0,0};        // 游戏内选区
-    private int[] mbSelectTextureRect = new int[]{0,0,0,0};
-    private int[] mbLockedRect = new int[]{0,0,0,0};
-    private int[] mbRecipeGridRect = new int[]{0,0,0,0};
-    private int[] mbGenerateRect = new int[]{0,0,0,0};
-    private int[] mbOpenFolderRect = new int[]{0,0,0,0};
-    /** 滚动条槽 [x,y,w,h] + 拇指 [x,y,w,h] (绘制在 drawMakeBlueprintTab 里). */
-    private int[] mbScrollBarRect = new int[]{0,0,0,0};
-    private int[] mbScrollThumbRect = new int[]{0,0,0,0};
-    /** 拖动滚动条的状态. */
-    private boolean mbScrollDragging = false;
-    private int mbScrollDragOffset = 0;
-    /** 当前滚动偏移 (像素). */
-    private int mbScroll = 0;
-    /** 本帧计算的内容总高度, 用于算 maxScroll. */
-    private int mbContentHeight = 0;
-    /** tick() 轮询 GuiCreateBuildingInfo.nbtData 时的来源 (外部 NBT 还是游戏内). */
-    private int mbPollSource = 0; // 0=none 1=external 2=ingame
-    /** 当前正在编辑的配方格 idx (-1 = 没编辑), 用于在点开小搜索框后回填. */
-    private int mbEditingCell = -1;
-    /** 状态消息 (this tab 自己的, 区别于全局 statusMessage). */
-    private String mbStatus = null;
-    private int mbStatusTick = 0;
-    private int mbStatusColor = 0x55FF55;
+    private static Path selectedTextureSource;
+    /** 9 槽配方: 9 个 null-or-itemId (row-major 0..8). */
+    private static final List<String> recipeItems = new ArrayList<>(Arrays.asList(
+        null, null, null, null, null, null, null, null, null));
 
-    // === "蓝图管理" tab 的字段 ===
-    /**
-     * 玩家本局点过 "删除" 的蓝图 (ns:itemId 形式). 用来在 {@link #rebuildManagedBlueprints}
-     * 里过滤掉 — 物品注册还在 registry 里 (startup_scripts 只在启动时跑),
-     * 但文件已经被删了, 显示出来会变成 "⚠ 部分文件已丢失", 玩家看到容易困惑.
-     * <p>本局只在本 session 有效, 重启游戏自然清空, 跟 KubeJS 自己的注册状态对齐.</p>
-     */
-    private static final java.util.Set<String> DELETED_THIS_SESSION = java.util.concurrent.ConcurrentHashMap.newKeySet();
-    /** 缓存: 当前列出的蓝图条目 (Item + 对应文件路径). 进入 tab 时 / 刷新时重建. */
-    private java.util.List<ManagedBlueprint> managedBlueprints = new java.util.ArrayList<>();
-    /** 每张卡片的矩形 (x,y,w,h), 与 managedBlueprints 索引对应. */
-    private final java.util.List<int[]> mbManageCardRects = new java.util.ArrayList<>();
-    /** "删除" 按钮矩形 (索引对齐 managedBlueprints). */
-    private final java.util.List<int[]> mbManageDeleteBtnRects = new java.util.ArrayList<>();
-    /** 顶部 "刷新" 按钮矩形. */
-    private int[] mbManageRefreshRect = new int[]{0,0,0,0};
-    /** 状态消息 (本 tab 独立). */
-    private String mgmtStatus = null;
-    private int mgmtStatusTick = 0;
-    private int mgmtStatusColor = 0x55FF55;
-    /** 进入 tab 的次数 — 第一次进入 / 切回来都重建列表 (避免陈旧). */
-    private boolean mgmtInited = false;
+    // === "蓝图管理" tab 状态 ===
+    /** 玩家本局点过 "删除" 的蓝图 (ns:itemId). 重启游戏自然清空, 与 KubeJS 注册状态对齐. */
+    private static final Set<String> DELETED_THIS_SESSION = ConcurrentHashMap.newKeySet();
+    /** 缓存: 当前列出的蓝图条目. 进入 tab / 刷新时重建. */
+    private static final List<ManagedBlueprint> managedBlueprints = new ArrayList<>();
+
+    // === "编辑建筑" tab 数据 ===
+    private static final List<LocalBuilding> editBuildings = new ArrayList<>();
+    /** 非 null = 创建建筑 tab 当前处于 "编辑信息" 模式, 目标是这个本地建筑. */
+    private static LocalBuilding editInfoTarget;
 
     /** 一条 "KubeJS 联动蓝图" 的渲染数据: 物品 + 它对应的 KubeJS 文件. */
-    private static class ManagedBlueprint {
-        final net.minecraft.world.item.Item item;
+    private static final class ManagedBlueprint {
+        final Item item;
         final String displayName;
         final String namespace;
         final String itemId;
-        /** startup script 路径 (可能不存在, 比如手写脚本不在这台机器). */
-        final java.nio.file.Path jsFile;
-        /** recipe script 路径. */
-        final java.nio.file.Path recipeFile;
-        /** 贴图路径. */
-        final java.nio.file.Path textureFile;
-        ManagedBlueprint(net.minecraft.world.item.Item item, String displayName,
-                         String namespace, String itemId,
-                         java.nio.file.Path jsFile, java.nio.file.Path recipeFile,
-                         java.nio.file.Path textureFile) {
+        final Path jsFile;
+        final Path recipeFile;
+        final Path textureFile;
+        ManagedBlueprint(Item item, String displayName, String namespace, String itemId,
+                         Path jsFile, Path recipeFile, Path textureFile) {
             this.item = item;
             this.displayName = displayName;
             this.namespace = namespace;
@@ -242,121 +183,534 @@ public class GuiExtensionPackEditor extends GuiBase {
         String nsItem() { return namespace + ":" + itemId; }
     }
 
-    /** 状态消息 (底部状态栏). */
-    private String statusMessage = null;
-    private int statusColor = 0x55FF55;
-    private int statusTick = 0;
+    // === 预览图纹理缓存 (编辑建筑 tab, key = 图片路径) ===
+    private static final Map<String, ResourceLocation> EDIT_IMG = new HashMap<>();
+    private static final Set<String> EDIT_IMG_LOADING = new HashSet<>();
+    private static final AtomicInteger TEX_GEN = new AtomicInteger();
 
-    public GuiExtensionPackEditor() {
-        super("Extension Editor");
-        this.modifiedInitialXAxis = PANEL_W / 2;
-        this.modifiedInitialYAxis = PANEL_H / 2;
+    // === UI 引用 (重建用, 单实例界面) ===
+    private static UIElement rootRef;
+    private static UIElement listAreaRef;
+    private static Label statusLabel;
+    /** 最近一次状态消息 (rebuild 重建 statusLabel 后用它恢复文本). */
+    private static String lastStatus = "";
+    private static int lastStatusColor = 0xAAAAAA;
+
+    private GuiExtensionPackEditor() {}
+
+    // ==================== 静态入口 (签名与旧版一致) ====================
+
+    public static void open() {
+        open(currentTab);
     }
 
-    /** 用指定初始 tab 打开 (供 O 键直接跳到设置 tab 用). */
+    /** 用指定初始 tab 打开. */
     public static void open(Tab initialTab) {
-        GuiExtensionPackEditor gui = new GuiExtensionPackEditor();
-        gui.currentTab = initialTab;
-        Minecraft.getInstance().setScreen(gui);
-    }
-
-    @Override
-    protected void Initialize() {
-        super.Initialize();
-        int[] pos = computePanelPos();
-        this.grayBoxX = pos[0];
-        this.grayBoxY = pos[1];
-
-        // === KubeJS 联动: GUI 打开时同步 forceEnabled + 刷新一次检测 ===
-        // 万一之前的缓存错了, 这里纠正.
+        Minecraft mc = Minecraft.getInstance();
+        currentTab = initialTab;
+        // KubeJS 联动: GUI 打开时同步 forceEnabled + 刷新一次检测 (旧版 Initialize 行为)
         try {
-            com.prefab.addon.integration.KubeJSIntegration.setForceEnabled(
-                PlayerPreferences.get().forceKubeJSTab);
-            com.prefab.addon.integration.KubeJSIntegration.recheck();
-            PrefabCustomAddon.LOGGER.info(
-                "[MAKE-BLUEPRINT] GUI 初始化: KubeJS={}, forceEnabled={}, 当前 tab={}",
-                com.prefab.addon.integration.KubeJSIntegration.isLoaded(),
-                com.prefab.addon.integration.KubeJSIntegration.isForceEnabled(),
-                this.currentTab);
+            KubeJSIntegration.setForceEnabled(PlayerPreferences.get().forceKubeJSTab);
+            KubeJSIntegration.recheck();
         } catch (Throwable t) {
-            PrefabCustomAddon.LOGGER.warn("[MAKE-BLUEPRINT] KubeJS 状态同步失败: {}", t.getMessage());
+            PrefabCustomAddon.LOGGER.warn("[EDITOR] KubeJS 状态同步失败: {}", t.getMessage());
         }
-
-        // 创建 tab 的控件 (始终在 widget 列表里, 切 tab 时切可见性)
-        initCreateTabWidgets();
-
-        // 编辑 tab 的搜索框 (始终在 widget 列表里, 切 tab 时切可见性)
-        initEditTabWidgets();
-
-        // 制作蓝图 tab 的 EditBox
-        initMakeBlueprintWidgets();
-
-        // 加载编辑 tab 数据
-        refreshEditTab();
-
-        // 初始化时按当前 tab 一次性刷一次 widget 可见性.
-        // 否则 default currentTab=CREATE 时, EDIT/MAKE_BLUEPRINT 的 widget 仍 visible
-        // (只有 MAKE_BLUEPRINT 的 EditBox 在 init 时显式 setVisible(false), 其他都没设),
-        // 切到 MAKE_BLUEPRINT tab 后会跟 CREATE 的按钮 / EditBox 叠加渲染.
-        applyTabVisibility();
+        refreshEditBuildings();
+        if (initialTab == Tab.MANAGE_BLUEPRINT) {
+            rebuildManagedBlueprints();
+        }
+        UIElement root = buildRoot();
+        ModularUI ui = ModularUI.of(UI.of(root,
+            StylesheetManager.INSTANCE.getStylesheetSafe(StylesheetManager.MC)), mc.player);
+        mc.setScreen(new ModularUIScreen(ui, Component.literal(
+            PrefabCustomAddon.tr("gui.prefab_custom_addon.title"))));
     }
 
-    /** 根据当前 currentTab 刷新所有 tab 的 widget 可见性. switchTab 和 Initialize 末尾共用. */
-    private void applyTabVisibility() {
-        setCreateTabVisible(this.currentTab == Tab.CREATE);
-        setEditTabVisible(this.currentTab == Tab.EDIT);
-        setMakeBlueprintTabVisible(this.currentTab == Tab.MAKE_BLUEPRINT);
+    // ==================== UI 构建 ====================
+
+    private static UIElement buildRoot() {
+        UIElement root = new UIElement();
+        root.layout(l -> l
+            .widthPercent(100).heightPercent(100)
+            .flexDirection(FlexDirection.COLUMN)
+            .paddingAll(4).gapAll(3)
+        );
+        root.style(s -> s.background(Sprites.BORDER));
+        root.setOverflowVisible(false);
+        rebuildAll(root);
+        return root;
     }
 
-    /** 制作蓝图 tab 的 EditBox (始终在 widget 列表, 通过 setVisible 切). */
-    private void initMakeBlueprintWidgets() {
-        // 内容区在 computePanelPos / contentRect 里, 但 tab 内容具体位置在 drawMakeBlueprintTab 里.
-        // 这里只创建 EditBox, 设默认可见性 false (切到 tab 时再显示).
-        edBlueprintName = new EditBox(this.font, 0, 0, 120, 14, Component.literal(""));
-        edBlueprintName.setMaxLength(64);
-        edBlueprintName.setValue("我的蓝图");
-        addRenderableWidget(edBlueprintName);
-        edBlueprintName.setVisible(false);
-        // 命名空间 / 物品 id 不再让玩家填 (固定 player_pack + player_blueprint + 序号)
-        // 它们的引用也都从代码里移除, 避免误用
+    /** 整体重建 (切 tab / 设置项切换时调用). */
+    private static void rebuild() {
+        if (rootRef != null) {
+            rebuildAll(rootRef);
+        }
     }
 
-    /** 编辑 tab 的搜索框 (在右内容区顶部). 始终 addRenderableWidget, 通过 setVisible 切换. */
-    private void initEditTabWidgets() {
-        int[] r = contentRect();
-        int rx = r[0], ry = r[1], rw = r[2];
-        int searchX = rx + 6;
-        int searchY = ry + 32;  // 标题 + hint 之下
-        int searchW = rw - 12;
-        int searchH = 14;
-        edSearchRect = new int[]{searchX, searchY, searchW, searchH};
-        edSearch = new EditBox(this.font, searchX, searchY, searchW, searchH, Component.literal(""));
-        edSearch.setMaxLength(64);
-        edSearch.setValue(this.editSearch);
-        edSearch.setResponder(s -> {
-            this.editSearch = s == null ? "" : s.trim().toLowerCase(Locale.ROOT);
-            // 搜索变化时重置到第 1 页, 重新过滤
-            this.editPage = 1;
-            rebuildEditFiltered();
-        });
-        edSearch.setVisible(false);  // 默认不在 create tab 显示
-        this.addRenderableWidget(edSearch);
+    private static void rebuildAll(UIElement root) {
+        rootRef = root;
+        root.clearAllChildren();
+
+        // 主行: 左 tab 列 + 右内容列
+        UIElement main = new UIElement();
+        main.layout(l -> l.flexDirection(FlexDirection.ROW).widthPercent(100).flexGrow(1).minHeight(0).gapAll(4));
+        main.setOverflowVisible(false);
+        root.addChild(main);
+
+        // 左 tab 列
+        UIElement tabCol = new UIElement();
+        tabCol.layout(l -> l.flexDirection(FlexDirection.COLUMN).width(TAB_W).gapAll(3));
+        tabCol.setOverflowVisible(false);
+        for (Tab t : Tab.values()) {
+            Tab ft = t;
+            boolean kubejsDep = (t == Tab.MAKE_BLUEPRINT || t == Tab.MANAGE_BLUEPRINT)
+                && !KubeJSIntegration.isLoaded();
+            Button tb = new Button().setText(t.label, false);
+            int fg = t == currentTab ? 0xFFDD66 : (kubejsDep ? 0x777777 : 0xCCCCCC);
+            tb.textStyle(s -> s.textColor(fg));
+            tb.layout(l -> l.widthPercent(100).height(16));
+            tb.setOnClick(e -> switchTab(ft));
+            tabCol.addChild(tb);
+        }
+        main.addChild(tabCol);
+
+        // 右内容列
+        UIElement content = new UIElement();
+        content.layout(l -> l.flexDirection(FlexDirection.COLUMN).flexGrow(1).minWidth(0).gapAll(3));
+        content.setOverflowVisible(false);
+        main.addChild(content);
+
+        buildTabHeader(content);
+
+        // 列表区
+        UIElement listArea = new UIElement();
+        listArea.layout(l -> l.flexDirection(FlexDirection.ROW).widthPercent(100).flexGrow(1).minHeight(0).gapAll(4));
+        listArea.setOverflowVisible(false);
+        listAreaRef = listArea;
+        content.addChild(listArea);
+
+        rebuildList(listArea);
+
+        // 状态栏 (h=12)
+        UIElement statusRow = new UIElement();
+        statusRow.layout(l -> l.widthPercent(100).height(12));
+        statusRow.style(s -> s.background(Sprites.RECT_DARK));
+        statusRow.setOverflowVisible(false);
+        root.addChild(statusRow);
+        statusLabel = new Label();
+        statusLabel.setText(stripCodes(lastStatus), false);
+        statusLabel.textStyle(t -> t.textColor(lastStatusColor));
+        statusLabel.layout(l -> l.heightPercent(100).paddingLeft(3));
+        statusRow.addChild(statusLabel);
     }
 
-    /** 根据 editSearch 过滤 editBuildings → editFiltered. */
-    private void rebuildEditFiltered() {
-        this.editFiltered.clear();
-        if (this.editSearch.isEmpty()) {
-            this.editFiltered.addAll(this.editBuildings);
-        } else {
-            String q = this.editSearch;
-            for (LocalBuilding lb : this.editBuildings) {
-                if (matchesSearch(lb, q)) this.editFiltered.add(lb);
+    /** 仅重建列表区 (搜索 / 图片加载完成时调用, 不打断搜索框输入). */
+    private static void rebuildList() {
+        if (listAreaRef != null) {
+            rebuildList(listAreaRef);
+        }
+    }
+
+    /** 各 tab 顶部行. */
+    private static void buildTabHeader(UIElement content) {
+        switch (currentTab) {
+            case EDIT -> {
+                UIElement row = new UIElement();
+                row.layout(l -> l.flexDirection(FlexDirection.ROW).widthPercent(100).height(16).gapAll(3));
+                row.setOverflowVisible(false);
+                content.addChild(row);
+                TextField search = new TextField();
+                search.setText(editSearch);
+                search.setAnyString();
+                search.setTextValidator(s -> s == null || s.length() <= 64);
+                search.textFieldStyle(s -> s.textColor(0xFFFFFF).textShadow(false));
+                search.layout(l -> l.flexGrow(1).height(16).minHeight(16));
+                search.setTextResponder(s -> {
+                    String q = s == null ? "" : s.trim().toLowerCase(Locale.ROOT);
+                    if (!q.equals(editSearch)) {
+                        editSearch = q;
+                        editPage = 0;
+                        rebuildList();
+                    }
+                });
+                row.addChild(search);
+                // 1.20.1 lang 没有 mcs.refresh, 硬编码中文
+                Button refresh = new Button().setText("刷新", false);
+                refresh.layout(l -> l.width(44).height(16));
+                refresh.setOnClick(e -> {
+                    refreshEditBuildings();
+                    rebuildList();
+                });
+                row.addChild(refresh);
+            }
+            case MAKE_BLUEPRINT -> {
+                UIElement row = new UIElement();
+                row.layout(l -> l.flexDirection(FlexDirection.ROW).widthPercent(100).height(16).gapAll(3));
+                row.setOverflowVisible(false);
+                content.addChild(row);
+                Label title = new Label();
+                title.setText(tr("gui.make_blueprint.title"), false);
+                title.textStyle(t -> t.textColor(0xFFDD66));
+                title.layout(l -> l.flexGrow(1).heightPercent(100));
+                row.addChild(title);
+                // 1.21.1 蓝本这里还有 AI 帮助按钮, 1.20.1 没有 GuiAiBlueprintHelp, 舍弃
+            }
+            case MANAGE_BLUEPRINT -> {
+                UIElement row = new UIElement();
+                row.layout(l -> l.flexDirection(FlexDirection.ROW).widthPercent(100).height(16).gapAll(3));
+                row.setOverflowVisible(false);
+                content.addChild(row);
+                Label title = new Label();
+                // 1.20.1 lang 没有 editor.manage.title, 硬编码中文
+                title.setText("§l§n蓝图管理 §7(共 " + managedBlueprints.size() + " 个)", false);
+                title.textStyle(t -> t.textColor(0xFFDD66));
+                title.layout(l -> l.flexGrow(1).heightPercent(100));
+                row.addChild(title);
+                Button refresh = new Button().setText("刷新", false);
+                refresh.layout(l -> l.width(44).height(16));
+                refresh.setOnClick(e -> {
+                    rebuildManagedBlueprints();
+                    setStatus("已刷新, 共 " + managedBlueprints.size() + " 个自定义蓝图", 0x55FF55);
+                    rebuildList();
+                });
+                row.addChild(refresh);
+            }
+            case SETTINGS -> {
+                Label title = new Label();
+                title.setText(tr("gui.settings.title"), false);
+                title.textStyle(t -> t.textColor(0xFFDD66));
+                title.layout(l -> l.widthPercent(100).height(14));
+                content.addChild(title);
+            }
+            default -> {
+                // CREATE tab: 标题在列表区里画
             }
         }
-        if (this.editPage < 1) this.editPage = 1;
-        int totalPages = Math.max(1, (this.editFiltered.size() + this.editPageSize - 1) / this.editPageSize);
-        if (this.editPage > totalPages) this.editPage = totalPages;
+    }
+
+    private static void rebuildList(UIElement listArea) {
+        listArea.clearAllChildren();
+        switch (currentTab) {
+            case CREATE -> buildCreateTab(listArea);
+            case EDIT -> buildEditTab(listArea);
+            case SETTINGS -> buildSettingsTab(listArea);
+            case MAKE_BLUEPRINT -> buildMakeBlueprintTab(listArea);
+            case MANAGE_BLUEPRINT -> buildManageBlueprintTab(listArea);
+        }
+    }
+
+    // ==================== Tab: 创建建筑 ====================
+    // 数据逻辑照抄 TerminalGui 的移植: 全部走 GuiCreateBuildingInfo 的桥接方法.
+
+    private static void buildCreateTab(UIElement listArea) {
+        UIElement panel = new UIElement();
+        panel.layout(l -> l.flexDirection(FlexDirection.COLUMN).flexGrow(1).widthPercent(100)
+            .gapAll(3).paddingAll(2));
+        panel.style(s -> s.background(Sprites.RECT_DARK));
+        panel.setOverflowVisible(false);
+        listArea.addChild(panel);
+
+        Label hint = new Label();
+        if (editInfoTarget != null) {
+            // 编辑信息模式: 复用创建表单改字段, 建筑文件本体不动
+            hint.setText("正在编辑建筑信息: "
+                + (editInfoTarget.getDisplayName() == null ? editInfoTarget.id : editInfoTarget.getDisplayName())
+                + " — 改完点「保存信息」, 点「取消」放弃", false);
+            hint.textStyle(t -> t.textColor(0x88BBFF));
+        } else {
+            // 1.20.1 lang 没有 hint_terminal, 硬编码中文
+            hint.setText("建议使用建筑终端来创建建筑", false);
+            hint.textStyle(t -> t.textColor(0xFFAA55));
+        }
+        hint.layout(l -> l.widthPercent(100).height(12).marginBottom(4));
+        panel.addChild(hint);
+
+        // 建筑名 (唯一可编辑字段; 标识符自动用建筑名生成)
+        UIElement nameRow = new UIElement();
+        nameRow.layout(l -> l.flexDirection(FlexDirection.ROW).widthPercent(100).height(16).gapAll(3)
+            .alignItems(AlignItems.CENTER).marginBottom(4));
+        panel.addChild(nameRow);
+        nameRow.addChild(rowLabel(tr("gui.create_building.label_name"), 46));
+        TextField name = new TextField();
+        name.setText(GuiCreateBuildingInfo.getNameValue());
+        name.setAnyString();
+        name.setTextValidator(s -> s == null || s.length() <= 128);
+        name.textFieldStyle(s -> s.textColor(0xFFFFFF).textShadow(false));
+        name.layout(l -> l.flexGrow(1).height(16).minHeight(16));
+        name.setTextResponder(GuiCreateBuildingInfo::setNameValue);
+        nameRow.addChild(name);
+
+        // 分类行: [‹] [当前分类] [›] [管理]
+        UIElement catRow = new UIElement();
+        catRow.layout(l -> l.flexDirection(FlexDirection.ROW).widthPercent(100).height(16).gapAll(3)
+            .alignItems(AlignItems.CENTER).marginBottom(4));
+        panel.addChild(catRow);
+        catRow.addChild(rowLabel(tr("gui.create_building.label_category"), 46));
+        String cur = GuiCreateBuildingInfo.getCategoryValue();
+        if (cur == null || cur.isEmpty()) cur = CategoryManager.UNCATEGORIZED;
+        String curF = cur;
+        Button prev = new Button().setText("‹", false);
+        prev.textStyle(s -> s.textColor(0xCCCCCC));
+        prev.layout(l -> l.width(16).height(16));
+        prev.setOnClick(e -> cycleCategory(-1));
+        catRow.addChild(prev);
+        Label catLbl = new Label();
+        catLbl.setText(truncateW(curF, 90), false);
+        catLbl.textStyle(t -> t.textColor(0x88BBFF));
+        catLbl.layout(l -> l.flexGrow(1).heightPercent(100).paddingLeft(2));
+        catRow.addChild(catLbl);
+        Button next = new Button().setText("›", false);
+        next.textStyle(s -> s.textColor(0xCCCCCC));
+        next.layout(l -> l.width(16).height(16));
+        next.setOnClick(e -> cycleCategory(1));
+        catRow.addChild(next);
+        Button manage = new Button().setText(tr("gui.create_building.add_category"), false);
+        manage.layout(l -> l.width(48).height(16));
+        manage.setOnClick(e -> GuiCategoryManager.openStandalone());
+        catRow.addChild(manage);
+
+        // 只读信息行: 建筑 / 尺寸 / 依赖
+        String nbtPathVal = GuiCreateBuildingInfo.getNbtPathValue();
+        addReadonlyRow(panel, tr("gui.create_building.file_short",
+            nbtPathVal == null || nbtPathVal.isEmpty() ? tr("gui.create_building.empty_brackets") : nbtPathVal));
+        addReadonlyRow(panel, tr("gui.create_building.label_size")
+            + " " + (GuiCreateBuildingInfo.getSizeValue().isEmpty() ? tr("gui.create_building.parse_hint")
+            : GuiCreateBuildingInfo.getSizeValue()));
+        // 依赖行: 依赖多时按 ~44 字符/行拆成多行, 保证完整显示不截断
+        String depsVal = GuiCreateBuildingInfo.getDepsValue();
+        if (depsVal.isEmpty()) {
+            addReadonlyRow(panel, tr("gui.create_building.label_deps")
+                + " " + tr("gui.create_building.empty_brackets"));
+        } else {
+            String prefix = tr("gui.create_building.label_deps") + " ";
+            StringBuilder line = new StringBuilder();
+            for (String dep : depsVal.split("\\s*,\\s*")) {
+                if (dep.isBlank()) continue;
+                String cand = line.length() == 0 ? dep : line + ", " + dep;
+                if (cand.length() > 44 && line.length() > 0) {
+                    addReadonlyRow(panel, prefix + line);
+                    prefix = "      ";
+                    line = new StringBuilder(dep);
+                } else {
+                    line = new StringBuilder(cand);
+                }
+            }
+            if (line.length() > 0) {
+                addReadonlyRow(panel, prefix + line);
+            }
+        }
+
+        // 图标行: 状态 + [选图标] [✕]
+        UIElement iconRow = new UIElement();
+        iconRow.layout(l -> l.flexDirection(FlexDirection.ROW).widthPercent(100).height(16).gapAll(3)
+            .alignItems(AlignItems.CENTER).marginBottom(4));
+        panel.addChild(iconRow);
+        boolean hasIcon = GuiCreateBuildingInfo.hasIconData();
+        Label iconVal = new Label();
+        iconVal.setText((hasIcon ? "✓ " : tr("gui.create_building.icon") + " ")
+            + truncateW(GuiCreateBuildingInfo.getIconPathValue(), 60), false);
+        iconVal.textStyle(t -> t.textColor(hasIcon ? 0x55FF55 : 0x888888));
+        iconVal.layout(l -> l.flexGrow(1).heightPercent(100));
+        iconRow.addChild(iconVal);
+        Button pickIcon = new Button().setText(tr("gui.create_building.choose_image"), false);
+        pickIcon.layout(l -> l.width(64).height(16));
+        pickIcon.setOnClick(e -> GuiCreateBuildingInfo.openIconPickerForTerminal(() ->
+            Minecraft.getInstance().execute(() -> {
+                setStatus(GuiCreateBuildingInfo.getStatusMessage(), GuiCreateBuildingInfo.getStatusColor());
+                rebuild();
+            })));
+        iconRow.addChild(pickIcon);
+
+        // 按钮行 1: [选建筑文件] [游戏中选区] (已选建筑时改为"重新选择"; 编辑信息模式下不显示, 建筑文件只读)
+        if (editInfoTarget == null) {
+        boolean hasBuilding = GuiCreateBuildingInfo.hasNbtData();
+        UIElement pickRow = new UIElement();
+        pickRow.layout(l -> l.flexDirection(FlexDirection.ROW).widthPercent(100).height(16).gapAll(3).marginBottom(4));
+        panel.addChild(pickRow);
+        Button pickNbt = new Button().setText(hasBuilding
+            ? "重新选择建筑文件" : tr("gui.create_building.choose_nbt"), false);
+        pickNbt.layout(l -> l.widthPercent(50).height(16));
+        pickNbt.setOnClick(e -> GuiCreateBuildingInfo.pickNbtForBlueprint((res, err) ->
+            Minecraft.getInstance().execute(() -> {
+                if (err != null) {
+                    setStatus("✗ " + err.getMessage(), 0xFF5555);
+                    return;
+                }
+                if (res != null) {
+                    GuiCreateBuildingInfo.importNbtFile(res.file);
+                    // 外部建筑文件: 显示名还空着就自动填文件名 (去扩展名)
+                    if (GuiCreateBuildingInfo.getNameValue().isBlank()
+                        && res.fileName != null && !res.fileName.isBlank()) {
+                        String auto = res.fileName;
+                        int dot = auto.lastIndexOf('.');
+                        if (dot > 0) auto = auto.substring(0, dot);
+                        GuiCreateBuildingInfo.setNameValue(auto);
+                    }
+                    setStatus(GuiCreateBuildingInfo.getStatusMessage(), GuiCreateBuildingInfo.getStatusColor());
+                    rebuildList();
+                }
+            })));
+        pickRow.addChild(pickNbt);
+        Button pickInGame = new Button().setText(hasBuilding
+            ? "🎯 重新选择建筑" : tr("gui.create_building.pick_in_world"), false);
+        pickInGame.layout(l -> l.widthPercent(50).height(16));
+        pickInGame.setOnClick(e -> startInGameSelectionForCreate());
+        pickRow.addChild(pickInGame);
+        }
+
+        // 按钮行 2: [保存并创建 / 保存信息] [重置 / 取消] ([删除] 仅创建模式, 1.20.1 保留)
+        boolean infoMode = editInfoTarget != null;
+        UIElement actRow = new UIElement();
+        actRow.layout(l -> l.flexDirection(FlexDirection.ROW).widthPercent(100).height(16).gapAll(3).marginBottom(4));
+        panel.addChild(actRow);
+        Button save = new Button().setText(infoMode
+            ? "保存信息" : tr("gui.create_building.save_and_create"), false);
+        save.textStyle(s -> s.textColor(infoMode ? 0x88BBFF : 0x88FF88));
+        save.layout(l -> l.widthPercent(infoMode ? 50 : 40).height(16));
+        save.setOnClick(e -> {
+            if (editInfoTarget != null) {
+                onSaveEditInfo();
+            } else {
+                onSaveAndCreate();
+            }
+        });
+        actRow.addChild(save);
+        Button reset = new Button().setText(infoMode
+            ? "取消" : tr("gui.create_building.cancel"), false);
+        reset.layout(l -> l.widthPercent(infoMode ? 50 : 30).height(16));
+        reset.setOnClick(e -> {
+            boolean wasInfoMode = editInfoTarget != null;
+            editInfoTarget = null;
+            GuiCreateBuildingInfo.resetForTerminal();
+            setStatus("", 0xAAAAAA);
+            if (wasInfoMode) {
+                open(Tab.EDIT);
+            } else {
+                rebuild();
+            }
+        });
+        actRow.addChild(reset);
+        // 1.20.1 特有: 删除按钮 (按当前表单 id 删建筑文件), 编辑信息模式下隐藏避免误删
+        if (!infoMode) {
+            Button delete = new Button().setText(tr("gui.create_building.delete"), false);
+            delete.textStyle(s -> s.textColor(0xFF8888));
+            delete.layout(l -> l.widthPercent(30).height(16));
+            delete.setOnClick(e -> onDeleteCurrentBuilding());
+            actRow.addChild(delete);
+        }
+    }
+
+    /** "删除" 按钮 (创建建筑 tab, 1.20.1 保留): 按表单当前 id 调 GuiCreateBuildingInfo.doDelete. */
+    private static void onDeleteCurrentBuilding() {
+        String id = GuiCreateBuildingInfo.getIdValue();
+        if (id != null && !id.isEmpty()) {
+            GuiCreateBuildingInfo.doDelete(null, id);
+            setStatus(GuiCreateBuildingInfo.getStatusMessage(), GuiCreateBuildingInfo.getStatusColor());
+            refreshEditBuildings();
+        }
+    }
+
+    /** "保存信息": 把表单字段写回目标建筑的 .txt (含改名换图标), 成功后回编辑建筑 tab. */
+    private static void onSaveEditInfo() {
+        LocalBuilding target = editInfoTarget;
+        if (target == null) return;
+        String name = GuiCreateBuildingInfo.getNameValue();
+        boolean ok = GuiCreateBuildingInfo.saveEditInfoForTerminal(target);
+        setStatus(GuiCreateBuildingInfo.getStatusMessage(), GuiCreateBuildingInfo.getStatusColor());
+        if (ok) {
+            editInfoTarget = null;
+            GuiCreateBuildingInfo.resetForTerminal();
+            refreshEditBuildings();
+            if (Minecraft.getInstance().player != null) {
+                Minecraft.getInstance().player.sendSystemMessage(Component.literal(
+                    "§a[信息已更新] §7建筑 §f" + (name == null || name.isEmpty() ? target.id : name)
+                        + " §7的信息已保存"));
+            }
+            open(Tab.EDIT);
+        }
+    }
+
+    /** 创建建筑 - 游戏内选区: 关屏 → RegionSelector → applyInGamePickForTerminal → 重开. */
+    private static void startInGameSelectionForCreate() {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.player == null) return;
+        mc.tell(() -> {
+            mc.setScreen(null);
+            RegionSelector.start(mc.player, new RegionSelector.OnCompleted() {
+                @Override
+                public void onCompleted(byte[] data, Path nbtFile, String sizeString, List<String> modIds) {
+                    Minecraft.getInstance().execute(() -> {
+                        GuiCreateBuildingInfo.applyInGamePickForTerminal(data, nbtFile, sizeString, modIds);
+                        open(Tab.CREATE);
+                    });
+                }
+
+                @Override
+                public void onCancelled() {
+                    Minecraft.getInstance().execute(() -> open(Tab.CREATE));
+                }
+            });
+        });
+    }
+
+    /** "保存并创建": saveBuildingForTerminal + 成功时聊天提示 + 重置表单. */
+    private static void onSaveAndCreate() {
+        String id = GuiCreateBuildingInfo.getIdValue();
+        String name = GuiCreateBuildingInfo.getNameValue();
+        boolean ok = GuiCreateBuildingInfo.saveBuildingForTerminal();
+        setStatus(GuiCreateBuildingInfo.getStatusMessage(), GuiCreateBuildingInfo.getStatusColor());
+        if (ok) {
+            if (Minecraft.getInstance().player != null) {
+                Minecraft.getInstance().player.sendSystemMessage(Component.literal(
+                    "§a[创建成功] §7建筑 §f" + (name == null || name.isEmpty() ? id : name)
+                        + " §7已保存到 prefab-extension/"));
+            }
+            GuiCreateBuildingInfo.resetForTerminal();
+            rebuild();
+        }
+    }
+
+    /** 分类 ‹ › 循环切换 (CategoryManager 列表, 忽略大小写匹配当前值). */
+    private static void cycleCategory(int dir) {
+        List<String> all = CategoryManager.get().getCategories();
+        if (all.isEmpty()) return;
+        String cur = GuiCreateBuildingInfo.getCategoryValue();
+        int idx = -1;
+        if (cur != null) {
+            for (int i = 0; i < all.size(); i++) {
+                if (all.get(i).equalsIgnoreCase(cur)) { idx = i; break; }
+            }
+        }
+        int next;
+        if (idx < 0) {
+            next = dir > 0 ? 0 : all.size() - 1;
+        } else {
+            next = (idx + dir + all.size()) % all.size();
+        }
+        GuiCreateBuildingInfo.setCategoryValue(all.get(next));
+        rebuild();
+    }
+
+    // ==================== Tab: 编辑建筑 ====================
+
+    /** 扫 prefab-extension/ + prefab-download/ + 老 prefab-work/<packId>/construction/. */
+    private static void refreshEditBuildings() {
+        editBuildings.clear();
+        try {
+            editBuildings.addAll(LocalBuildingScanner.scanAll());
+        } catch (Exception ex) {
+            PrefabCustomAddon.LOGGER.error("[EDITOR] 扫描 LocalBuilding 失败: {}", ex.getMessage());
+        }
+    }
+
+    private static List<LocalBuilding> filteredEditBuildings() {
+        if (editSearch == null || editSearch.isEmpty()) return editBuildings;
+        List<LocalBuilding> out = new ArrayList<>();
+        for (LocalBuilding lb : editBuildings) {
+            if (matchesSearch(lb, editSearch)) out.add(lb);
+        }
+        return out;
     }
 
     private static boolean matchesSearch(LocalBuilding lb, String q) {
@@ -364,491 +718,725 @@ public class GuiExtensionPackEditor extends GuiBase {
         if (lb.id != null && lb.id.toLowerCase(Locale.ROOT).contains(q)) return true;
         if (lb.name != null && lb.name.toLowerCase(Locale.ROOT).contains(q)) return true;
         if (lb.author != null && lb.author.toLowerCase(Locale.ROOT).contains(q)) return true;
-        if (lb.description != null && lb.description.toLowerCase(Locale.ROOT).contains(q)) return true;
-        return false;
+        return lb.description != null && lb.description.toLowerCase(Locale.ROOT).contains(q);
     }
 
-    private int[] computePanelPos() {
-        int x = (this.width / 2) - this.modifiedInitialXAxis;
-        int y = (this.height / 2) - this.modifiedInitialYAxis;
-        if (x < 4) x = 4;
-        if (y < 4) y = 4;
-        if (x + PANEL_W > this.width - 4) x = Math.max(4, this.width - PANEL_W - 4);
-        if (y + PANEL_H > this.height - 4) y = Math.max(4, this.height - PANEL_H - 4);
-        return new int[]{x, y};
-    }
+    private static void buildEditTab(UIElement listArea) {
+        List<LocalBuilding> filtered = filteredEditBuildings();
+        if (filtered.isEmpty()) {
+            UIElement grid = new UIElement();
+            grid.layout(l -> l.flexDirection(FlexDirection.ROW).flexGrow(1).minWidth(0));
+            grid.setOverflowVisible(false);
+            listArea.addChild(grid);
+            fillEmpty(grid,
+                editBuildings.isEmpty() ? tr("gui.prefab_custom_addon.no_packs")
+                    : tr("gui.make_blueprint.search.no_match"),
+                editBuildings.isEmpty() ? tr("gui.prefab_custom_addon.place_packs")
+                    : tr("msg.try_filter"));
+            return;
+        }
+        UIElement grid = new UIElement();
+        grid.layout(l -> l.flexDirection(FlexDirection.ROW).flexGrow(1).minWidth(0));
+        grid.setOverflowVisible(false);
+        listArea.addChild(grid);
 
-    /** 右内容区. */
-    private int[] contentRect() {
-        int x = grayBoxX + TABS_W + 4 + 1;
-        int y = grayBoxY + 1;
-        int w = PANEL_W - TABS_W - 8 - 2;
-        int h = PANEL_H - 2;
-        return new int[]{x, y, w, h};
-    }
+        ScrollerView scroller = scroller(grid);
+        UIElement col = new UIElement();
+        col.layout(l -> l.flexDirection(FlexDirection.COLUMN).widthPercent(100).paddingAll(2).gapAll(4));
+        scroller.addScrollViewChild(col);
 
-    // ============================================================
-    // 创建 tab 控件初始化
-    // ============================================================
-    private void initCreateTabWidgets() {
-        int[] r = contentRect();
-        int rx = r[0], ry = r[1], rw = r[2], rh = r[3];
-
-        int labelW = 40;
-        int fieldX = rx + labelW + 2;
-        int fieldW = rw - labelW - 8;
-        int fieldH = 16;
-        int rowH = 20;
-        int y = ry + 18;  // 标题 (4) + 间距
-
-        // 字段与建筑终端"创建建筑"对齐: 可编辑只有建筑名 (标识符自动用建筑名生成);
-        // 尺寸/依赖为只读展示 (选完 NBT/选区后由 GuiCreateBuildingInfo 自动回填), 作者/描述不再展示
-        edName = makeField(fieldX, y, fieldW, fieldH, () -> com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldNameValue, s -> com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldNameValue = s); y += rowH;
-        edSize = makeReadonlyField(fieldX, y, fieldW, fieldH); y += rowH;
-        edDeps = makeReadonlyField(fieldX, y, fieldW, fieldH); y += rowH;
-
-        // === 分类行: 只读显示 + ‹ › + 按钮 ===
-        // 跟 NBT / 图标行 同样的高度 (12px), 总宽 = fieldW (跟其它 EditBox 对齐)
-        int catH = 12;
-        int catBtnW = 14;             // ‹ / › 按钮
-        int catAddBtnW = 28;          // "管理" 按钮 (实际 28 让它能装下"管理"两个字)
-        int catDisplayW = fieldW - catBtnW * 2 - catAddBtnW - 2;  // 减 2 留缝
-        int catX = fieldX;
-        int catY = y;
-
-        edCategory = new EditBox(this.font, catX, catY, catDisplayW, catH, Component.literal(""));
-        edCategory.setMaxLength(64);
-        edCategory.setEditable(false);
-        edCategory.setValue(CategoryManager.UNCATEGORIZED);
-        this.addRenderableWidget(edCategory);
-
-        btnCatPrev = makeButton(catX + catDisplayW, catY, catBtnW, catH, "‹", () -> {
-            java.util.List<String> all = CategoryManager.get().getCategories();
-            int idx = indexOfCategory(all, GuiCreateBuildingInfo.fieldCategoryValue);
-            int next = (idx <= 0) ? all.size() - 1 : idx - 1;
-            GuiCreateBuildingInfo.fieldCategoryValue = all.get(next);
-            refreshCategoryDisplay();
-        });
-        btnCatNext = makeButton(catX + catDisplayW + catBtnW, catY, catBtnW, catH, "›", () -> {
-            java.util.List<String> all = CategoryManager.get().getCategories();
-            int idx = indexOfCategory(all, GuiCreateBuildingInfo.fieldCategoryValue);
-            int next = (idx < 0 || idx >= all.size() - 1) ? 0 : idx + 1;
-            GuiCreateBuildingInfo.fieldCategoryValue = all.get(next);
-            refreshCategoryDisplay();
-        });
-        btnCatAdd = makeButton(catX + catDisplayW + catBtnW * 2, catY, catAddBtnW, catH, "管理", () -> {
-            // 弹独立分类管理界面, 关掉时刷新当前显示
-            GuiCategoryManager.openStandalone();
-            refreshCategoryDisplay();
-        });
-        y += catH + 2;
-
-        // 已选建筑文件 (只读)
-        int nbtFieldH = 12;
-        edNbtFile = new EditBox(this.font, fieldX, y, fieldW, nbtFieldH, Component.literal(""));
-        edNbtFile.setMaxLength(512);
-        edNbtFile.setValue("");  // tick() 里从 GuiCreateBuildingInfo.nbtPath 同步
-        edNbtFile.setEditable(false);
-        this.addRenderableWidget(edNbtFile);
-        y += nbtFieldH + 2;
-
-        // 已选图标 (只读) - 显示选完图标后回填的文件名
-        int iconFieldH = 12;
-        edIconFile = new EditBox(this.font, fieldX, y, fieldW, iconFieldH, Component.literal(""));
-        edIconFile.setMaxLength(256);
-        edIconFile.setValue("");  // tick() 里从 GuiCreateBuildingInfo.fieldIconPath 同步
-        edIconFile.setEditable(false);
-        this.addRenderableWidget(edIconFile);
-        y += iconFieldH + 2;
-
-        // 支持格式提示行 (小字, 图标行下方): .nbt / .schem / .litematic
-        this.createFormatHintY = y;
-        y += 11;
-
-        // 状态消息占位行 (文字高度 8px, 上下各留 2px)
-        this.createStatusY = y;
-        y += 12;
-
-        // 按钮行 1: [选 NBT] [游戏中选区] [选图标]
-        int btn1Y = y;
-        this.createBtn1Y = btn1Y;
-        int btnH = 14;
-        int gap = 4;
-        int btn1W = (rw - 16 - gap * 2) / 3;
-        int btnX = rx + 8;
-        btnSelectNbt = makeButton(btnX, btn1Y, btn1W, btnH, com.prefab.addon.PrefabCustomAddon.tr("gui.create_building.choose_nbt"), () -> {
-            com.prefab.addon.client.gui.GuiCreateBuildingInfo.openNbtPickerFromExtension();
-            refreshNbtFileDisplay();
-        });
-        btnInGame    = makeButton(btnX + btn1W + gap, btn1Y, btn1W, btnH, "游戏中选区", () -> startInGameSelectionForEditor());
-        btnIcon      = makeButton(btnX + (btn1W + gap) * 2, btn1Y, btn1W, btnH, "选图标", () -> {
-            com.prefab.addon.client.gui.GuiCreateBuildingInfo.openIconPickerFromExtension();
-        });
-        y += btnH + 4;
-
-        // 按钮行 2: [保存并创建] [重置] [删除] - 居中
-        int btn2W = 70;
-        int totalW = btn2W * 3 + gap * 2;
-        int btn2X = rx + (rw - totalW) / 2;
-        btnSave   = makeButton(btn2X, y, btn2W, btnH, "保存并创建", this::onSaveAndCreate);
-        btnReset  = makeButton(btn2X + btn2W + gap, y, btn2W, btnH, "重置", () -> {
-            com.prefab.addon.client.gui.GuiCreateBuildingInfo.resetForReuse();
-            syncFromCb();
-            refreshNbtFileDisplay();
-        });
-        btnDelete = makeButton(btn2X + (btn2W + gap) * 2, y, btn2W, btnH, "删除", () -> {
-            String id = com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldIdValue.trim();
-            if (!id.isEmpty()) com.prefab.addon.client.gui.GuiCreateBuildingInfo.doDelete(null, id);
-            copyStatusFromCb();
-        });
-
-        // 默认显示创建 tab
-        setCreateTabVisible(true);
-        setEditTabVisible(false);
-        // 同步一次 nbt 路径显示
-        refreshNbtFileDisplay();
-    }
-
-    /**
-     * "保存并创建" 按钮处理:
-     * 1) 调 GuiCreateBuildingInfo.doSave() (用 GuiCreateBuildingInfo static 字段)
-     * 2) 检查保存结果: 如果 statusMessage 包含"成功", 在聊天栏发送"创建成功"提示
-     * 3) 在 Editor 底部状态栏显示同样的提示
-     */
-    private void onSaveAndCreate() {
-        com.prefab.addon.client.gui.GuiCreateBuildingInfo.doSave();
-        copyStatusFromCb();
-        // 成功时额外发聊天消息 + 重置表单
-        if (this.statusMessage != null
-            && (this.statusMessage.contains("成功") || this.statusMessage.contains("已保存"))) {
-            String id = com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldIdValue.trim();
-            String name = com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldNameValue.trim();
-            if (Minecraft.getInstance().player != null) {
-                Minecraft.getInstance().player.sendSystemMessage(
-                    net.minecraft.network.chat.Component.literal(
-                        "§a[创建成功] §7建筑 §f" + (name.isEmpty() ? id : name) + " §7已保存到 prefab-extension/"));
+        int cw = wideCardW();
+        int c = wideCols();
+        int perPage = Math.max(1, c * rowsPerPageFor(58));
+        int totalPages = Math.max(1, (filtered.size() + perPage - 1) / perPage);
+        editPage = clampPage(editPage, totalPages);
+        int from = editPage * perPage;
+        int to = Math.min(from + perPage, filtered.size());
+        for (int i = from; i < to; i += c) {
+            UIElement row = new UIElement();
+            row.layout(l -> l.flexDirection(FlexDirection.ROW).gapAll(4));
+            for (int j = i; j < Math.min(i + c, to); j++) {
+                row.addChild(editBuildingCard(filtered.get(j), cw));
             }
-            // 重置表单, 方便用户继续创建下一个
-            com.prefab.addon.client.gui.GuiCreateBuildingInfo.resetForReuse();
-            syncFromCb();
-            refreshNbtFileDisplay();
+            col.addChild(row);
+        }
+        if (totalPages > 1) {
+            col.addChild(pager(totalPages, () -> editPage, p -> editPage = p));
         }
     }
 
-    /**
-     * 游戏中选区 (重写 RegionSelector 流程, 选区完成后 setScreen 回 Editor 而不是老 LDLib2 界面).
-     * 不调 GuiCreateBuildingInfo.startInWorldPicking().
-     */
-    private void startInGameSelectionForEditor() {
-        // 1) 缓存现场
-        final String savedId = com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldIdValue;
-        final String savedName = com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldNameValue;
-        final String savedAuthor = com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldAuthorValue;
-        final String savedDeps = com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldDepsValue;
-        final String savedDesc = com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldDescValue;
+    /** 编辑建筑卡片: 缩略图 + 名称/作者/格式 + [详情] [编辑建筑] [编辑信息]; 卡片本体不可点 (有子按钮). */
+    private static UIElement editBuildingCard(LocalBuilding lb, int cw) {
+        UIElement card = new UIElement();
+        card.layout(l -> l.flexDirection(FlexDirection.COLUMN).width(cw).height(58)
+            .paddingAll(3).gapAll(2));
+        card.style(s -> s.background(Sprites.RECT_DARK));
+        card.setOverflowVisible(false);
 
-        // 2) 关闭当前 Screen
-        Minecraft.getInstance().setScreen(null);
+        UIElement top = new UIElement();
+        top.layout(l -> l.flexDirection(FlexDirection.ROW).widthPercent(100).gapAll(4));
+        top.setOverflowVisible(false);
+        card.addChild(top);
 
-        // 3) 启动选区
-        com.prefab.addon.work.RegionSelector.start(
-            Minecraft.getInstance().player,
-            new com.prefab.addon.work.RegionSelector.OnCompleted() {
-                @Override
-                public void onCompleted(byte[] newNbtData, java.nio.file.Path nbtFile,
-                                        String sizeString, java.util.List<String> modIds) {
-                    Minecraft.getInstance().execute(() -> {
-                        // 写 NBT 到 static 字段
-                        com.prefab.addon.client.gui.GuiCreateBuildingInfo.nbtData = newNbtData;
-                        com.prefab.addon.client.gui.GuiCreateBuildingInfo.nbtPath = nbtFile == null
-                            ? "游戏中选区 (临时)"
-                            : nbtFile.toAbsolutePath().toString();
-                        // 解析 NBT 信息, 写 size / deps
-                        try {
-                            com.prefab.addon.work.NbtStructureParser.NbtInfo info =
-                                com.prefab.addon.work.NbtStructureParser.parse(newNbtData);
-                            com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldSizeValue = info.sizeString();
-                            com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldDepsValue =
-                                modIds == null || modIds.isEmpty() ? "prefab" : String.join(",", modIds);
-                        } catch (Exception ex) {
-                            com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldSizeValue = "";
-                        }
-                        // 恢复用户已填字段
-                        com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldIdValue = savedId;
-                        com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldNameValue = savedName;
-                        com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldAuthorValue = savedAuthor;
-                        com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldDepsValue =
-                            savedDeps.isEmpty() ? com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldDepsValue : savedDeps;
-                        com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldDescValue = savedDesc;
-                        // 重开 Editor (不是老 LDLib2 窗!)
-                        Minecraft.getInstance().setScreen(new GuiExtensionPackEditor());
-                    });
-                }
-                @Override
-                public void onCancelled() {
-                    Minecraft.getInstance().execute(() -> {
-                        Minecraft.getInstance().setScreen(new GuiExtensionPackEditor());
-                    });
-                }
-            });
-    }
-
-    /** tick() 时调: 同步 nbtPath → edNbtFile, 选完 NBT 后会自动显示文件路径. */
-    private void refreshNbtFileDisplay() {
-        if (edNbtFile != null) {
-            String path = com.prefab.addon.client.gui.GuiCreateBuildingInfo.nbtPath;
-            if (path == null || path.isEmpty()) {
-                edNbtFile.setValue("未选建筑文件");
-            } else {
-                int lastSep = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
-                String display = lastSep >= 0 ? path.substring(lastSep + 1) : path;
-                edNbtFile.setValue("已选 NBT: " + display);
-            }
+        UIElement thumb = new UIElement();
+        thumb.layout(l -> l.width(THUMB).height(THUMB));
+        ResourceLocation tex = ensureEditImageLoaded(lb);
+        if (tex != null) {
+            thumb.style(s -> s.backgroundTexture(SpriteTexture.of(tex)));
+        } else {
+            thumb.style(s -> s.backgroundTexture(Sprites.RECT_SOLID));
         }
-        // 同步尺寸/依赖 (选完 NBT/选区后由 GuiCreateBuildingInfo 写入静态字段)
-        if (edSize != null) {
-            edSize.setValue(safe(com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldSizeValue));
+        top.addChild(thumb);
+
+        UIElement info = new UIElement();
+        info.layout(l -> l.flexDirection(FlexDirection.COLUMN).flexGrow(1).gapAll(1).minWidth(0));
+        top.addChild(info);
+        int textW = cw - THUMB - 16;
+        info.addChild(cardLabel(truncateW(lb.getDisplayName(), textW), 0xFFFFFF, 11));
+        info.addChild(cardLabel(truncateW(lb.author == null || lb.author.isEmpty()
+            ? tr("website.author.unknown") : lb.author, textW), 0x888888, 9));
+        info.addChild(cardLabel(truncateW((lb.fileExt == null ? "?" : lb.fileExt)
+            + " · " + formatSize(lb.fileSize), textW), 0x777777, 9));
+
+        UIElement btns = new UIElement();
+        btns.layout(l -> l.flexDirection(FlexDirection.ROW).widthPercent(100).height(16).gapAll(4));
+        btns.setOverflowVisible(false);
+        card.addChild(btns);
+        Button view = new Button().setText(tr("gui.prefab_custom_addon.detail"), false);
+        view.layout(l -> l.widthPercent(33).height(16));
+        view.setOnClick(e -> openConstructionDetail(lb));
+        btns.addChild(view);
+        Button edit = new Button().setText("编辑建筑", false);   // 1.20.1 lang 无 editor.card.edit_building
+        edit.textStyle(s -> s.textColor(0xFFDD66));
+        edit.layout(l -> l.widthPercent(34).height(16));
+        edit.setOnClick(e -> openEditBuilding(lb));
+        btns.addChild(edit);
+        Button editInfo = new Button().setText("编辑信息", false); // 1.20.1 lang 无 editor.card.edit_info
+        editInfo.textStyle(s -> s.textColor(0x88BBFF));
+        editInfo.layout(l -> l.widthPercent(33).height(16));
+        editInfo.setOnClick(e -> openEditInfo(lb));
+        btns.addChild(editInfo);
+        return card;
+    }
+
+    /** 编辑信息: 回填表单字段到创建建筑 tab (编辑信息模式), 建筑文件本体不动. */
+    private static void openEditInfo(LocalBuilding lb) {
+        editInfoTarget = lb;
+        GuiCreateBuildingInfo.loadForEditInfo(lb);
+        open(Tab.CREATE);
+    }
+
+    /** 查看: 打开 GuiConstructionDetail (3D 预览), 返回时回编辑建筑 tab. */
+    private static void openConstructionDetail(LocalBuilding lb) {
+        if (lb.filePath == null || !Files.exists(lb.filePath)) {
+            setStatus("✗ 建筑文件不存在: " + lb.id, 0xFFAA55);
+            return;
         }
-        if (edDeps != null) {
-            edDeps.setValue(safe(com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldDepsValue));
-        }
-        if (edIconFile != null) {
-            String iconPath = com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldIconPath;
-            String iconData = "";
-            try {
-                java.lang.reflect.Field f = com.prefab.addon.client.gui.GuiCreateBuildingInfo.class.getDeclaredField("fieldIconData");
-                f.setAccessible(true);
-                byte[] data = (byte[]) f.get(null);
-                if (data != null && data.length > 0) iconData = " (有数据 " + data.length + " 字节)";
-            } catch (Throwable ignored) {}
-            if (iconPath == null || iconPath.isEmpty()
-                || iconPath.equals(com.prefab.addon.PrefabCustomAddon.tr("gui.create_building.empty_value"))) {
-                edIconFile.setValue("未选图标" + iconData);
-            } else {
-                edIconFile.setValue("已选图标: " + iconPath + iconData);
-            }
-        }
+        GuiConstructionDetail.open(buildDetailInfo(lb), () -> GuiExtensionPackEditor.open(Tab.EDIT));
     }
 
-    private EditBox makeField(int x, int y, int w, int h, java.util.function.Supplier<String> getter, java.util.function.Consumer<String> setter) {
-        EditBox box = new EditBox(this.font, x, y, w, h, Component.literal(""));
-        box.setMaxLength(128);
-        box.setValue(getter.get() == null ? "" : getter.get());
-        box.setResponder(setter::accept);
-        this.addRenderableWidget(box);
-        return box;
-    }
-
-    /** 创建建筑只读字段 (尺寸/依赖): 选完 NBT/选区后由 tick 同步回填. */
-    private EditBox makeReadonlyField(int x, int y, int w, int h) {
-        EditBox box = new EditBox(this.font, x, y, w, h, Component.literal(""));
-        box.setMaxLength(128);
-        box.setEditable(false);
-        this.addRenderableWidget(box);
-        return box;
-    }
-
-    private ExtendedButton makeButton(int x, int y, int w, int h, String label, Runnable onClick) {
-        ExtendedButton btn = new ExtendedButton(x, y, w, h, Component.literal(label), b -> onClick.run(), label);
-        this.addRenderableWidget(btn);
-        return btn;
-    }
-
-    /** 从 GuiCreateBuildingInfo 同步字段 → EditBox. */
-    private void syncFromCb() {
-        if (edName != null)   edName.setValue(safe(com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldNameValue));
-        if (edSize != null)   edSize.setValue(safe(com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldSizeValue));
-        if (edDeps != null)   edDeps.setValue(safe(com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldDepsValue));
-        refreshCategoryDisplay();
-    }
-
-    /** 刷新分类显示 (从 fieldCategoryValue 读, 写到 edCategory). 分类列表变化时也调. */
-    private void refreshCategoryDisplay() {
-        if (edCategory == null) return;
-        String v = com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldCategoryValue;
-        if (v == null || v.isEmpty()) v = CategoryManager.UNCATEGORIZED;
-        edCategory.setValue(v);
-    }
-
-    /** 找 value 在 all 里的 index, 找不到返回 -1. */
-    private static int indexOfCategory(java.util.List<String> all, String value) {
-        if (all == null || value == null) return -1;
-        for (int i = 0; i < all.size(); i++) {
-            if (all.get(i).equalsIgnoreCase(value)) return i;
-        }
-        return -1;
-    }
-
-    private void copyStatusFromCb() {
-        try {
-            java.lang.reflect.Field f = com.prefab.addon.client.gui.GuiCreateBuildingInfo.class.getDeclaredField("statusMessage");
-            f.setAccessible(true);
-            this.statusMessage = (String) f.get(null);
-            java.lang.reflect.Field cf = com.prefab.addon.client.gui.GuiCreateBuildingInfo.class.getDeclaredField("statusColor");
-            cf.setAccessible(true);
-            this.statusColor = cf.getInt(null);
-            this.statusTick = 120;
-        } catch (Throwable ignored) {}
-    }
-
-    private static String safe(String s) { return s == null ? "" : s; }
-
-    private void setCreateTabVisible(boolean v) {
-        if (edName != null)   edName.setVisible(v);
-        if (edDeps != null)   edDeps.setVisible(v);
-        if (edSize != null)   edSize.setVisible(v);
-        if (edCategory != null) edCategory.setVisible(v);
-        if (btnCatPrev != null) btnCatPrev.visible = v;
-        if (btnCatNext != null) btnCatNext.visible = v;
-        if (btnCatAdd != null)  btnCatAdd.visible = v;
-        if (edNbtFile != null) edNbtFile.setVisible(v);
-        if (edIconFile != null) edIconFile.setVisible(v);
-        if (btnSelectNbt != null) btnSelectNbt.visible = v;
-        if (btnInGame != null)    btnInGame.visible = v;
-        if (btnIcon != null)      btnIcon.visible = v;
-        if (btnSave != null)      btnSave.visible = v;
-        if (btnReset != null)     btnReset.visible = v;
-        if (btnDelete != null)    btnDelete.visible = v;
-    }
-
-    // ============================================================
-    // 编辑 tab
-    // ============================================================
-    private void refreshEditTab() {
-        this.editBuildings.clear();
-        try {
-            // 扫 prefab-extension/ + prefab-download/ + 老 prefab-work/<packId>/construction/
-            // (兼容老拓展包; 同 id 时 prefab-extension 优先)
-            List<LocalBuilding> all = LocalBuildingScanner.scanAll();
-            this.editBuildings.addAll(all);
-        } catch (Exception ex) {
-            PrefabCustomAddon.LOGGER.error("[EDITOR] 扫描 LocalBuilding 失败: {}", ex.getMessage());
-        }
-        this.editPage = 1;
-        rebuildEditFiltered();
-    }
-
-    private void setEditTabVisible(boolean v) {
-        // 编辑 tab 用 GuiGraphics 自绘, 不依赖 widget; 搜索框的可见性单独切
-        if (this.edSearch != null) this.edSearch.setVisible(v);
-    }
-
-    private void switchTab(Tab tab) {
-        if (tab == this.currentTab) return;
-        // 切到编辑 tab 时重新扫描 + 重新过滤
-        boolean leavingManage = this.currentTab == Tab.MANAGE_BLUEPRINT;
-        this.currentTab = tab;
-        if (tab == Tab.EDIT) {
-            refreshEditTab();
-        }
-        // 切到 / 离开 蓝图管理 tab 时, 重置 inited 标志, 下次进入重新枚举
-        // (玩家可能在另一端 /reload / 生成新蓝图 / 删文件, 列表要刷新)
-        if (tab == Tab.MANAGE_BLUEPRINT || leavingManage) {
-            this.mgmtInited = false;
-        }
-        applyTabVisibility();
-    }
-
-    /** 设置"制作蓝图" tab 的 EditBox 可见性. */
-    private void setMakeBlueprintTabVisible(boolean visible) {
-        if (edBlueprintName != null) edBlueprintName.setVisible(visible);
-        // edBlueprintNamespace / edBlueprintItemId 已移除 (玩家只填显示名, ns+id 后台自动生成)
-    }
-
-    // ============================================================
-    // 渲染
-    // ============================================================
-    @Override
-    public void tick() {
-        super.tick();
-        if (this.statusTick > 0) this.statusTick--;
-        if (this.settingsStatusTick > 0) this.settingsStatusTick--;
-        if (this.mbStatusTick > 0) this.mbStatusTick--;
-        if (this.mgmtStatusTick > 0) this.mgmtStatusTick--;
-        // 同步 nbt 路径 / 尺寸 / 状态消息 (选 NBT / 选区完成后会自动显示)
-        if (this.currentTab == Tab.CREATE) {
-            refreshNbtFileDisplay();
-            // 选 NBT / 选区 / 选图标 完成后, GuiCreateBuildingInfo.setStatus() 会更新其 static 字段.
-            // 这里每 tick 轮询一次, 同步到本 GUI 的状态栏, 用户才能看到识别失败的提示.
-            pollStatusFromCb();
-        }
-        // 制作蓝图 tab: 旧的反射轮询路径已删除. 现在用回调 (handleNbtPickedForBlueprint /
-        // handleInGamePickedForBlueprint) 直接更新 selectedBuilding, 不再读写 GuiCreateBuildingInfo
-        // 的 static 字段, 因此不会再"开完创建建筑界面" (那是 startInWorldPicking 的副作用).
-    }
-
-    /**
-     * 选完 NBT 文件的回调 (pickNbtForBlueprint 走这里). res=null 时要么是取消要么是失败:
-     *   - 取消: 不报错, 也不动 selectedBuilding, 让玩家继续编辑
-     *   - 失败: 报错, 状态栏提示
-     */
-    private void handleNbtPickedForBlueprint(
-            com.prefab.addon.client.gui.GuiCreateBuildingInfo.NbtPickResult res,
-            Throwable err) {
+    /** 编辑: 启动 3D 原理图编辑 (世界内幽灵预览), 失败给状态提示. */
+    private static void openEditBuilding(LocalBuilding lb) {
+        String err = startSchematicEdit(lb);
         if (err != null) {
-            this.mbStatus = "§cNBT 选择失败: §7" + err.getMessage();
-            this.mbStatusColor = 0xFF5555;
-            this.mbStatusTick = 150;
+            setStatus(err, 0xFF5555);
+        }
+    }
+
+    /** 编辑建筑缩略图: 异步解码 + 注册 DynamicTexture, 完成后刷新列表. */
+    private static ResourceLocation ensureEditImageLoaded(LocalBuilding lb) {
+        if (lb.imagePath == null || !Files.exists(lb.imagePath)) return null;
+        String key = lb.imagePath.toString();
+        if (EDIT_IMG.containsKey(key)) return EDIT_IMG.get(key);
+        if (EDIT_IMG_LOADING.contains(key)) return null;
+        EDIT_IMG_LOADING.add(key);
+        Path imgPath = lb.imagePath;
+        CompletableFuture.runAsync(() -> {
+            try (InputStream is = Files.newInputStream(imgPath)) {
+                BufferedImage img = ImageIO.read(is);
+                // 纹理注册必须回主线程 (GL 调用), 后台线程只做图片解码
+                Minecraft.getInstance().execute(() -> {
+                    if (img == null) {
+                        EDIT_IMG.put(key, null);
+                        EDIT_IMG_LOADING.remove(key);
+                        return;
+                    }
+                    DynamicTexture tex = uploadIconTexture(img);
+                    // 1.20.1: TextureManager.register(ResourceLocation, DynamicTexture) 返回 void,
+                    // ResourceLocation 自己造 (不返回自动生成的)
+                    ResourceLocation loc = null;
+                    if (tex != null) {
+                        loc = new ResourceLocation("prefab_extension_editor",
+                            "edit_" + TEX_GEN.incrementAndGet());
+                        Minecraft.getInstance().getTextureManager().register(loc, tex);
+                    }
+                    EDIT_IMG.put(key, loc);
+                    EDIT_IMG_LOADING.remove(key);
+                    if (loc != null) {
+                        rebuildList();
+                    }
+                });
+            } catch (Exception e) {
+                PrefabCustomAddon.LOGGER.warn("[EDITOR] 加载建筑预览图失败 ({}): {}", imgPath, e.getMessage());
+                Minecraft.getInstance().execute(() -> {
+                    EDIT_IMG.put(key, null);
+                    EDIT_IMG_LOADING.remove(key);
+                });
+            }
+        });
+        return null;
+    }
+
+    // ==================== Tab: 设置 ====================
+
+    private static void buildSettingsTab(UIElement listArea) {
+        UIElement panel = new UIElement();
+        panel.layout(l -> l.flexDirection(FlexDirection.COLUMN).flexGrow(1).widthPercent(100)
+            .gapAll(3).paddingAll(2));
+        panel.style(s -> s.background(Sprites.RECT_DARK));
+        panel.setOverflowVisible(false);
+        listArea.addChild(panel);
+
+        ScrollerView scroller = scroller(panel);
+        UIElement col = new UIElement();
+        col.layout(l -> l.flexDirection(FlexDirection.COLUMN).widthPercent(100).paddingAll(2).gapAll(3));
+        scroller.addScrollViewChild(col);
+
+        // === 性能 / 动画 ===
+        // (1.21.1 蓝本这里还有 "▍ 建造材料" 装饰段, 1.20.1 没有对应控件, 舍弃)
+        col.addChild(sectionLabel("▍ 性能 / 动画"));
+        PlayerPreferences prefs = PlayerPreferences.get();
+        BuildAnimationMode mode = prefs.getBuildAnimationMode();
+        UIElement modeRow = new UIElement();
+        modeRow.layout(l -> l.flexDirection(FlexDirection.ROW).widthPercent(100).height(16).gapAll(3));
+        col.addChild(modeRow);
+        BuildAnimationMode[] modes = BuildAnimationMode.values();
+        for (BuildAnimationMode m : modes) {
+            BuildAnimationMode fm = m;
+            Button b = new Button().setText(m.name(), false);
+            boolean sel = m == mode;
+            b.textStyle(s -> s.textColor(sel ? 0xFFFF88 : 0xBBBBBB));
+            b.buttonStyle(s -> s.baseTexture(sel ? Sprites.RECT_LIGHT : Sprites.RECT_DARK)
+                .hoverTexture(Sprites.RECT_LIGHT).pressedTexture(Sprites.RECT_DARK));
+            b.layout(l -> l.widthPercent(100.0f / modes.length).height(16));
+            b.setOnClick(e -> {
+                PlayerPreferences.get().setBuildAnimationMode(fm);
+                setStatus("§f建造动画: " + modeStatusText(fm), 0x55FF55);
+                rebuildList();
+            });
+            modeRow.addChild(b);
+        }
+        col.addChild(cardLabel(modeSubtitle(mode), 0x888888, 11));
+
+        // === 快捷操作 ===
+        col.addChild(sectionLabel("▍ 快捷操作"));
+        Button reset = new Button().setText("♻ 重置个人偏好 (动画模式/收藏等)", false);
+        reset.layout(l -> l.widthPercent(100).height(16));
+        reset.setOnClick(e -> {
+            try {
+                PlayerPreferences p = PlayerPreferences.get();
+                int removedFavs = p.favoriteKeys != null ? p.favoriteKeys.size() : 0;
+                p.favoriteKeys = new ArrayList<>();
+                p.autoDepCheckOnOpen = false;
+                p.buildAnimationMode = BuildAnimationMode.OFF;
+                p.save();
+                setStatus("已重置偏好 (清空 " + removedFavs + " 个收藏)", 0x55FF55);
+                rebuildList();
+            } catch (Throwable t) {
+                setStatus("✗ 重置失败: " + t.getMessage(), 0xFF5555);
+            }
+        });
+        col.addChild(reset);
+
+        // 1.20.1 特有: 自动检测依赖 toggle (打开建筑时, 客户端个人设置)
+        boolean autoDep = PlayerPreferences.get().autoDepCheckOnOpen;
+        Button autoDepBtn = new Button().setText(
+            "打开建筑时自动检测依赖  " + (autoDep ? "§a✓ ON" : "§7✗ OFF"), false);
+        autoDepBtn.textStyle(s -> s.textColor(autoDep ? 0xFFFF88 : 0xBBBBBB));
+        autoDepBtn.buttonStyle(s -> s.baseTexture(autoDep ? Sprites.RECT_LIGHT : Sprites.RECT_DARK)
+            .hoverTexture(Sprites.RECT_LIGHT).pressedTexture(Sprites.RECT_DARK));
+        autoDepBtn.layout(l -> l.widthPercent(100).height(16));
+        autoDepBtn.setOnClick(e -> {
+            PlayerPreferences p = PlayerPreferences.get();
+            boolean newVal = !p.autoDepCheckOnOpen;
+            p.autoDepCheckOnOpen = newVal;
+            p.save();
+            setStatus(newVal ? "打开建筑时自动检测依赖 已开启" : "自动检测依赖 已关闭", 0x55FF55);
+            rebuildList();
+        });
+        col.addChild(autoDepBtn);
+
+        // 强制启用 KubeJS 联动 (调试用)
+        boolean force = PlayerPreferences.get().forceKubeJSTab;
+        Button kube = new Button().setText(tr("gui.settings.force_kubejs_label")
+            + "  " + (force ? "§✓ ON" : "✗ OFF"), false);
+        kube.textStyle(s -> s.textColor(force ? 0xFFFF88 : 0xBBBBBB));
+        kube.buttonStyle(s -> s.baseTexture(force ? Sprites.RECT_LIGHT : Sprites.RECT_DARK)
+            .hoverTexture(Sprites.RECT_LIGHT).pressedTexture(Sprites.RECT_DARK));
+        kube.layout(l -> l.widthPercent(100).height(16));
+        kube.setOnClick(e -> {
+            PlayerPreferences p = PlayerPreferences.get();
+            boolean newVal = !p.forceKubeJSTab;
+            p.forceKubeJSTab = newVal;
+            p.save();
+            KubeJSIntegration.setForceEnabled(newVal);
+            KubeJSIntegration.invalidateCache();
+            setStatus(tr(newVal ? "gui.settings.force_kubejs_on" : "gui.settings.force_kubejs_off"), 0x55FF55);
+            rebuild();
+        });
+        col.addChild(kube);
+        col.addChild(cardLabel(tr("gui.settings.force_kubejs_hint"), 0x888888, 11));
+    }
+
+    private static String modeStatusText(BuildAnimationMode m) {
+        return switch (m) {
+            case OFF -> "OFF (瞬建, 不放动画)";
+            case FALL -> "FALL (竖直下落, 1 块/tick)";
+            case RAIN -> "RAIN (方块雨, 起点随机偏移)";
+            case THROW -> "THROW (四周抛过来, 抛物线)";
+        };
+    }
+
+    private static String modeSubtitle(BuildAnimationMode m) {
+        return switch (m) {
+            case OFF -> "(瞬建, 不放动画, 跟原版 prefab 一样快, 可能卡顿)";
+            case FALL -> "(每个方块从空中 8 格高处竖直掉下, 1 块/tick)";
+            case RAIN -> "(每个方块从更高的空中散点掉下, 起点横向 ±2 格随机, 1 块/tick)";
+            case THROW -> "(每个方块从建筑外圈 ±10 格抛过来, 抛物线轨迹, 1 块/tick)";
+        };
+    }
+
+    // ==================== Tab: 制作蓝图 ====================
+
+    private static void buildMakeBlueprintTab(UIElement listArea) {
+        // KubeJS 没装时显示居中提示, 不画表单
+        if (!KubeJSIntegration.isLoaded()) {
+            buildKubeJSRequiredPanel(listArea);
+            return;
+        }
+
+        UIElement panel = new UIElement();
+        panel.layout(l -> l.flexDirection(FlexDirection.COLUMN).flexGrow(1).widthPercent(100).gapAll(3));
+        panel.setOverflowVisible(false);
+        listArea.addChild(panel);
+
+        // 滚动表单区
+        ScrollerView scroller = scroller(panel);
+        UIElement form = new UIElement();
+        form.layout(l -> l.flexDirection(FlexDirection.COLUMN).widthPercent(100).paddingAll(2).gapAll(3));
+        scroller.addScrollViewChild(form);
+
+        form.addChild(cardLabel(tr("gui.make_blueprint.subtitle"), 0xAAAAAA, 11));
+        form.addChild(cardLabel(tr("gui.make_blueprint.restart_hint"), 0xFFAA55, 11));
+
+        // 显示名 (唯一可编辑输入框; ns/id 自动生成)
+        UIElement nameRow = new UIElement();
+        nameRow.layout(l -> l.flexDirection(FlexDirection.ROW).widthPercent(100).height(16).gapAll(3)
+            .alignItems(AlignItems.CENTER));
+        form.addChild(nameRow);
+        nameRow.addChild(rowLabel(tr("gui.make_blueprint.label.name"), 46));
+        TextField name = new TextField();
+        name.setText(SAVED_BLUEPRINT_NAME);
+        name.setAnyString();
+        name.setTextValidator(s -> s == null || s.length() <= 64);
+        name.textFieldStyle(s -> s.textColor(0xFFFFFF).textShadow(false));
+        name.layout(l -> l.flexGrow(1).height(16).minHeight(16));
+        name.setTextResponder(s -> SAVED_BLUEPRINT_NAME = s == null ? "" : s);
+        nameRow.addChild(name);
+
+        // 建筑来源按钮: 选建筑文件 / 游戏内选建筑 / 选贴图
+        form.addChild(sourceButton(
+            selectedBuilding != null && !"in_game".equals(selectedBuilding.source)
+                ? tr("gui.make_blueprint.btn.pick_building_file_set", selectedBuilding.getDisplayName())
+                : tr("gui.make_blueprint.btn.pick_building_file_empty"),
+            e -> pickNbtForBlueprint()));
+        form.addChild(sourceButton(
+            selectedBuilding != null && "in_game".equals(selectedBuilding.source)
+                ? tr("gui.make_blueprint.btn.pick_building_ingame_set", selectedBuilding.getDisplayName())
+                : tr("gui.make_blueprint.btn.pick_building_ingame_empty"),
+            e -> pickInGameForBlueprint()));
+        form.addChild(sourceButton(
+            selectedTextureSource != null
+                ? tr("gui.make_blueprint.btn.pick_texture_set", selectedTextureSource.getFileName().toString())
+                : tr("gui.make_blueprint.btn.pick_texture_empty"),
+            e -> openTextureFileDialog()));
+
+        // 锁定 toggle 已移除: 蓝图强制锁定 (spec.locked 恒 true), 玩家不能 rebind
+
+        // 9 宫格配方
+        form.addChild(cardLabel(tr("gui.make_blueprint.recipe_label"), 0xAAAAAA, 11));
+        for (int row = 0; row < 3; row++) {
+            UIElement gridRow = new UIElement();
+            gridRow.layout(l -> l.flexDirection(FlexDirection.ROW).gapAll(2));
+            form.addChild(gridRow);
+            for (int colI = 0; colI < 3; colI++) {
+                gridRow.addChild(recipeCell(row * 3 + colI, 22));
+            }
+        }
+        // 1.20.1 lang 没有 recipe_hint, 硬编码中文
+        form.addChild(cardLabel("鼠标左键选择配方物品，右键删除", 0x777777, 11));
+
+        // 底部固定操作行: [生成并注册] [打开 kubejs 文件夹]
+        UIElement bottom = new UIElement();
+        bottom.layout(l -> l.flexDirection(FlexDirection.ROW).widthPercent(100).height(18).gapAll(3));
+        panel.addChild(bottom);
+        Button generate = new Button().setText(tr("gui.make_blueprint.btn.generate"), false);
+        generate.textStyle(s -> s.textColor(0x88FF88));
+        generate.layout(l -> l.widthPercent(50).height(18));
+        generate.setOnClick(e -> doGenerateBlueprint());
+        bottom.addChild(generate);
+        Button folder = new Button().setText(tr("gui.make_blueprint.btn.open_folder"), false);
+        folder.layout(l -> l.widthPercent(50).height(18));
+        folder.setOnClick(e -> openKubejsFolder());
+        bottom.addChild(folder);
+    }
+
+    /** 全宽来源选择按钮 (选建筑文件 / 游戏内 / 选贴图). */
+    private static UIElement sourceButton(String label, Consumer<Button> onClick) {
+        Button b = new Button().setText(truncateW(stripCodes(label), 120), false);
+        b.layout(l -> l.widthPercent(100).height(16));
+        b.setOnClick(e -> onClick.accept(b));
+        return b;
+    }
+
+    /** 配方格: ItemSlot 显示物品, 点击弹 GuiItemSearchPopup 选材. */
+    private static UIElement recipeCell(int idx, int size) {
+        final int fidx = idx;
+        Button cell = new Button().noText();
+        cell.buttonStyle(s -> s.baseTexture(Sprites.RECT_DARK)
+            .hoverTexture(Sprites.RECT_LIGHT).pressedTexture(Sprites.RECT_DARK));
+        cell.layout(l -> l.width(size).height(size));
+        cell.setOverflowVisible(false);
+        String item = recipeItems.get(idx);
+        ItemStack stack = parseItemStack(item);
+        if (stack != null) {
+            ItemSlot slot = new ItemSlot();
+            try {
+                slot.setValue(stack);
+            } catch (Throwable ignore) {}
+            slot.layout(l -> l.width(size - 4).height(size - 4).alignItems(AlignItems.CENTER)
+                .justifyContent(AlignContent.CENTER));
+            cell.addChild(slot);
+        } else if (item != null && !item.isBlank()) {
+            Label lbl = new Label();
+            String shortName = item.contains(":") ? item.substring(item.indexOf(':') + 1) : item;
+            lbl.setText(truncateW(shortName, size - 4), false);
+            lbl.textStyle(t -> t.textColor(0xCCCCCC));
+            lbl.layout(l -> l.widthPercent(100).heightPercent(100).alignItems(AlignItems.CENTER)
+                .justifyContent(AlignContent.CENTER));
+            cell.addChild(lbl);
+        } else {
+            Label lbl = new Label();
+            lbl.setText("-", false);
+            lbl.textStyle(t -> t.textColor(0x666666));
+            lbl.layout(l -> l.widthPercent(100).heightPercent(100).alignItems(AlignItems.CENTER)
+                .justifyContent(AlignContent.CENTER));
+            cell.addChild(lbl);
+        }
+        cell.setOnClick(e -> GuiItemSearchPopup.open(fidx, id -> {
+            recipeItems.set(fidx, id);
+            setStatus(tr("gui.make_blueprint.status.cell_set", String.valueOf(fidx + 1),
+                id == null ? "-" : id), 0x55FF55);
+            rebuildList();
+        }));
+        // 右键清空该格: 必须 capture 阶段 (第三参 true) — ItemSlot 子元素在 bubble 阶段
+        // 会 stopPropagation(), capture 自顶向下先于它触发, 不受影响
+        cell.addEventListener(UIEvents.MOUSE_DOWN, e -> {
+            if (e.button == 1) {
+                recipeItems.set(fidx, null);
+                setStatus(tr("gui.make_blueprint.status.cell_cleared", String.valueOf(fidx + 1)), 0xAAAAAA);
+                rebuildList();
+            }
+        }, true);
+        return cell;
+    }
+
+    /** 制作蓝图 - 选建筑文件 (回调直接更新 selectedBuilding, 不再轮询). */
+    private static void pickNbtForBlueprint() {
+        setStatus(tr("gui.make_blueprint.poll.wait_nbt"), 0xFFAA55);
+        GuiCreateBuildingInfo.pickNbtForBlueprint((res, err) -> Minecraft.getInstance().execute(() -> {
+            handleNbtPickedForBlueprint(res, err);
+            rebuildList();
+        }));
+    }
+
+    /**
+     * 制作蓝图 - 游戏内选建筑: 关屏 → pickInGameForBlueprint → 重开编辑器.
+     * 必须先关屏, 否则玩家看不见选区预览.
+     */
+    private static void pickInGameForBlueprint() {
+        Minecraft mc = Minecraft.getInstance();
+        setStatus(tr("gui.make_blueprint.poll.wait_ingame"), 0xFFAA55);
+        mc.tell(() -> {
+            mc.setScreen(null);
+            GuiCreateBuildingInfo.pickInGameForBlueprint((res, err) -> Minecraft.getInstance().execute(() -> {
+                handleInGamePickedForBlueprint(res, err);
+                open(Tab.MAKE_BLUEPRINT);
+            }));
+        });
+    }
+
+    /**
+     * 选完 NBT 文件的回调 (制作蓝图 tab). res=null 时取消不动状态.
+     */
+    private static void handleNbtPickedForBlueprint(NbtPickResult res, Throwable err) {
+        if (err != null) {
+            setStatus("NBT 选择失败: " + err.getMessage(), 0xFF5555);
             return;
         }
         if (res == null) {
-            // 取消
-            this.mbStatus = "§7已取消 NBT 选择";
-            this.mbStatusColor = 0xFFAA55;
-            this.mbStatusTick = 80;
+            setStatus("已取消 NBT 选择", 0xFFAA55);
             return;
         }
-        // 选完了: 构造 LocalBuilding, source="external"
         String id = res.fileName.toLowerCase(Locale.ROOT);
         if (id.endsWith(".nbt")) id = id.substring(0, id.length() - 4);
         else if (id.endsWith(".litematic")) id = id.substring(0, id.length() - 10);
         else if (id.endsWith(".schem")) id = id.substring(0, id.length() - 6);
         else if (id.endsWith(".schematic")) id = id.substring(0, id.length() - 9);
+        String lowerName = res.fileName.toLowerCase(Locale.ROOT);
+        String pickedExt = ".nbt";
+        for (String e : new String[]{".litematic", ".schematic", ".schem", ".nbt"}) {
+            if (lowerName.endsWith(e)) { pickedExt = e; break; }
+        }
+        // 根据所选文件名自动填显示名 (去后缀, 保留原大小写; 每次选择都覆盖)
+        String autoName = res.fileName;
+        int dotIdx = autoName.lastIndexOf('.');
+        if (dotIdx > 0) autoName = autoName.substring(0, dotIdx);
+        SAVED_BLUEPRINT_NAME = autoName;
         LocalBuilding lb = new LocalBuilding(
             id, res.fileName, "", "", java.util.Collections.emptyList(), "",
-            ".nbt", 0L, null, "external",
+            pickedExt, 0L, null, "external",
             res.file.toPath(), null, null);
-        this.selectedBuilding = lb;
-        this.mbStatus = "§a已选建筑文件: §f" + res.fileName
-            + (res.sizeString != null && !res.sizeString.isEmpty() ? "  §7(" + res.sizeString + ")" : "")
-            + "  §7[外源]";
-        this.mbStatusColor = 0x55FF55;
-        this.mbStatusTick = 120;
+        selectedBuilding = lb;
+        setStatus("已选建筑文件: " + res.fileName
+            + (res.sizeString != null && !res.sizeString.isEmpty() ? " (" + res.sizeString + ")" : "")
+            + " [外源]", 0x55FF55);
         PrefabCustomAddon.LOGGER.info("[MAKE-BLUEPRINT] 选完建筑文件: id={} size={} path={}",
             id, res.sizeString, res.file.toPath());
     }
 
     /**
-     * 检查 {@code <ns>_<id>_blueprint.js} 是否已存在于 {@code kubejs/startup_scripts/}.
-     * 存在就把 {@code id} 改成 {@code <id>_2}, 还存在再 {@code _3}...
-     * <p>修 "我建了 3 次, KubeJS 只看得到 1 个" — 之前每次都用同一个默认 id, 后面写的覆盖前面写的.</p>
+     * 选完游戏内区域的回调 (制作蓝图 tab, 1.20.1 逻辑).
+     * NBT 持久化到 prefab-extension/blueprint-buildings/ — 蓝图专属建筑目录, 不进
+     * 建筑选择列表 (浏览器/收藏/蓝图选择都不扫这里), 蓝图链路按 constructionId 直读.
      */
-    private String autoIncrementItemIdIfTaken(String ns, String id) {
+    private static void handleInGamePickedForBlueprint(InGamePickResult res, Throwable err) {
+        if (err != null) {
+            setStatus("游戏内选区失败: " + err.getMessage(), 0xFF5555);
+            return;
+        }
+        if (res == null) {
+            setStatus("已取消游戏内选区", 0xFFAA55);
+            return;
+        }
+        if (res.nbtData == null || res.nbtData.length == 0) {
+            setStatus("游戏内选区 NBT 为空", 0xFF5555);
+            return;
+        }
+        int h = Arrays.hashCode(res.nbtData);
+        String shortHash = String.format("%06x", h & 0xFFFFFF);
+        long ts = System.currentTimeMillis() / 1000L;
+        String id = "ingame_" + ts + "_" + shortHash;
+        String displayName = res.sizeString != null && !res.sizeString.isEmpty()
+            ? "内嵌建筑 " + res.sizeString
+            : ("内嵌建筑 " + id);
+        Path extRoot;
+        Path nbtPath;
         try {
-            net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
+            // 老 in_game_* 临时文件迁到 blueprint-buildings/ (一次性)
+            LocalBuildingScanner.migrateLegacyBlueprintBuildings();
+            extRoot = LocalBuildingScanner.getBlueprintBuildingsRoot();
+            Files.createDirectories(extRoot);
+            nbtPath = extRoot.resolve(id + ".nbt");
+            Files.write(nbtPath, res.nbtData);
+        } catch (Throwable t) {
+            PrefabCustomAddon.LOGGER.error("[MAKE-BLUEPRINT] 持久化 NBT 失败", t);
+            setStatus("写入 blueprint-buildings/ 失败: " + t.getMessage(), 0xFF5555);
+            return;
+        }
+        LocalBuilding lb = new LocalBuilding(
+            id, displayName, "", "", res.modIds == null ? java.util.Collections.emptyList() : res.modIds, "",
+            ".nbt", (long) res.nbtData.length, null, "blueprint",
+            nbtPath, null, null);
+        selectedBuilding = lb;
+        setStatus("已选游戏内建筑: " + displayName
+            + (res.sizeString != null && !res.sizeString.isEmpty() ? " (" + res.sizeString + ")" : "")
+            + " [已存到 prefab-extension/blueprint-buildings/]", 0x55FF55);
+    }
+
+    /** 选贴图: 系统文件选择对话框 (SystemFilePicker, 异步回调). */
+    private static void openTextureFileDialog() {
+        try {
+            SystemFilePicker.openAsync(
+                tr("gui.make_blueprint.pick_texture"),
+                Arrays.asList("png"),
+                result -> Minecraft.getInstance().execute(() -> {
+                    if (result.isOk() && result.file != null && result.file.exists()) {
+                        selectedTextureSource = result.file.toPath();
+                        setStatus("已选贴图: " + selectedTextureSource.getFileName(), 0x55FF55);
+                        rebuildList();
+                    } else if (result.isCancelled()) {
+                        setStatus("取消选贴图", 0xFFAA55);
+                    } else {
+                        setStatus("选贴图失败: " + (result.message == null ? "未知错误" : result.message), 0xFF5555);
+                    }
+                }));
+        } catch (Throwable th) {
+            PrefabCustomAddon.LOGGER.error("[MAKE-BLUEPRINT] SystemFilePicker 打开失败", th);
+            setStatus("打开文件选择器失败: " + th.getMessage(), 0xFF5555);
+        }
+    }
+
+    /**
+     * 收集表单, 构造 {@link CustomBlueprintCodeGenerator.Spec}, 调 generate.
+     * 成功 / 失败都更新状态 + 聊天栏.
+     * <p>1.20.1 保留: 配方非空校验 (need_recipe) + 外部建筑复制进
+     * blueprint-buildings/ (source="blueprint"), 不进建筑选择列表.</p>
+     */
+    private static void doGenerateBlueprint() {
+        try {
+            String displayName = SAVED_BLUEPRINT_NAME == null ? "" : SAVED_BLUEPRINT_NAME.trim();
+            String subNamespace = "player_pack";
+            String itemId = "player_blueprint";
+
+            // 校验关键字段
+            if (selectedBuilding == null) {
+                setStatus(tr("gui.make_blueprint.status.need_building"), 0xFF5555);
+                return;
+            }
+            if (selectedTextureSource == null || !Files.exists(selectedTextureSource)) {
+                setStatus(tr("gui.make_blueprint.status.need_texture"), 0xFF5555);
+                return;
+            }
+            // 1.20.1 保留: 配方非空校验
+            boolean hasRecipe = false;
+            for (String s : recipeItems) {
+                if (s != null && !s.isBlank()) { hasRecipe = true; break; }
+            }
+            if (!hasRecipe) {
+                setStatus(tr("gui.make_blueprint.status.need_recipe"), 0xFF5555);
+                return;
+            }
+
+            // 1.20.1 保留: 外源建筑复制进 blueprint-buildings/ (蓝图专属目录, 不进建筑选择列表),
+            // 绑定复制后的 id, 右键才能按 constructionId 找到. 已在扫描目录里的
+            // (extension / download / legacy-pack:*) 和已持久化的 (blueprint) 不重复复制.
+            LocalBuildingScanner.migrateLegacyBlueprintBuildings();
+            if (selectedBuilding.filePath != null && Files.exists(selectedBuilding.filePath)
+                    && !"extension".equals(selectedBuilding.source)
+                    && !"download".equals(selectedBuilding.source)
+                    && !"blueprint".equals(selectedBuilding.source)
+                    && (selectedBuilding.source == null || !selectedBuilding.source.startsWith("legacy-pack"))) {
+                try {
+                    byte[] bytes = Files.readAllBytes(selectedBuilding.filePath);
+                    String origName = selectedBuilding.filePath.getFileName().toString();
+                    String ext = origName.contains(".") ? origName.substring(origName.lastIndexOf('.')) : ".nbt";
+                    int fh = Arrays.hashCode(bytes);
+                    String newId = String.format("mb_%d_%06x", System.currentTimeMillis() / 1000L, fh & 0xFFFFFF);
+                    Path extRoot = LocalBuildingScanner.getBlueprintBuildingsRoot();
+                    Files.createDirectories(extRoot);
+                    Path newPath = extRoot.resolve(newId + ext);
+                    Files.write(newPath, bytes);
+                    String copyName = (selectedBuilding.name == null || selectedBuilding.name.isBlank())
+                        ? newId : selectedBuilding.name;
+                    Path origPath = selectedBuilding.filePath;
+                    selectedBuilding = new LocalBuilding(
+                        newId, copyName, selectedBuilding.author, selectedBuilding.description,
+                        selectedBuilding.dependencies, selectedBuilding.category,
+                        ext, (long) bytes.length, null, "blueprint",
+                        newPath, null, null);
+                    PrefabCustomAddon.LOGGER.info("[MAKE-BLUEPRINT] 外部建筑已复制进 blueprint-buildings: {} -> {}",
+                        origPath, newPath);
+                } catch (Throwable t) {
+                    PrefabCustomAddon.LOGGER.error("[MAKE-BLUEPRINT] 复制外部建筑失败", t);
+                    setStatus("复制建筑文件到 blueprint-buildings/ 失败: " + t.getMessage(), 0xFF5555);
+                    return;
+                }
+            }
+
+            // 构造 Spec (validate() 会自动加 player_ 前缀)
+            CustomBlueprintCodeGenerator.Spec spec = new CustomBlueprintCodeGenerator.Spec();
+            String displayNameFallback = (selectedBuilding.getDisplayName() != null
+                && !selectedBuilding.getDisplayName().isBlank())
+                    ? selectedBuilding.getDisplayName() : itemId;
+            spec.displayName = displayName.isEmpty() ? displayNameFallback : displayName;
+            spec.namespace = subNamespace;
+            spec.itemId = itemId;
+            spec.packName = selectedBuilding.source == null ? "local" : selectedBuilding.source;
+            spec.constructionId = selectedBuilding.id;
+            spec.locked = true;  // 强制锁定, 玩家不能 rebind
+            spec.sourceTexture = selectedTextureSource;
+            // 直接传 9 槽位 (row-major 0..8), null/空表示无物品; 压缩会打乱配方位置
+            spec.recipeItems = new ArrayList<>(recipeItems);
+            // 自动加序号: 同名脚本已存在时改 <id>_2, _3...
+            spec.itemId = autoIncrementItemIdIfTaken(spec.namespace, spec.itemId);
+
+            CustomBlueprintCodeGenerator.Result result = CustomBlueprintCodeGenerator.generate(spec);
+
+            String nsItem = spec.namespace + ":" + spec.itemId;
+            setStatus(tr("gui.make_blueprint.status.generated", nsItem), 0x55FF55);
+            Minecraft mc = Minecraft.getInstance();
+            if (mc.player != null) {
+                mc.player.sendSystemMessage(Component.literal(
+                    "§a[制作蓝图] 已生成 KubeJS 文件: §f" + nsItem
+                    + "§a. 脚本=" + result.jsFile.getFileName()
+                    + ", 配方=" + result.jsonFile.getFileName()
+                    + ", 贴图=" + result.textureFile.getFileName()
+                    + ".\n§e请重启游戏 (startup_scripts 只在启动时跑)").withStyle(ChatFormatting.AQUA));
+            }
+            PrefabCustomAddon.LOGGER.info("[MAKE-BLUEPRINT] generated {}: js={} json={} tex={}",
+                nsItem, result.jsFile, result.jsonFile, result.textureFile);
+
+            // 生成成功后清空表单
+            selectedBuilding = null;
+            selectedTextureSource = null;
+            for (int i = 0; i < recipeItems.size(); i++) {
+                recipeItems.set(i, null);
+            }
+            SAVED_BLUEPRINT_NAME = "";
+            rebuildList();
+        } catch (IllegalArgumentException iae) {
+            setStatus(tr("gui.make_blueprint.status.param_err", iae.getMessage()), 0xFF5555);
+            PrefabCustomAddon.LOGGER.error("[MAKE-BLUEPRINT] 参数校验失败", iae);
+        } catch (Throwable t) {
+            setStatus(tr("gui.make_blueprint.status.gen_fail", t.getMessage()), 0xFF5555);
+            PrefabCustomAddon.LOGGER.error("[MAKE-BLUEPRINT] 生成失败", t);
+            Minecraft mc2 = Minecraft.getInstance();
+            if (mc2.player != null) {
+                mc2.player.sendSystemMessage(Component.literal(
+                    "§c[制作蓝图] 生成失败: " + t.getMessage()).withStyle(ChatFormatting.RED));
+            }
+        }
+    }
+
+    /**
+     * 检查 {@code <ns>_<id>_blueprint.js} / recipes.js 是否已存在.
+     * 存在就把 id 改成 {@code <id>_2}, 还存在再 _3...
+     */
+    private static String autoIncrementItemIdIfTaken(String ns, String id) {
+        try {
+            Minecraft mc = Minecraft.getInstance();
             if (mc == null) return id;
-            java.nio.file.Path kubejsDir = mc.gameDirectory.toPath().resolve("kubejs");
-            java.nio.file.Path startupScripts = kubejsDir.resolve("startup_scripts");
-            java.nio.file.Path serverScripts = kubejsDir.resolve("server_scripts");
-            if (!java.nio.file.Files.isDirectory(startupScripts) || !java.nio.file.Files.isDirectory(serverScripts)) {
-                return id;  // 第一次跑, 不会冲突
+            Path kubejsDir = mc.gameDirectory.toPath().resolve("kubejs");
+            Path startupScripts = kubejsDir.resolve("startup_scripts");
+            Path serverScripts = kubejsDir.resolve("server_scripts");
+            if (!Files.isDirectory(startupScripts) || !Files.isDirectory(serverScripts)) {
+                return id;
             }
             String jsName = ns + "_" + id + "_blueprint.js";
-            java.nio.file.Path jsPath = startupScripts.resolve(jsName);
-            java.nio.file.Path recipePath = serverScripts.resolve(ns + "_" + id + "_blueprint_recipes.js");
-            if (!java.nio.file.Files.exists(jsPath) && !java.nio.file.Files.exists(recipePath)) {
-                return id;  // 不冲突
+            Path jsPath = startupScripts.resolve(jsName);
+            Path recipePath = serverScripts.resolve(ns + "_" + id + "_blueprint_recipes.js");
+            if (!Files.exists(jsPath) && !Files.exists(recipePath)) {
+                return id;
             }
-            // 冲突: 找下一个可用后缀
             int n = 2;
             while (n < 1000) {
                 String candidate = id + "_" + n;
                 String jsName2 = ns + "_" + candidate + "_blueprint.js";
                 String recipeName2 = ns + "_" + candidate + "_blueprint_recipes.js";
-                if (!java.nio.file.Files.exists(startupScripts.resolve(jsName2))
-                    && !java.nio.file.Files.exists(serverScripts.resolve(recipeName2))) {
-                    PrefabCustomAddon.LOGGER.info(
-                        "[MAKE-BLUEPRINT] itemId '{}' 已存在, 自动改为 '{}'", id, candidate);
+                if (!Files.exists(startupScripts.resolve(jsName2))
+                    && !Files.exists(serverScripts.resolve(recipeName2))) {
+                    PrefabCustomAddon.LOGGER.info("[MAKE-BLUEPRINT] itemId '{}' 已存在, 自动改为 '{}'", id, candidate);
                     return candidate;
                 }
                 n++;
@@ -859,851 +1447,104 @@ public class GuiExtensionPackEditor extends GuiBase {
         return id;
     }
 
-    /**
-     * 选完游戏内区域的回调 (pickInGameForBlueprint 走这里).
-     * <p>关键: 必须把 NBT 真实写入 {@code prefab-extension/<id>.nbt},
-     * 不能再用临时文件 + hash 短码, 否则右键蓝图时 prefab 系统按
-     * constructionId 找建筑根本找不到 (图里 "找不到建筑:?/in_game_xxx").</p>
-     */
-    private void handleInGamePickedForBlueprint(
-            com.prefab.addon.client.gui.GuiCreateBuildingInfo.InGamePickResult res,
-            Throwable err) {
-        if (err != null) {
-            this.mbStatus = "§c游戏内选区失败: §7" + err.getMessage();
-            this.mbStatusColor = 0xFF5555;
-            this.mbStatusTick = 150;
-            return;
-        }
-        if (res == null) {
-            this.mbStatus = "§7已取消游戏内选区";
-            this.mbStatusColor = 0xFFAA55;
-            this.mbStatusTick = 80;
-            return;
-        }
-        if (res.nbtData == null || res.nbtData.length == 0) {
-            this.mbStatus = "§c游戏内选区 NBT 为空";
-            this.mbStatusColor = 0xFF5555;
-            this.mbStatusTick = 150;
-            return;
-        }
-
-        // 生成建筑 id: 时间戳 + hash 短码, 避免和现有文件撞名
-        int h = java.util.Arrays.hashCode(res.nbtData);
-        String shortHash = String.format("%06x", h & 0xFFFFFF);
-        long ts = System.currentTimeMillis() / 1000L;
-        String id = "ingame_" + ts + "_" + shortHash;
-        String displayName = res.sizeString != null && !res.sizeString.isEmpty()
-            ? "内嵌建筑 " + res.sizeString
-            : ("内嵌建筑 " + id);
-
-        // 把 NBT 持久化到 prefab-extension/blueprint-buildings/ — 蓝图专属建筑目录,
-        // 不进建筑选择列表 (浏览器/收藏/蓝图选择都不扫这里), 蓝图链路按 constructionId 直读.
-        java.nio.file.Path extRoot;
-        java.nio.file.Path nbtPath = null;
+    /** 打开 minecraft/kubejs 文件夹 (Desktop.open). 失败给个状态提示. */
+    private static void openKubejsFolder() {
         try {
-            com.prefab.addon.extension.LocalBuildingScanner.migrateLegacyBlueprintBuildings();
-            extRoot = com.prefab.addon.extension.LocalBuildingScanner.getBlueprintBuildingsRoot();
-            java.nio.file.Files.createDirectories(extRoot);
-            nbtPath = extRoot.resolve(id + ".nbt");
-            java.nio.file.Files.write(nbtPath, res.nbtData);
-            PrefabCustomAddon.LOGGER.info("[MAKE-BLUEPRINT] 游戏内选区持久化: {} ({} bytes)",
-                nbtPath, res.nbtData.length);
-        } catch (Throwable t) {
-            PrefabCustomAddon.LOGGER.error("[MAKE-BLUEPRINT] 持久化 NBT 失败", t);
-            this.mbStatus = "§c写入 blueprint-buildings/ 失败: §7" + t.getMessage();
-            this.mbStatusColor = 0xFF5555;
-            this.mbStatusTick = 150;
-            return;
-        }
-
-        // 构造 LocalBuilding, 指向真实持久化文件 (让右键能通过 constructionId 找到)
-        LocalBuilding lb = new LocalBuilding(
-            id, displayName, "", "", res.modIds == null ? java.util.Collections.emptyList() : res.modIds, "",
-            ".nbt", res.nbtData.length, null, "blueprint",
-            nbtPath, null, null);
-        this.selectedBuilding = lb;
-        this.mbStatus = "§a已选游戏内建筑: §f" + displayName
-            + (res.sizeString != null && !res.sizeString.isEmpty() ? "  §7(" + res.sizeString + ")" : "")
-            + "  §7[已存到 prefab-extension/blueprint-buildings/]";
-        this.mbStatusColor = 0x55FF55;
-        this.mbStatusTick = 120;
-        PrefabCustomAddon.LOGGER.info("[MAKE-BLUEPRINT] 选完游戏内建筑: id={} size={} bytes={}",
-            id, res.sizeString, res.nbtData.length);
-    }
-
-    /**
-     * tick 轮询: GuiCreateBuildingInfo 完成选 NBT / 选区 后, 会写 {@code nbtData} 和 {@code nbtPath}.
-     * 检测到任一为非空时, 构造 {@link LocalBuilding} 写回 {@code selectedBuilding} 并结束轮询.
-     */
-    private void pollNbtFromCb() {
-        try {
-            Class<?> cb = com.prefab.addon.client.gui.GuiCreateBuildingInfo.class;
-            java.lang.reflect.Field df = cb.getDeclaredField("nbtData");
-            df.setAccessible(true);
-            byte[] nbt = (byte[]) df.get(null);
-            java.lang.reflect.Field pf = cb.getDeclaredField("nbtPath");
-            pf.setAccessible(true);
-            String path = (String) pf.get(null);
-            if (nbt == null || nbt.length == 0) return;
-            // 选完: 构造 LocalBuilding
-            String fileName = path == null ? "in_game_" + System.currentTimeMillis()
-                : new java.io.File(path).getName();
-            String id = fileName.toLowerCase(Locale.ROOT);
-            if (id.endsWith(".nbt")) id = id.substring(0, id.length() - 4);
-            // 路径可能在 GuiCreateBuildingInfo 选中区时被写为临时文件, 那就当 in_game 来源
-            String source = (this.mbPollSource == 2) ? "in_game" : "external";
-            String displayName = id;
-            // 同步 fieldIdValue / fieldNameValue, 后续如果玩家要"生成"也能用
-            com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldIdValue = id;
-            com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldNameValue = displayName;
-            // 构造 LocalBuilding
-            java.nio.file.Path fp = path == null ? null : new java.io.File(path).toPath();
-            com.prefab.addon.extension.LocalBuilding lb =
-                new com.prefab.addon.extension.LocalBuilding(
-                    id, displayName, "", "", java.util.Collections.emptyList(), "",
-                    ".nbt", 0L, null, source,
-                    fp, null, null);
-            this.selectedBuilding = lb;
-            this.mbStatus = PrefabCustomAddon.tr("gui.make_blueprint.status.building_picked", displayName + "  (" + source + ")");
-            this.mbStatusColor = 0x55FF55;
-            this.mbStatusTick = 120;
-            // 清掉 cb 状态, 避免下次再触发
-            df.set(null, null);
-            this.mbPollSource = 0;
-            PrefabCustomAddon.LOGGER.info("[MAKE-BLUEPRINT] 选完建筑: id={} source={} path={}", id, source, path);
-        } catch (Throwable t) {
-            PrefabCustomAddon.LOGGER.error("[MAKE-BLUEPRINT] pollNbtFromCb 失败", t);
-            this.mbPollSource = 0;
-        }
-    }
-
-    /**
-     * 轮询 GuiCreateBuildingInfo 的 static 状态消息 → 本 GUI 状态栏.
-     * 触发条件: 1) cbTick 上升沿 (从 0 跳到 100+) — 全新消息
-     *           2) 消息文本与上次不同 — 同样是新消息, 但 cbTick 仍是 100 (复用)
-     * 只用任一条件触发一次, 避免状态栏永不消失.
-     */
-    private int lastCbStatusTick = -1;
-    private String lastCbStatusText = null;
-    private void pollStatusFromCb() {
-        try {
-            java.lang.reflect.Field tf = com.prefab.addon.client.gui.GuiCreateBuildingInfo.class.getDeclaredField("statusTick");
-            tf.setAccessible(true);
-            int cbTick = tf.getInt(null);
-            java.lang.reflect.Field mf = com.prefab.addon.client.gui.GuiCreateBuildingInfo.class.getDeclaredField("statusMessage");
-            mf.setAccessible(true);
-            String cbMsg = (String) mf.get(null);
-            if (cbTick <= 0 || cbMsg == null) {
-                lastCbStatusTick = 0;
-                lastCbStatusText = null;
+            Minecraft mc = Minecraft.getInstance();
+            if (mc == null) {
+                setStatus("MC 实例未就绪", 0xFF5555);
                 return;
             }
-            boolean risingEdge = cbTick > lastCbStatusTick;
-            boolean textChanged = !cbMsg.equals(lastCbStatusText);
-            if (risingEdge || textChanged) {
-                lastCbStatusTick = cbTick;
-                lastCbStatusText = cbMsg;
-                copyStatusFromCb();
+            Path kubejsDir = mc.gameDirectory.toPath().resolve("kubejs");
+            if (!Files.exists(kubejsDir)) {
+                Files.createDirectories(kubejsDir);
             }
-        } catch (Throwable ignored) {}
-    }
-
-    @Override
-    protected void preButtonRender(GuiGraphics guiGraphics, int x, int y, int mouseX, int mouseY, float partialTicks) {
-        // 1) 主面板底色
-        guiGraphics.fill(this.grayBoxX, this.grayBoxY, this.grayBoxX + PANEL_W, this.grayBoxY + PANEL_H, PANEL_BG);
-        // 边框
-        guiGraphics.fill(this.grayBoxX, this.grayBoxY, this.grayBoxX + PANEL_W, this.grayBoxY + 1, PANEL_BORDER);
-        guiGraphics.fill(this.grayBoxX, this.grayBoxY + PANEL_H - 1, this.grayBoxX + PANEL_W, this.grayBoxY + PANEL_H, PANEL_BORDER);
-        guiGraphics.fill(this.grayBoxX, this.grayBoxY, this.grayBoxX + 1, this.grayBoxY + PANEL_H, PANEL_BORDER);
-        guiGraphics.fill(this.grayBoxX + PANEL_W - 1, this.grayBoxY, this.grayBoxX + PANEL_W, this.grayBoxY + PANEL_H, PANEL_BORDER);
-
-        // 2) 左侧 tab 列 (背景)
-        int tx = this.grayBoxX + 2;
-        int ty = this.grayBoxY + 2;
-        int tw = TABS_W;
-        int th = TAB_H;
-        Tab[] tabs = Tab.values();
-        for (int i = 0; i < tabs.length; i++) {
-            int by = ty + i * th;
-            boolean active = tabs[i] == this.currentTab;
-            boolean hover = mouseX >= tx && mouseX < tx + tw && mouseY >= by && mouseY < by + th;
-            int bg = active ? TAB_BG_ACTIVE : (hover ? TAB_BG_HOVER : 0xFF2A2A2A);
-            guiGraphics.fill(tx, by, tx + tw, by + th, bg);
-        }
-
-        // 3) 右内容区 (纯白)
-        int[] cr = contentRect();
-        guiGraphics.fill(cr[0], cr[1], cr[0] + cr[2], cr[1] + cr[3], CONTENT_BG);
-    }
-
-    @Override
-    protected void postButtonRender(GuiGraphics guiGraphics, int x, int y, int mouseX, int mouseY, float partialTicks) {
-        // 1) 左 tab 文字 (在 tab 背景上画)
-        int tx = this.grayBoxX + 2;
-        int ty = this.grayBoxY + 2;
-        int tw = TABS_W;
-        int th = TAB_H;
-        Tab[] tabs = Tab.values();
-        for (int i = 0; i < tabs.length; i++) {
-            // 联动: KubeJS 没装也要渲染 "制作蓝图" / "蓝图管理" 两个 tab,
-            // 但用灰色文字提示玩家装 KubeJS 才能用 — 之前直接 skip 会让玩家找不到入口.
-            String label = tabs[i].label;
-            int color = TAB_FG;
-            if ((tabs[i] == Tab.MAKE_BLUEPRINT || tabs[i] == Tab.MANAGE_BLUEPRINT)
-                && !KubeJSIntegration.isLoaded()) {
-                color = 0xFF888888; // 灰色
+            if (Desktop.isDesktopSupported()) {
+                Desktop.getDesktop().open(kubejsDir.toFile());
+                setStatus(tr("gui.make_blueprint.status.folder_opened"), 0x55FF55);
+            } else {
+                setStatus(tr("gui.make_blueprint.status.folder_no_desktop", kubejsDir.toString()), 0xFFAA55);
             }
-            int textW = this.font.width(label);
-            int textX = tx + (tw - textW) / 2;
-            int textY = ty + i * th + (th - 8) / 2;
-            guiGraphics.drawString(this.font, label, textX, textY, color, true);
-        }
-
-        // 2) 当前 tab 的内容
-        int[] cr = contentRect();
-        if (currentTab == Tab.CREATE) {
-            drawCreateTab(guiGraphics, cr, mouseX, mouseY);
-        } else if (currentTab == Tab.EDIT) {
-            drawEditTab(guiGraphics, cr, mouseX, mouseY);
-        } else if (currentTab == Tab.MAKE_BLUEPRINT) {
-            drawMakeBlueprintTab(guiGraphics, cr, mouseX, mouseY);
-        } else if (currentTab == Tab.MANAGE_BLUEPRINT) {
-            drawManageBlueprintTab(guiGraphics, cr, mouseX, mouseY);
-        } else {
-            drawSettingsTab(guiGraphics, cr, mouseX, mouseY);
+        } catch (Throwable t) {
+            setStatus(tr("gui.make_blueprint.status.folder_fail", t.getMessage()), 0xFF5555);
+            PrefabCustomAddon.LOGGER.error("[MAKE-BLUEPRINT] 打开 kubejs 文件夹失败", t);
         }
     }
 
-    @Override
-    public void buttonClicked(AbstractButton button) {
-        // 本 GUI 的 EditBox/Button 都是用 makeButton 包装, lambda 已经处理点击;
-        // 这里留空即可 (GuiBase 把按钮的点击转给 lambda, buttonClicked 仅用于其他 AbstractButton 监听).
-    }
-
-    private void drawCreateTab(GuiGraphics guiGraphics, int[] cr, int mouseX, int mouseY) {
-        int rx = cr[0], ry = cr[1], rw = cr[2];
-
-        // 标题
-        guiGraphics.drawString(this.font, "§l创建建筑", rx + 4, ry + 4, TITLE_COLOR, false);
-
-        // 支持格式提示 (小字, 图标行下方)
-        if (this.createFormatHintY > 0) {
-            guiGraphics.drawString(this.font, com.prefab.addon.PrefabCustomAddon.tr("gui.create_building.format_hint"),
-                rx + 4, this.createFormatHintY, HINT_COLOR, false);
-        }
-
-        // 字段标签 (在 EditBox 左侧, EditBox 已经由 super.render 画, 这里只画标签)
-        // 布局与 initCreateTabWidgets 对齐: 字段从 ry+18 开始 (建筑名/尺寸/依赖 三行 rowH=20)
-        int y = ry + 18;
-        String[] labels = {"建筑名:", "尺寸:", "依赖:"};
-        int[] labelYs = {y + 4, y + 20 + 4, y + 40 + 4};
-        for (int i = 0; i < labels.length; i++) {
-            guiGraphics.drawString(this.font, labels[i], rx + 4, labelYs[i], LABEL_COLOR, false);
-        }
-
-        // 状态消息 (绘制在专用的占位行, 不会与按钮重叠)
-        if (this.statusMessage != null && this.statusTick > 0 && this.createStatusY > 0) {
-            int sy = this.createStatusY + 2;  // 占位行上 +2px (文字基线)
-            if (sy < ry + 14) sy = ry + 14;
-            guiGraphics.drawString(this.font, this.statusMessage, rx + 4, sy, this.statusColor, false);
-        }
-    }
-
-    private void drawEditTab(GuiGraphics guiGraphics, int[] cr, int mouseX, int mouseY) {
-        int rx = cr[0], ry = cr[1], rw = cr[2], rh = cr[3];
-
-        // 标题
-        guiGraphics.drawString(this.font, "§l编辑建筑", rx + 4, ry + 4, TITLE_COLOR, false);
-        // 搜索框 hint: 当为空时在 EditBox 右侧画一个 "🔍 搜索" 小字
-        if (this.edSearch != null && this.edSearch.getValue().isEmpty()) {
-            // 把 hint 画在 EditBox 上方一点点 (避免被 EditBox 黑底遮)
-            guiGraphics.drawString(this.font, "§7🔍 搜索 建筑名 / 作者 / 描述",
-                this.edSearchRect[0], this.edSearchRect[1] - 10, HINT_COLOR, false);
-        }
-
-        if (this.editFiltered.isEmpty()) {
-            String hint = this.editBuildings.isEmpty()
-                ? "暂无本地建筑 (prefab-extension/ 为空)"
-                : "没有匹配 \"" + this.editSearch + "\" 的建筑";
-            guiGraphics.drawString(this.font, hint, rx + 4, ry + 40, HINT_COLOR, false);
-            this.editCardRects.clear();
-            this.editViewBtnRects.clear();
-            this.editEditBtnRects.clear();
-            // 仍然画分页按钮 (即使没数据, 也显示页码)
-            drawEditPagination(guiGraphics, cr, mouseX, mouseY);
-            return;
-        }
-
-        // 2 列卡片网格
-        int cardW = (rw - 16) / 2;
-        int cardH = 78;
-        int gap = 4;
-        int startX = rx + 6;
-        int startY = ry + 50;  // 标题 (4) + hint (~10) + 搜索框 (32~46) + 间距
-        int cols = 2;
-        // 给底部翻页按钮留 16px: rh - 16 是可用卡片区高度
-        int maxRows = (rh - 50 - 16) / (cardH + gap);
-        if (maxRows < 1) maxRows = 1;
-        this.editPageSize = maxRows * cols;
-
-        this.editCardRects.clear();
-        this.editViewBtnRects.clear();
-        this.editEditBtnRects.clear();
-
-        int totalPages = Math.max(1, (this.editFiltered.size() + this.editPageSize - 1) / this.editPageSize);
-        if (this.editPage < 1) this.editPage = 1;
-        if (this.editPage > totalPages) this.editPage = totalPages;
-        int startIdx = (this.editPage - 1) * this.editPageSize;
-        int endIdx = Math.min(startIdx + this.editPageSize, this.editFiltered.size());
-
-        int idx = startIdx;
-        int drawn = 0;
-        for (int row = 0; row < maxRows && idx < endIdx; row++) {
-            for (int col = 0; col < cols && idx < endIdx; col++) {
-                LocalBuilding lb = this.editFiltered.get(idx);
-                int cx = startX + col * (cardW + gap);
-                int cy = startY + row * (cardH + gap);
-                boolean hover = mouseX >= cx && mouseX < cx + cardW && mouseY >= cy && mouseY < cy + cardH;
-                int bg = hover ? CARD_HOVER : CARD_BG;
-                guiGraphics.fill(cx, cy, cx + cardW, cy + cardH, bg);
-                // 边框
-                guiGraphics.fill(cx, cy, cx + cardW, cy + 1, CARD_BORDER);
-                guiGraphics.fill(cx, cy + cardH - 1, cx + cardW, cy + cardH, CARD_BORDER);
-                guiGraphics.fill(cx, cy, cx + 1, cy + cardH, CARD_BORDER);
-                guiGraphics.fill(cx + cardW - 1, cy, cx + cardW, cy + cardH, CARD_BORDER);
-                // 缩略图占位
-                int imgX = cx + 4, imgY = cy + 4, imgS = 36;
-                guiGraphics.fill(imgX, imgY, imgX + imgS, imgY + imgS, 0xFF333333);
-                // 优先用 .png 缩略图 (用真实尺寸 blit, 避免 texW/texH 写死 64 报错)
-                CachedImage img = imageLocationFor(lb);
-                if (img != null) {
-                    try {
-                        guiGraphics.blit(img.loc, imgX, imgY, imgS, imgS,
-                            0, 0, img.width, img.height, img.width, img.height);
-                    } catch (Throwable t) {
-                        PrefabCustomAddon.LOGGER.warn("[EDITOR] blit 缩略图失败 ({}): {}", lb.id, t.getMessage());
-                        guiGraphics.drawString(this.font, "图", imgX + 12, imgY + 12, HINT_COLOR, false);
-                    }
-                } else {
-                    guiGraphics.drawString(this.font, "图", imgX + 12, imgY + 12, HINT_COLOR, false);
-                }
-                // 建筑名
-                String name = lb.getDisplayName();
-                int maxNameW = cardW - imgS - 12;
-                if (this.font.width(name) > maxNameW) {
-                    while (name.length() > 1 && this.font.width(name + "...") > maxNameW) name = name.substring(0, name.length() - 1);
-                    name = name + "...";
-                }
-                guiGraphics.drawString(this.font, name, cx + imgS + 8, cy + 8, LABEL_COLOR, false);
-                // 作者
-                if (lb.author != null && !lb.author.isEmpty()) {
-                    guiGraphics.drawString(this.font, "作者: " + lb.author, cx + imgS + 8, cy + 18, HINT_COLOR, false);
-                }
-                // 文件大小
-                guiGraphics.drawString(this.font, "格式: " + (lb.fileExt == null ? "?" : lb.fileExt) + "  " + formatSize(lb.fileSize),
-                    cx + imgS + 8, cy + 28, HINT_COLOR, false);
-                // 按钮 [查看] [编辑]
-                int btnW = 38, btnH = 14, btnGap = 4;
-                int btnY = cy + cardH - btnH - 4;
-                int btnX1 = cx + cardW - btnW * 2 - btnGap - 4;
-                int btnX2 = btnX1 + btnW + btnGap;
-                boolean hoverView = mouseX >= btnX1 && mouseX < btnX1 + btnW && mouseY >= btnY && mouseY < btnY + btnH;
-                boolean hoverEdit = mouseX >= btnX2 && mouseX < btnX2 + btnW && mouseY >= btnY && mouseY < btnY + btnH;
-                guiGraphics.fill(btnX1, btnY, btnX1 + btnW, btnY + btnH, hoverView ? BTN_BG_HOVER : BTN_BG);
-                guiGraphics.fill(btnX2, btnY, btnX2 + btnW, btnY + btnH, hoverEdit ? BTN_BG_HOVER : BTN_BG);
-                guiGraphics.drawString(this.font, "查看", btnX1 + (btnW - this.font.width("查看")) / 2, btnY + 3, LABEL_COLOR, false);
-                guiGraphics.drawString(this.font, "编辑", btnX2 + (btnW - this.font.width("编辑")) / 2, btnY + 3, LABEL_COLOR, false);
-
-                this.editCardRects.add(new int[]{cx, cy, cardW, cardH});
-                this.editViewBtnRects.add(new int[]{btnX1, btnY, btnW, btnH});
-                this.editEditBtnRects.add(new int[]{btnX2, btnY, btnW, btnH});
-                idx++;
-                drawn++;
-            }
-        }
-
-        // 翻页按钮 + 计数
-        drawEditPagination(guiGraphics, cr, mouseX, mouseY);
-    }
-
-    /** 画编辑 tab 底部的翻页按钮: [< 上一页]  X/Y  [下一页 >]. */
-    private void drawEditPagination(GuiGraphics guiGraphics, int[] cr, int mouseX, int mouseY) {
-        int rx = cr[0], ry = cr[1], rw = cr[2], rh = cr[3];
-        int total = this.editFiltered.size();
-        int totalPages = Math.max(1, (total + this.editPageSize - 1) / this.editPageSize);
-        int btnY = ry + rh - 14;
-        int btnH = 12;
-        int btnW = 50;
-        int gap = 4;
-        int prevX = rx + 6;
-        int nextX = rx + rw - 6 - btnW;
-        boolean canPrev = this.editPage > 1;
-        boolean canNext = this.editPage < totalPages;
-        boolean hoverPrev = canPrev && mouseX >= prevX && mouseX < prevX + btnW && mouseY >= btnY && mouseY < btnY + btnH;
-        boolean hoverNext = canNext && mouseX >= nextX && mouseX < nextX + btnW && mouseY >= btnY && mouseY < btnY + btnH;
-        int prevBg = canPrev ? (hoverPrev ? BTN_BG_HOVER : BTN_BG) : 0xFFCCCCCC;
-        int nextBg = canNext ? (hoverNext ? BTN_BG_HOVER : BTN_BG) : 0xFFCCCCCC;
-        int prevTxt = canPrev ? LABEL_COLOR : 0xFF888888;
-        int nextTxt = canNext ? LABEL_COLOR : 0xFF888888;
-        // 上一页按钮
-        guiGraphics.fill(prevX, btnY, prevX + btnW, btnY + btnH, prevBg);
-        guiGraphics.fill(prevX, btnY, prevX + btnW, btnY + 1, CARD_BORDER);
-        guiGraphics.fill(prevX, btnY + btnH - 1, prevX + btnW, btnY + btnH, CARD_BORDER);
-        guiGraphics.fill(prevX, btnY, prevX + 1, btnY + btnH, CARD_BORDER);
-        guiGraphics.fill(prevX + btnW - 1, btnY, prevX + btnW, btnY + btnH, CARD_BORDER);
-        guiGraphics.drawString(this.font, "< 上一页", prevX + 6, btnY + 2, prevTxt, false);
-        // 下一页按钮
-        guiGraphics.fill(nextX, btnY, nextX + btnW, btnY + btnH, nextBg);
-        guiGraphics.fill(nextX, btnY, nextX + btnW, btnY + 1, CARD_BORDER);
-        guiGraphics.fill(nextX, btnY + btnH - 1, nextX + btnW, btnY + btnH, CARD_BORDER);
-        guiGraphics.fill(nextX, btnY, nextX + 1, btnY + btnH, CARD_BORDER);
-        guiGraphics.fill(nextX + btnW - 1, btnY, nextX + btnW, btnY + btnH, CARD_BORDER);
-        guiGraphics.drawString(this.font, "下一页 >", nextX + 6, btnY + 2, nextTxt, false);
-        // 中间页码 X/Y
-        String pageText = this.editPage + " / " + totalPages;
-        int ptW = this.font.width(pageText);
-        int ptX = prevX + btnW + (nextX - prevX - btnW - ptW) / 2;
-        guiGraphics.drawString(this.font, pageText, ptX, btnY + 2, HINT_COLOR, false);
-
-        this.editPagingRects = new int[]{
-            prevX, btnY, btnW, btnH,
-            nextX, btnY, btnW, btnH
-        };
-    }
-
-    // ============================================================
-    // 设置 tab - 自绘 (与 Browser 风格一致, 替代 LDLib2 的 SettingsGui)
-    //
-    // 内容较多 (偏好 + 性能/动画 + 快捷操作), 分 2 页:
-    //   页 1: 偏好 (自动检测依赖) + 性能 / 动画 (下落动画 / 预览 / 建造)
-    //   页 2: 快捷操作 (重置偏好)
-    // 顶部有"上一页 / 页码 / 下一页"小翻页条, 完成按钮固定在右下角任意页都有.
-    // ============================================================
-    private static final int SETTINGS_TOTAL_PAGES = 2;
-
-    // ============================================================
-    // 制作蓝图 tab
-    // ============================================================
-    private void drawMakeBlueprintTab(GuiGraphics guiGraphics, int[] cr, int mouseX, int mouseY) {
-        int rx = cr[0], ry = cr[1], rw = cr[2], rh = cr[3];
-        Minecraft mc = Minecraft.getInstance();
-
-        // 联动: KubeJS 没装时显示居中提示, 不画表单/网格/按钮 — 让玩家一眼看到为什么这 tab 不能用.
-        if (!KubeJSIntegration.isLoaded()) {
-            drawKubeJSNotInstalledPanel(guiGraphics, cr);
-            return;
-        }
-
-        // ===== 1) 底部固定区 (生成/打开文件夹按钮 + 状态) — 不参与滚动 =====
-        int bottomY = ry + rh - 32;     // 生成 + 打开 kubejs 按钮 Y
-        int statusY = bottomY - 14;     // 状态消息 Y
-        int scrollBottom = statusY - 4; // 滚动区下边界
-
-        // 状态消息
-        if (mbStatus != null && mbStatusTick > 0) {
-            int color = mbStatusColor | 0xFF000000;
-            guiGraphics.drawString(this.font, mbStatus, rx + 8, statusY, color, false);
-        }
-
-        // 生成 + 打开文件夹按钮
-        int btnBottomW = 100, btnBottomGap = 8, btnBottomH = 22;
-        mbGenerateRect = new int[]{rx + 8, bottomY, btnBottomW, btnBottomH};
-        drawButton(guiGraphics, mbGenerateRect, PrefabCustomAddon.tr("gui.make_blueprint.btn.generate"),
-            BTN_BG_PRIMARY, mouseX, mouseY);
-        mbOpenFolderRect = new int[]{rx + 8 + btnBottomW + btnBottomGap, bottomY, 110, btnBottomH};
-        drawButton(guiGraphics, mbOpenFolderRect, PrefabCustomAddon.tr("gui.make_blueprint.btn.open_folder"),
-            0xFFCCCCCC, mouseX, mouseY);
-
-        // ===== 2) 滚动区: 从 ry 到 scrollBottom =====
-        int scrollTop = ry;
-        int scrollH = scrollBottom - scrollTop;
-
-        // 启用 scissor, 防止越界绘制
-        int scX1 = rx, scY1 = scrollTop, scX2 = rx + rw - 8, scY2 = scrollBottom;
-        guiGraphics.enableScissor(scX1, scY1, scX2, scY2);
-
-        // 逻辑 Y: 用来堆元素, 不受 mbScroll 影响
-        int ly = ry + 6;  // logical Y (滚动前)
-
-        // 标题
-        guiGraphics.drawString(this.font, PrefabCustomAddon.tr("gui.make_blueprint.title"), rx + 8, ly - mbScroll, 0xFF333333, false);
-        ly += 14;
-        guiGraphics.drawString(this.font,
-            PrefabCustomAddon.tr("gui.make_blueprint.subtitle"),
-            rx + 8, ly - mbScroll, 0xFF666666, false);
-        ly += 12;
-        guiGraphics.drawString(this.font,
-            PrefabCustomAddon.tr("gui.make_blueprint.restart_hint"),
-            rx + 8, ly - mbScroll, 0xFFAA5500, false);
-        ly += 16;
-
-        // ---- EditBox 区域 ----
-        int formX = rx + 8;
-        int labelW = 60;
-        int rowH = 22;
-
-        // 名字 (显示名) — 唯一让玩家填的输入框
-        guiGraphics.drawString(this.font, PrefabCustomAddon.tr("gui.make_blueprint.label.name"), formX, ly - mbScroll + 4, 0xFF333333, false);
-        edBlueprintName.setX(formX + labelW);
-        edBlueprintName.setY(ly - mbScroll);
-        edBlueprintName.setWidth(rw - labelW - 24);
-        edBlueprintName.setVisible(true);
-        ly += rowH;
-        // 命名空间 / 物品 id 简化为自动生成: player_pack:player_blueprint[_2][_3]...
-        // 不用再让玩家填, 省两个 input
-
-        // ---- 建筑选择: 拆 2 按钮, 纵向排列 ----
-        int selBtnH = 16;
-        int selBtnW = rw - 24;
-        // 选建筑文件
-        mbSelectBuildingFileRect = new int[]{formX, ly - mbScroll, selBtnW, selBtnH};
-        String fileBtnLabel = (selectedBuilding != null && !"in_game".equals(selectedBuilding.source))
-            ? PrefabCustomAddon.tr("gui.make_blueprint.btn.pick_building_file_set", selectedBuilding.getDisplayName())
-            : PrefabCustomAddon.tr("gui.make_blueprint.btn.pick_building_file_empty");
-        drawButton(guiGraphics, mbSelectBuildingFileRect, fileBtnLabel,
-            selectedBuilding != null ? BTN_BG_HOVER : 0xFFEEEEEE,
-            mouseX, mouseY);
-        ly += selBtnH + 2;
-        // 游戏内选建筑
-        mbSelectInGameRect = new int[]{formX, ly - mbScroll, selBtnW, selBtnH};
-        String inGameBtnLabel = (selectedBuilding != null && "in_game".equals(selectedBuilding.source))
-            ? PrefabCustomAddon.tr("gui.make_blueprint.btn.pick_building_ingame_set", selectedBuilding.getDisplayName())
-            : PrefabCustomAddon.tr("gui.make_blueprint.btn.pick_building_ingame_empty");
-        drawButton(guiGraphics, mbSelectInGameRect, inGameBtnLabel,
-            selectedBuilding != null && "in_game".equals(selectedBuilding.source)
-                ? BTN_BG_HOVER : 0xFFEEEEEE,
-            mouseX, mouseY);
-        ly += selBtnH + 2;
-
-        // 选贴图
-        mbSelectTextureRect = new int[]{formX, ly - mbScroll, selBtnW, selBtnH};
-        String texBtnLabel = (selectedTextureSource != null)
-            ? PrefabCustomAddon.tr("gui.make_blueprint.btn.pick_texture_set", selectedTextureSource.getFileName().toString())
-            : PrefabCustomAddon.tr("gui.make_blueprint.btn.pick_texture_empty");
-        drawButton(guiGraphics, mbSelectTextureRect, texBtnLabel,
-            selectedTextureSource != null ? BTN_BG_HOVER : 0xFFEEEEEE,
-            mouseX, mouseY);
-        ly += selBtnH + 6;
-
-        // ---- 9 宫格配方 ----
-        guiGraphics.drawString(this.font, PrefabCustomAddon.tr("gui.make_blueprint.recipe_label"), formX, ly - mbScroll, 0xFF333333, false);
-        ly += 14;
-        int cellSize = 22;
-        int cellGap = 2;
-        int gridW = cellSize * 3 + cellGap * 2;
-        int gridX = formX;
-        int gridY = ly - mbScroll;
-        mbRecipeGridRect = new int[]{gridX, gridY, gridW, cellSize * 3 + cellGap * 2};
-        for (int row = 0; row < 3; row++) {
-            for (int col = 0; col < 3; col++) {
-                int idx = row * 3 + col;
-                int cx = gridX + col * (cellSize + cellGap);
-                int cy = gridY + row * (cellSize + cellGap);
-                String item = recipeItems.get(idx);
-                guiGraphics.fill(cx, cy, cx + cellSize, cy + cellSize, 0xFFE8E8E8);
-                guiGraphics.fill(cx, cy, cx + cellSize, cy + 1, 0xFFAAAAAA);
-                guiGraphics.fill(cx, cy + cellSize - 1, cx + cellSize, cy + cellSize, 0xFFAAAAAA);
-                guiGraphics.fill(cx, cy, cx + 1, cy + cellSize, 0xFFAAAAAA);
-                guiGraphics.fill(cx + cellSize - 1, cy, cx + cellSize, cy + cellSize, 0xFFAAAAAA);
-                if (item != null && !item.isBlank()) {
-                    // 1) 优先画物品图标 (玩家在搜索弹窗选了物品后, 这里显示该物品的 16x16 icon)
-                    ItemStack stack = parseItemStack(item);
-                    if (stack != null) {
-                        guiGraphics.renderItem(stack, cx + 3, cy + 3);
-                    } else {
-                        String shortName = item;
-                        if (shortName.contains(":")) shortName = shortName.substring(shortName.indexOf(':') + 1);
-                        if (this.font.width(shortName) > cellSize - 4) {
-                            int len = shortName.length();
-                            while (len > 2 && this.font.width(shortName.substring(0, len)) > cellSize - 4) len--;
-                            shortName = shortName.substring(0, len) + "..";
-                        }
-                        guiGraphics.drawString(this.font, "§7" + shortName, cx + 2, cy + 8, 0xFF333333, false);
-                    }
-                } else {
-                    guiGraphics.drawString(this.font, "§8-", cx + 8, cy + 8, 0xFF888888, false);
-                }
-            }
-        }
-        ly += cellSize * 3 + cellGap * 2 + 6;
-
-        // ---- 锁定 toggle ----
-        int lkBox = 12;
-        int lkY = ly - mbScroll;
-        mbLockedRect = new int[]{formX, lkY, rw - 24, 18};
-        guiGraphics.fill(formX, lkY, formX + lkBox, lkY + lkBox, 0xFFFFFFFF);
-        guiGraphics.fill(formX, lkY, formX + lkBox, lkY + 1, 0xFF666666);
-        guiGraphics.fill(formX, lkY + lkBox - 1, formX + lkBox, lkY + lkBox, 0xFF666666);
-        guiGraphics.fill(formX, lkY, formX + 1, lkY + lkBox, 0xFF666666);
-        guiGraphics.fill(formX + lkBox - 1, lkY, formX + lkBox, lkY + lkBox, 0xFF666666);
-        if (blueprintLocked) {
-            guiGraphics.fill(formX + 2, lkY + 2, formX + lkBox - 2, lkY + lkBox - 2, 0xFF3366AA);
-        }
-        guiGraphics.drawString(this.font, PrefabCustomAddon.tr("gui.make_blueprint.locked_label"),
-            formX + lkBox + 6, lkY + 2, 0xFF333333, false);
-        ly += 24;
-
-        // 关闭 scissor (但 super.render 在外层, EditBox 渲染会绕过 scissor, 见 render() 重写)
-        guiGraphics.disableScissor();
-
-        // 总内容高度 (ly 是滚动前逻辑底部, ry 是滚动前逻辑顶部)
-        int contentH = ly - ry;
-        mbContentHeight = contentH;
-        int maxScroll = Math.max(0, contentH - scrollH);
-        if (mbScroll > maxScroll) mbScroll = maxScroll;
-        if (mbScroll < 0) mbScroll = 0;
-
-        // ===== 3) 滚动条 (右侧, 不参与滚动, 一直可见) =====
-        int barX = rx + rw - 6;
-        int barY = scrollTop + 2;
-        int barH = scrollH - 4;
-        mbScrollBarRect = new int[]{barX, barY, 4, barH};
-        // 背景
-        guiGraphics.fill(barX, barY, barX + 4, barY + barH, 0xFFCCCCCC);
-        if (contentH > scrollH) {
-            int thumbH = Math.max(20, (int) (barH * ((double) scrollH / contentH)));
-            int thumbY = barY + (int) ((barH - thumbH) * ((double) mbScroll / maxScroll));
-            mbScrollThumbRect = new int[]{barX, thumbY, 4, thumbH};
-            guiGraphics.fill(barX, thumbY, barX + 4, thumbY + thumbH,
-                mbScrollDragging ? 0xFF6666AA : 0xFF6688AA);
-            // 缩略图
-            int thumbH2 = Math.max(12, thumbH);
-            guiGraphics.fill(barX, thumbY, barX + 4, thumbY + thumbH2, 0xFF336688);
-        } else {
-            mbScrollThumbRect = new int[]{0, 0, 0, 0};
-        }
-
-        // ===== 4) 等待 NBT 时显示加载状态 =====
-        if (mbPollSource != 0) {
-            String waitMsg = (mbPollSource == 1) ? "§e等待选 NBT 文件..." : "§e等待游戏内选区...";
-            guiGraphics.drawString(this.font, waitMsg, rx + 8, statusY, 0xFFAA5500, false);
-        }
-    }
-
-    /** 简化按钮绘制 (不依赖 makeButton, 不进 widget 列表). */
-    private void drawButton(GuiGraphics g, int[] r, String label, int bg, int mx, int my) {
-        int x = r[0], y = r[1], w = r[2], h = r[3];
-        boolean hover = mx >= x && mx < x + w && my >= y && my < y + h;
-        int color = hover ? BTN_BG_HOVER : bg;
-        g.fill(x, y, x + w, y + h, color);
-        g.fill(x, y, x + w, y + 1, 0xFF555555);
-        g.fill(x, y + h - 1, x + w, y + h, 0xFF555555);
-        g.fill(x, y, x + 1, y + h, 0xFF555555);
-        g.fill(x + w - 1, y, x + w, y + h, 0xFF555555);
-        int textW = this.font.width(label);
-        g.drawString(this.font, label, x + (w - textW) / 2, y + (h - 8) / 2, 0xFFFFFFFF, true);
-    }
-
-    // ============================================================
-    // 蓝图管理 tab
-    // ============================================================
-
-    /**
-     * "KubeJS 未安装" 居中提示面板 — "制作蓝图" / "蓝图管理" 两个 tab 在 KubeJS 没装时
-     * 共用这个提示, 让玩家知道是 mod 依赖问题, 不是 tab 坏了.
-     */
-    private void drawKubeJSNotInstalledPanel(GuiGraphics guiGraphics, int[] cr) {
-        int rx = cr[0], ry = cr[1], rw = cr[2], rh = cr[3];
-        int cx = rx + rw / 2;
-        int cy = ry + rh / 2;
-
-        // 多行提示: 标题 / 原因 / 安装方式 / 设置里的"强制启用"提示
-        String[] lines = new String[]{
-            "§c§l" + PrefabCustomAddon.tr("gui.kubejs_required.title"),
+    /** KubeJS 未安装时的居中提示面板 ("制作蓝图" / "蓝图管理" 共用). */
+    private static void buildKubeJSRequiredPanel(UIElement listArea) {
+        UIElement box = new UIElement();
+        box.layout(l -> l.flexDirection(FlexDirection.COLUMN).flexGrow(1).widthPercent(100)
+            .alignItems(AlignItems.CENTER).justifyContent(AlignContent.CENTER).gapAll(4));
+        listArea.addChild(box);
+        String[] lines = {
+            tr("gui.kubejs_required.title"),
+            tr("gui.kubejs_required.desc"),
             "",
-            "§7" + PrefabCustomAddon.tr("gui.kubejs_required.desc"),
-            "",
-            "§e" + PrefabCustomAddon.tr("gui.kubejs_required.install_hint"),
-            "§7" + PrefabCustomAddon.tr("gui.kubejs_required.force_hint")
+            tr("gui.kubejs_required.install_hint"),
+            tr("gui.kubejs_required.force_hint")
         };
-        int lineH = 12;
-        int totalH = lines.length * lineH;
-        int startY = cy - totalH / 2;
-        for (int i = 0; i < lines.length; i++) {
-            String line = lines[i];
-            if (line.isEmpty()) continue;
-            int textW = this.font.width(line);
-            guiGraphics.drawString(this.font, line, cx - textW / 2,
-                startY + i * lineH, 0xFFFFFFFF, true);
+        for (String line : lines) {
+            Label l = new Label();
+            l.setText(line, false);
+            l.textStyle(t -> t.textColor(0xCCCCCC));
+            l.layout(l2 -> l2.widthPercent(100).height(12).alignItems(AlignItems.CENTER)
+                .justifyContent(AlignContent.CENTER));
+            box.addChild(l);
         }
     }
 
-    /** "蓝图管理" tab 内容: 列出所有 KubeJS 联动蓝图 (带 player_blueprint tag 的物品), 每条可删除. */
-    private void drawManageBlueprintTab(GuiGraphics guiGraphics, int[] cr, int mouseX, int mouseY) {
-        int rx = cr[0], ry = cr[1], rw = cr[2], rh = cr[3];
-
-        // 联动: KubeJS 没装时显示居中提示
-        if (!KubeJSIntegration.isLoaded()) {
-            drawKubeJSNotInstalledPanel(guiGraphics, cr);
-            return;
-        }
-
-        // 每次进入 tab 都重建一次 (玩家可能 /reload, 列表会变; 也避免标签页之间漏刷新)
-        if (!this.mgmtInited) {
-            rebuildManagedBlueprints();
-            this.mgmtInited = true;
-        }
-
-        // 顶部: 标题 + 刷新按钮
-        int titleY = ry + 4;
-        guiGraphics.drawString(this.font, "§l📋 蓝图管理 ("
-            + this.managedBlueprints.size() + ")", rx + 4, titleY, TITLE_COLOR, false);
-        int rfshW = 60, rfshH = 14;
-        mbManageRefreshRect = new int[]{rx + rw - rfshW - 6, titleY - 1, rfshW, rfshH};
-        drawButton(guiGraphics, mbManageRefreshRect, "§7↻ 刷新", BTN_BG, mouseX, mouseY);
-
-        // 副标题 (说明)
-        guiGraphics.drawString(this.font, "§7列出所有 KubeJS 联动创建的蓝图，可一键删除对应 KubeJS 文件",
-            rx + 4, titleY + 12, HINT_COLOR, false);
-
-        // 状态消息
-        if (this.mgmtStatus != null && this.mgmtStatusTick > 0) {
-            int sy = ry + rh - 16;
-            guiGraphics.drawString(this.font, this.mgmtStatus, rx + 8, sy,
-                this.mgmtStatusColor | 0xFF000000, false);
-        }
-
-        // 空列表提示
-        this.mbManageCardRects.clear();
-        this.mbManageDeleteBtnRects.clear();
-        if (this.managedBlueprints.isEmpty()) {
-            int ey = ry + 36;
-            guiGraphics.drawString(this.font, "§7暂无 KubeJS 联动蓝图",
-                rx + 12, ey, HINT_COLOR, false);
-            guiGraphics.drawString(this.font, "§7去 \"" + Tab.MAKE_BLUEPRINT.label + "\" tab 生成一个, 或在 KubeJS startup_scripts/ 里加带",
-                rx + 12, ey + 12, HINT_COLOR, false);
-            guiGraphics.drawString(this.font, "§7" + new net.minecraft.resources.ResourceLocation(
-                com.prefab.addon.PrefabCustomAddon.MOD_ID, "player_blueprint").toString()
-                + " §7tag 的物品",
-                rx + 12, ey + 24, HINT_COLOR, false);
-            return;
-        }
-
-        // 卡片列表 (从 ry+32 开始往下)
-        int cardY = ry + 34;
-        int cardH = 36;
-        int cardGap = 4;
-        int cardX = rx + 6;
-        int cardW = rw - 12;
-        // 状态消息占的底部 16px 留给消息, 卡片不要覆盖
-        int bottomLimit = ry + rh - 18;
-
-        // 滚动: 不加滚动条, 用列表上限即可 (一般 10 个以内, 玩家能看完)
-        int n = this.managedBlueprints.size();
-        int maxCards = Math.max(1, (bottomLimit - cardY + cardGap) / (cardH + cardGap));
-        for (int i = 0; i < n && i < maxCards; i++) {
-            ManagedBlueprint bp = this.managedBlueprints.get(i);
-            int y = cardY + i * (cardH + cardGap);
-            if (y + cardH > bottomLimit) break;
-            int[] cr2 = new int[]{cardX, y, cardW, cardH};
-            this.mbManageCardRects.add(cr2);
-
-            // 卡片底色
-            int bg = (mouseX >= cardX && mouseX < cardX + cardW
-                && mouseY >= y && mouseY < y + cardH) ? CARD_HOVER : CARD_BG;
-            guiGraphics.fill(cardX, y, cardX + cardW, y + cardH, bg);
-            guiGraphics.fill(cardX, y, cardX + cardW, y + 1, CARD_BORDER);
-            guiGraphics.fill(cardX, y + cardH - 1, cardX + cardW, y + cardH, CARD_BORDER);
-            guiGraphics.fill(cardX, y, cardX + 1, y + cardH, CARD_BORDER);
-            guiGraphics.fill(cardX + cardW - 1, y, cardX + cardW, y + cardH, CARD_BORDER);
-
-            // 图标 (左上角 16x16)
-            int iconSize = 16;
-            int iconX = cardX + 4, iconY = y + (cardH - iconSize) / 2;
-            net.minecraft.world.item.ItemStack iconStack = new net.minecraft.world.item.ItemStack(bp.item);
-            guiGraphics.renderItem(iconStack, iconX, iconY);
-            guiGraphics.renderItemDecorations(this.font, iconStack, iconX, iconY);
-
-            // 文字
-            int textX = iconX + iconSize + 6;
-            guiGraphics.drawString(this.font, "§f" + bp.displayName, textX, y + 4, 0xFF333333, false);
-            guiGraphics.drawString(this.font, "§7" + bp.nsItem(), textX, y + 14, 0xFF666666, false);
-            // 标记文件是否都还在
-            int allExist = java.nio.file.Files.exists(bp.jsFile)
-                && java.nio.file.Files.exists(bp.recipeFile)
-                && java.nio.file.Files.exists(bp.textureFile) ? 1 : 0;
-            String stateText = allExist == 1
-                ? "§a✓ KubeJS 文件齐全"
-                : "§e⚠ 部分文件已丢失";
-            guiGraphics.drawString(this.font, stateText, textX, y + 24, 0xFF888888, false);
-
-            // 只剩 "删除" 按钮 (右侧, 16x16 高度). 玩家要求去掉 "打开脚本".
-            int btnH = 16;
-            int btnW = 60;
-            int btnY = y + (cardH - btnH) / 2;
-            int btnX = cardX + cardW - btnW - 6;
-            int[] delRect = new int[]{btnX, btnY, btnW, btnH};
-            drawButton(guiGraphics, delRect, "§c✗ 删除", BTN_BG_DANGER, mouseX, mouseY);
-            this.mbManageDeleteBtnRects.add(delRect);
-        }
-    }
+    // ==================== Tab: 蓝图管理 ====================
 
     /**
      * 枚举所有 KubeJS 联动蓝图 (= prefab_custom_addon:player_blueprint tag 里的 Item).
-     * <p>每个 Item 拼出对应的 KubeJS 文件路径 (按 {@link CustomBlueprintCodeGenerator} 的命名约定),
-     * 文件不在本地时路径照样填, 渲染时按 "文件已丢失" 标记.</p>
+     * 每个 Item 拼出对应的 KubeJS 文件路径, 文件不在本地时渲染 "文件已丢失" 标记.
      */
-    private void rebuildManagedBlueprints() {
-        this.managedBlueprints.clear();
+    private static void rebuildManagedBlueprints() {
+        managedBlueprints.clear();
         try {
-            net.minecraft.resources.ResourceLocation tagLoc = new net.minecraft.resources.ResourceLocation(
-                com.prefab.addon.PrefabCustomAddon.MOD_ID, "player_blueprint");
-            net.minecraft.tags.TagKey<net.minecraft.world.item.Item> tagKey =
-                net.minecraft.tags.TagKey.create(
-                    net.minecraft.core.registries.Registries.ITEM, tagLoc);
-            var holders = net.minecraft.core.registries.BuiltInRegistries.ITEM.getTagOrEmpty(tagKey);
-            java.nio.file.Path mcDir = minecraftDir();
-            java.nio.file.Path kubejsDir = mcDir.resolve("kubejs");
-            java.nio.file.Path startupScripts = kubejsDir.resolve("startup_scripts");
-            java.nio.file.Path serverScripts = kubejsDir.resolve("server_scripts");
+            // 1.20.1: ResourceLocation 用 new 构造 (无 fromNamespaceAndPath)
+            ResourceLocation tagLoc = new ResourceLocation(
+                PrefabCustomAddon.MOD_ID, "player_blueprint");
+            TagKey<Item> tagKey = TagKey.create(Registries.ITEM, tagLoc);
+            var holders = BuiltInRegistries.ITEM.getTagOrEmpty(tagKey);
+            Path mcDir = minecraftDir();
+            Path kubejsDir = mcDir.resolve("kubejs");
+            Path startupScripts = kubejsDir.resolve("startup_scripts");
+            Path serverScripts = kubejsDir.resolve("server_scripts");
             for (var holder : holders) {
-                net.minecraft.world.item.Item item = holder.value();
+                Item item = holder.value();
                 if (item == null) continue;
-                // 排除 mod 原生 CustomBlueprintItem: 它是 mod 自家物品, 没有对应的 KubeJS 文件可删
-                if (item instanceof com.prefab.addon.items.CustomBlueprintItem) continue;
+                // 排除 mod 原生 CustomBlueprintItem (没有对应的 KubeJS 文件可删)
+                if (item instanceof CustomBlueprintItem) continue;
                 // 1.20.1: Holder 上没有便捷 key(), 直接用注册表拿 ResourceLocation
-                net.minecraft.resources.ResourceLocation key =
-                    net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(item);
+                ResourceLocation key = BuiltInRegistries.ITEM.getKey(item);
                 if (key == null) continue;
                 String namespace = key.getNamespace();
                 String itemId = key.getPath();
-                // 黑名单过滤: 玩家本局点过 "删除" 的蓝图, 列表里不再显示
-                // (KubeJS 物品注册还在 registry 里, 但文件已经删了, 显示出来是 "已丢失" 没意义)
-                String nsItem = namespace + ":" + itemId;
-                if (DELETED_THIS_SESSION.contains(nsItem)) {
-                    PrefabCustomAddon.LOGGER.debug("[MANAGE-BLUEPRINT] 跳过本局已删蓝图: {}", nsItem);
-                    continue;
-                }
-                // 文件名约定: <ns>_<id>_blueprint.js / _recipes.js, 贴图 <id>.png
+                // 本局已删的蓝图不再列出 (物品注册还在, 但文件已删)
+                if (DELETED_THIS_SESSION.contains(namespace + ":" + itemId)) continue;
                 String jsName = namespace + "_" + itemId + "_blueprint.js";
                 String recipeName = namespace + "_" + itemId + "_blueprint_recipes.js";
-                java.nio.file.Path jsFile = startupScripts.resolve(jsName);
-                java.nio.file.Path recipeFile = serverScripts.resolve(recipeName);
-                java.nio.file.Path textureFile = kubejsDir.resolve("assets")
+                Path jsFile = startupScripts.resolve(jsName);
+                Path recipeFile = serverScripts.resolve(recipeName);
+                Path textureFile = kubejsDir.resolve("assets")
                     .resolve(namespace).resolve("textures").resolve("item").resolve(itemId + ".png");
-                // 显示名: 优先用 ItemStack.getHoverName, 没有就用 itemId
-                net.minecraft.world.item.ItemStack tmp = new net.minecraft.world.item.ItemStack(item);
-                String displayName = tmp.getHoverName().getString();
-                this.managedBlueprints.add(new ManagedBlueprint(item, displayName, namespace, itemId,
+                String displayName = new ItemStack(item).getHoverName().getString();
+                managedBlueprints.add(new ManagedBlueprint(item, displayName, namespace, itemId,
                     jsFile, recipeFile, textureFile));
             }
-            // 排序: 按显示名, 让 UI 稳定 (重新进入 tab 顺序不变)
-            this.managedBlueprints.sort((a, b) -> a.displayName.compareToIgnoreCase(b.displayName));
-            PrefabCustomAddon.LOGGER.info("[MANAGE-BLUEPRINT] 枚举完成: {} 条", this.managedBlueprints.size());
+            managedBlueprints.sort((a, b) -> a.displayName.compareToIgnoreCase(b.displayName));
         } catch (Throwable t) {
             PrefabCustomAddon.LOGGER.warn("[MANAGE-BLUEPRINT] 枚举失败: {}", t.toString());
         }
     }
 
     /**
-     * 删除指定 blueprint 对应的 KubeJS 文件 (startup script + recipe + texture + .blueprint-specs 规格文件).
-     * 物品本身是 startup 时注册的, 运行时无法撤销, 必须在玩家 /reload 之后才彻底消失.
-     * 所以删完发聊天栏 + 状态消息都提示玩家 /reload.
-     * <p>同时把 ns:itemId 加到 {@link #DELETED_THIS_SESSION} 黑名单, 列表里立即消失
-     * (否则 tag 枚举还会返回这个 item, 玩家看到 "⚠ 部分文件已丢失" 会困惑为啥没删干净).</p>
+     * 删除指定蓝图对应的 KubeJS 文件 (startup script + recipe + texture + 规格文件),
+     * 并联动删 blueprint-buildings/ 里的建筑文件 (1.20.1 保留), 提示 /reload.
      */
-    private void deleteManagedBlueprint(ManagedBlueprint bp) {
+    private static void deleteManagedBlueprint(ManagedBlueprint bp) {
         // 先读规格 (删除规格文件前): 拿 constructionId 用于联动删 blueprint-buildings 里的建筑文件
         String bpConstructionId = null;
         try {
@@ -1721,23 +1562,22 @@ public class GuiExtensionPackEditor extends GuiBase {
         int deleted = 0;
         int missing = 0;
         StringBuilder log = new StringBuilder();
-        java.nio.file.Path[] targets = new java.nio.file.Path[]{
+        Path[] targets = new Path[]{
             bp.jsFile, bp.recipeFile, bp.textureFile,
             // 默认绑定规格文件: 不删的话重装后蓝图会凭规格文件"复活"默认绑定
             com.prefab.addon.integration.BlueprintSpecStore.specPath(bp.itemId)};
-        for (java.nio.file.Path p : targets) {
+        for (Path p : targets) {
             try {
-                boolean ok = java.nio.file.Files.deleteIfExists(p);
-                if (ok) {
+                if (Files.deleteIfExists(p)) {
                     deleted++;
-                    log.append("§a✓").append(p.getFileName()).append(" ");
+                    log.append("✓").append(p.getFileName()).append(" ");
                 } else {
                     missing++;
-                    log.append("§7✗").append(p.getFileName()).append("(已无) ");
+                    log.append("✗").append(p.getFileName()).append("(已无) ");
                 }
             } catch (Exception e) {
                 missing++;
-                log.append("§c✗").append(p.getFileName()).append("(失败) ");
+                log.append("✗").append(p.getFileName()).append("(失败) ");
                 PrefabCustomAddon.LOGGER.warn("[MANAGE-BLUEPRINT] 删除失败: {} ({})", p, e.getMessage());
             }
         }
@@ -1745,720 +1585,310 @@ public class GuiExtensionPackEditor extends GuiBase {
         // (只动蓝图专属目录, prefab-extension 根目录/下载目录的普通建筑不受影响)
         int bpFilesDeleted = 0;
         if (bpConstructionId != null) {
-            bpFilesDeleted = com.prefab.addon.extension.LocalBuildingScanner
-                .deleteBlueprintBuilding(bpConstructionId);
+            bpFilesDeleted = LocalBuildingScanner.deleteBlueprintBuilding(bpConstructionId);
             if (bpFilesDeleted > 0) {
-                log.append("§a✓blueprint-buildings/").append(bpConstructionId).append(".*(")
+                log.append("✓blueprint-buildings/").append(bpConstructionId).append(".*(")
                     .append(bpFilesDeleted).append("个) ");
             }
         }
-        String msg = "§7已删 " + bp.nsItem() + ": " + log
-            + "§e请 /reload 生效 (startup script 删了要重启)";
-        this.mgmtStatus = msg;
-        this.mgmtStatusColor = 0x55FF55;
-        this.mgmtStatusTick = 200;
+        setStatus("已删 " + bp.nsItem() + ": " + log + " (请 /reload 生效)", 0x55FF55);
         if (Minecraft.getInstance().player != null) {
-            Minecraft.getInstance().player.sendSystemMessage(
-                net.minecraft.network.chat.Component.literal(
-                    "§7[蓝图管理] 已删 " + bp.nsItem() + " 的 KubeJS 文件 (删 " + deleted + " 个, 缺 " + missing + " 个)"
-                    + (bpFilesDeleted > 0 ? ", 联动删除建筑文件 " + bpFilesDeleted + " 个" : "")
-                    + ".\n§e请 /reload 让配方 / 物品注册生效 (startup script 必须重启游戏)."));
+            Minecraft.getInstance().player.sendSystemMessage(Component.literal(
+                "§7[蓝图管理] 已删 " + bp.nsItem() + " 的 KubeJS 文件 (删 " + deleted + " 个, 缺 " + missing + " 个)"
+                + (bpFilesDeleted > 0 ? ", 联动删除建筑文件 " + bpFilesDeleted + " 个" : "")
+                + ".\n§e请 /reload 让配方 / 物品注册生效 (startup script 必须重启游戏)."));
         }
-        // 立即重建 (黑名单生效后这条会消失, 其他不受影响)
         rebuildManagedBlueprints();
+        rebuildList();
     }
 
-    // ============================================================
-    // 设置 tab
-    // ============================================================
-    private void drawSettingsTab(GuiGraphics guiGraphics, int[] cr, int mouseX, int mouseY) {
-        int rx = cr[0], ry = cr[1], rw = cr[2], rh = cr[3];
-        PlayerPreferences prefs = PlayerPreferences.get();
-
-        // 标题
-        guiGraphics.drawString(this.font, "§l⚙ Prefab Custom Addon 设置", rx + 4, ry + 4, TITLE_COLOR, false);
-
-        // 顶部翻页条 (左侧: 页名, 右侧: < / N/2 / >)
-        int headerY = ry + 16;
-        String pageName = this.settingsPage == 1 ? "§7基础设置" : "§7快捷操作";
-        guiGraphics.drawString(this.font, pageName, rx + 6, headerY, LABEL_COLOR, false);
-        // 翻页按钮 (右上角, 小尺寸)
-        int pgBtnW = 22, pgBtnH = 12;
-        int pgNextX = rx + rw - pgBtnW - 6;
-        int pgPrevX = pgNextX - pgBtnW - 4;
-        int pgY = headerY - 2;
-        boolean canPrev = this.settingsPage > 1;
-        boolean canNext = this.settingsPage < SETTINGS_TOTAL_PAGES;
-        boolean hoverPrev = canPrev && mouseX >= pgPrevX && mouseX < pgPrevX + pgBtnW
-            && mouseY >= pgY && mouseY < pgY + pgBtnH;
-        boolean hoverNext = canNext && mouseX >= pgNextX && mouseX < pgNextX + pgBtnW
-            && mouseY >= pgY && mouseY < pgY + pgBtnH;
-        // 上一页
-        int prevBg = canPrev ? (hoverPrev ? BTN_BG_HOVER : BTN_BG) : 0xFFCCCCCC;
-        guiGraphics.fill(pgPrevX, pgY, pgPrevX + pgBtnW, pgY + pgBtnH, prevBg);
-        guiGraphics.fill(pgPrevX, pgY, pgPrevX + pgBtnW, pgY + 1, CARD_BORDER);
-        guiGraphics.fill(pgPrevX, pgY + pgBtnH - 1, pgPrevX + pgBtnW, pgY + pgBtnH, CARD_BORDER);
-        guiGraphics.fill(pgPrevX, pgY, pgPrevX + 1, pgY + pgBtnH, CARD_BORDER);
-        guiGraphics.fill(pgPrevX + pgBtnW - 1, pgY, pgPrevX + pgBtnW, pgY + pgBtnH, CARD_BORDER);
-        guiGraphics.drawString(this.font, "<", pgPrevX + 8, pgY + 2, canPrev ? LABEL_COLOR : 0xFF888888, false);
-        // 页码 (两个按钮之间)
-        String pageText = this.settingsPage + "/" + SETTINGS_TOTAL_PAGES;
-        int ptW = this.font.width(pageText);
-        int ptX = pgPrevX + pgBtnW + 2;
-        guiGraphics.drawString(this.font, pageText, ptX, pgY + 2, HINT_COLOR, false);
-        // 下一页
-        int nextBg = canNext ? (hoverNext ? BTN_BG_HOVER : BTN_BG) : 0xFFCCCCCC;
-        guiGraphics.fill(pgNextX, pgY, pgNextX + pgBtnW, pgY + pgBtnH, nextBg);
-        guiGraphics.fill(pgNextX, pgY, pgNextX + pgBtnW, pgY + 1, CARD_BORDER);
-        guiGraphics.fill(pgNextX, pgY + pgBtnH - 1, pgNextX + pgBtnW, pgY + pgBtnH, CARD_BORDER);
-        guiGraphics.fill(pgNextX, pgY, pgNextX + 1, pgY + pgBtnH, CARD_BORDER);
-        guiGraphics.fill(pgNextX + pgBtnW - 1, pgY, pgNextX + pgBtnW, pgY + pgBtnH, CARD_BORDER);
-        guiGraphics.drawString(this.font, ">", pgNextX + 8, pgY + 2, canNext ? LABEL_COLOR : 0xFF888888, false);
-        this.settingsPagingRects = new int[]{
-            pgPrevX, pgY, pgBtnW, pgBtnH,
-            pgNextX, pgY, pgBtnW, pgBtnH
-        };
-
-        int y = ry + 32;
-        int padX = 6;
-
-        if (this.settingsPage == 1) {
-            // === 页 1: 偏好 + 性能/动画 ===
-            drawToggleRow(guiGraphics, rx, rw, y, mouseX, mouseY,
-                "打开建筑时自动检测依赖", "§7(检查该建筑所需的 mod 是否安装)", true,
-                prefs.autoDepCheckOnOpen,
-                settingsToggleRect, 0);
-            y += 32;  // 24px 行高 + 8px 分组间距
-
-            // === 分组 2: 性能 / 动画 (cycle 按钮, 4 选 1) ===
-            guiGraphics.drawString(this.font, "§e▍ 性能 / 动画", rx + padX, y, LABEL_COLOR, false);
-            y += 12;
-            // 建造动画 mode cycle 按钮. 4 状态循环: OFF → FALL → RAIN → THROW → OFF.
-            // OFF = 不放动画, 瞬建. FALL/RAIN/THROW = 慢速建造 + 3 种视觉轨迹.
-            drawModeCycleRow(guiGraphics, rx, rw, y, mouseX, mouseY);
-        } else {
-            // === 页 2: 快捷操作 ===
-            guiGraphics.drawString(this.font, "§e▍ 快捷操作", rx + padX, y, LABEL_COLOR, false);
-            y += 12;
-            int btnH = 20;
-            int btnW = rw - 12;
-            int btnX = rx + 6;
-            drawButtonRow(guiGraphics, btnX, y, btnW, btnH, mouseX, mouseY,
-                "♻ 重置偏好 (清除收藏)", settingsResetRect);
-            y += btnH + 8;
-
-            // === 联动: 强制启用 KubeJS "制作蓝图" tab (调试用) ===
-            // 自动检测不到 KubeJS 时玩家可手动勾, 绕过检测.
-            drawToggleRow(guiGraphics, rx, rw, y, mouseX, mouseY,
-                PrefabCustomAddon.tr("gui.settings.force_kubejs_label"),
-                PrefabCustomAddon.tr("gui.settings.force_kubejs_hint"),
-                true,
-                PlayerPreferences.get().forceKubeJSTab,
-                settingsToggleRect, 1);
-        }
-
-        // 完成 button (右下角, 固定, 任意页都有)
-        int doneW = 80;
-        int doneH = 18;
-        int doneX = rx + rw - doneW - 6;
-        int doneY = ry + rh - doneH - 4;
-        boolean hoverDone = mouseX >= doneX && mouseX < doneX + doneW
-            && mouseY >= doneY && mouseY < doneY + doneH;
-        guiGraphics.fill(doneX, doneY, doneX + doneW, doneY + doneH, hoverDone ? BTN_BG_PRIMARY : BTN_BG);
-        guiGraphics.fill(doneX, doneY, doneX + doneW, doneY + 1, CARD_BORDER);
-        guiGraphics.fill(doneX, doneY + doneH - 1, doneX + doneW, doneY + doneH, CARD_BORDER);
-        guiGraphics.fill(doneX, doneY, doneX + 1, doneY + doneH, CARD_BORDER);
-        guiGraphics.fill(doneX + doneW - 1, doneY, doneX + doneW, doneY + doneH, CARD_BORDER);
-        String doneLabel = "✓ 完成";
-        guiGraphics.drawString(this.font, doneLabel,
-            doneX + (doneW - this.font.width(doneLabel)) / 2, doneY + 5,
-            hoverDone ? 0xFFFFFFFF : LABEL_COLOR, false);
-        this.settingsDoneRect = new int[]{doneX, doneY, doneW, doneH};
-
-        // 状态消息 (底部左侧)
-        if (this.settingsStatus != null && this.settingsStatusTick > 0) {
-            guiGraphics.drawString(this.font, this.settingsStatus,
-                rx + 4, doneY + 5, this.settingsStatusColor, false);
-        }
-    }
-
-    /**
-     * 画一个 cycle 行 - 4 状态循环按钮, 显示当前 mode + 副标题解释.
-     * 跟 drawToggleRow 不同: 没有复选框, 整行点击循环切换.
-     * 视觉:
-     *   [第 1 行] 标题  ............ [大写当前 mode 标签]
-     *   [第 2 行] 副标题 (简短描述, 浅灰)
-     *   [第 3 行] (OFF 隐藏, 其他) 4 个小图标 (OFF / FALL / RAIN / THROW) 标识当前选中的
-     */
-    private void drawModeCycleRow(GuiGraphics g, int rx, int rw, int y, int mx, int my) {
-        PlayerPreferences p = PlayerPreferences.get();
-        BuildAnimationMode mode = p.getBuildAnimationMode();
-        int w = rw - 12;
-        int x = rx + 6;
-        int h = 32;  // 比 toggle 高, 容纳 3 行 (标题+副标题+4个小标识)
-        boolean hover = mx >= x && mx < x + w && my >= y && my < y + h;
-        int bg = hover ? BTN_BG_HOVER : BTN_BG;
-        g.fill(x, y, x + w, y + h, bg);
-        g.fill(x, y, x + w, y + 1, CARD_BORDER);
-        g.fill(x, y + h - 1, x + w, y + h, CARD_BORDER);
-        g.fill(x, y, x + 1, y + h, CARD_BORDER);
-        g.fill(x + w - 1, y, x + w, y + h, CARD_BORDER);
-
-        // 第 1 行: 标题
-        g.drawString(this.font, "建造动画模式", x + 6, y + 3, LABEL_COLOR, false);
-        // 当前 mode 标签 (右对齐, 大字+颜色, 让玩家一眼看清选了哪个)
-        String modeLabel;
-        int modeColor;
-        switch (mode) {
-            case OFF   -> { modeLabel = "OFF";   modeColor = 0xFF888888; }
-            case FALL  -> { modeLabel = "FALL";  modeColor = 0xFF55AA55; }
-            case RAIN  -> { modeLabel = "RAIN";  modeColor = 0xFF5599FF; }
-            case THROW -> { modeLabel = "THROW"; modeColor = 0xFFAA55FF; }
-            default    -> { modeLabel = "?";     modeColor = 0xFFFFFFFF; }
-        }
-        g.drawString(this.font, "§l" + modeLabel, x + w - 8 - this.font.width("§l" + modeLabel), y + 2, modeColor, false);
-
-        // 第 2 行: 副标题 (按 mode 选不同描述)
-        String subtitle = switch (mode) {
-            case OFF   -> "§7(瞬建, 不放动画, 跟原版 prefab 一样快, 可能卡顿)";
-            case FALL  -> "§a(每个方块从空中 8 格高处竖直掉下, 1 块/tick, ~50s/1000块)";
-            case RAIN  -> "§b(每个方块从更高的空中散点掉下, 起点横向 ±2 格随机, 1 块/tick)";
-            case THROW -> "§d(每个方块从建筑外圈 ±10 格抛过来, 抛物线轨迹, 1 块/tick)";
-            default    -> "§7(?)";
-        };
-        g.drawString(this.font, subtitle, x + 6, y + 13, HINT_COLOR, false);
-
-        // 第 3 行: 4 个 mode 标识 + 选中高亮
-        int dotY = y + 23;
-        int dotR = 3;
-        int dotsStartX = x + 6;
-        int dotSpacing = (w - 12) / 4;
-        String[] modeNames = {"OFF", "FALL", "RAIN", "THROW"};
-        int[] modeColors = {0xFF888888, 0xFF55AA55, 0xFF5599FF, 0xFFAA55FF};
-        for (int i = 0; i < 4; i++) {
-            int dotX = dotsStartX + i * dotSpacing + dotR;
-            boolean isSelected = (i == mode.ordinal());
-            int color = isSelected ? modeColors[i] : 0xFFCCCCCC;
-            // 实心圆
-            g.fill(dotX - dotR, dotY - dotR, dotX + dotR + 1, dotY + dotR + 1, color);
-            if (isSelected) {
-                // 选中加白边
-                g.fill(dotX - dotR, dotY - dotR, dotX + dotR + 1, dotY - dotR + 1, 0xFFFFFFFF);
-                g.fill(dotX - dotR, dotY + dotR, dotX + dotR + 1, dotY + dotR + 1, 0xFFFFFFFF);
-                g.fill(dotX - dotR, dotY - dotR, dotX - dotR + 1, dotY + dotR + 1, 0xFFFFFFFF);
-                g.fill(dotX + dotR, dotY - dotR, dotX + dotR + 1, dotY + dotR + 1, 0xFFFFFFFF);
-            }
-            // mode 名称 (圆点右侧)
-            int textColor = isSelected ? modeColors[i] : 0xFFAAAAAA;
-            g.drawString(this.font, modeNames[i], dotX + dotR + 3, dotY - 3, textColor, false);
-        }
-
-        // 缓存 rect 给 mouseClicked
-        this.settingsModeCycleRect = new int[]{x, y, w, h};
-    }
-
-    /**
-     * 画一个 toggle 行 (复选框 + 标题 + 副标题 + 状态).
-     * @param rectArr 共享的 int[][] 缓存, 索引 idx 处放本行的 [x, y, w, h]
-     */
-    private void drawToggleRow(GuiGraphics g, int rx, int rw, int y, int mx, int my,
-                               String title, String subtitle, boolean enabled, boolean checked,
-                               int[][] rectArr, int idx) {
-        int w = rw - 12;
-        int x = rx + 6;
-        // 行高 24: title @ y+3, subtitle @ y+13 (10px 间隔), 行底留 4px padding.
-        // 之前 h=16 + 副标题 y+11 紧贴下边, 跟下一行 title 重叠. 现在 24px 留足空间.
-        int h = 24;
-        boolean hover = enabled && mx >= x && mx < x + w && my >= y && my < y + h;
-        int bg = !enabled ? 0xFFEEEEEE : (hover ? BTN_BG_HOVER : BTN_BG);
-        g.fill(x, y, x + w, y + h, bg);
-        g.fill(x, y, x + w, y + 1, CARD_BORDER);
-        g.fill(x, y + h - 1, x + w, y + h, CARD_BORDER);
-        g.fill(x, y, x + 1, y + h, CARD_BORDER);
-        g.fill(x + w - 1, y, x + w, y + h, CARD_BORDER);
-        // 复选框 (居中靠上, 跟 title 同行)
-        int cb = 10;
-        int cbX = x + 4, cbY = y + 3;
-        g.fill(cbX, cbY, cbX + cb, cbY + cb, 0xFFFFFFFF);
-        g.fill(cbX, cbY, cbX + cb, cbY + 1, 0xFF333333);
-        g.fill(cbX, cbY + cb - 1, cbX + cb, cbY + cb, 0xFF333333);
-        g.fill(cbX, cbY, cbX + 1, cbY + cb, 0xFF333333);
-        g.fill(cbX + cb - 1, cbY, cbX + cb, cbY + cb, 0xFF333333);
-        if (checked) {
-            g.fill(cbX + 2, cbY + 5, cbX + 4, cbY + 6, 0xFF55AA55);
-            g.fill(cbX + 3, cbY + 6, cbX + 4, cbY + 8, 0xFF55AA55);
-        }
-        int titleColor = enabled ? LABEL_COLOR : 0xFF888888;
-        g.drawString(this.font, title, cbX + cb + 6, y + 3, titleColor, false);
-        int statusColor = checked ? 0x55AA55 : 0x888888;
-        String statusText = checked ? "§a✓ ON" : "§8✗ OFF";
-        g.drawString(this.font, statusText, x + w - 30, y + 3, statusColor, false);
-        if (subtitle != null && !subtitle.isEmpty()) {
-            // 副标题放第二行, 跟 title 隔 10px, 行底还有 1-2px padding, 不会跟下一行重叠.
-            g.drawString(this.font, subtitle, cbX + cb + 6, y + 13, HINT_COLOR, false);
-        }
-        if (rectArr != null) rectArr[idx] = new int[]{x, y, w, h};
-    }
-
-    /**
-     * 画一个滑条行 (标签 + 滑条, 标签在第一行, 滑条在第二行).
-     * @param sliderId 1 = 预览, 2 = 建造
-     * @return 滑条之后的下一个 y
-     */
-    private int drawSliderRow(GuiGraphics g, int rx, int rw, int y, int mx, int my,
-                              String title, boolean disabled, int currentPct,
-                              boolean showOpHint,
-                              int[] knobOut, int[] trackOut, int sliderId) {
-        int x = rx + 6;
-        int w = rw - 12;
-        int titleColor = disabled ? 0xFF888888 : LABEL_COLOR;
-        g.drawString(this.font, title, x, y, titleColor, false);
-        String valueStr = (disabled ? "§8" : "§f") + currentPct + "%";
-        if (showOpHint) valueStr += "  §c(OP only)";
-        int valW = this.font.width(valueStr);
-        g.drawString(this.font, valueStr, x + w - valW, y, 0xFFFFFFFF, false);
-        y += 11;
-        int trackX = x;
-        int trackY = y + 2;
-        int trackW = w;
-        int trackH = 6;
-        int fillW = (int) (trackW * (currentPct / 100.0));
-        g.fill(trackX, trackY, trackX + trackW, trackY + trackH, 0xFFB0B0B0);
-        g.fill(trackX, trackY, trackX + trackW, trackY + 1, 0xFF555555);
-        g.fill(trackX, trackY + trackH - 1, trackX + trackW, trackY + trackH, 0xFF555555);
-        g.fill(trackX, trackY, trackX + fillW, trackY + trackH, disabled ? 0xFF999999 : 0xFF6A8FB5);
-        int knobSize = 12;
-        int knobX = trackX + fillW - knobSize / 2;
-        if (knobX < trackX) knobX = trackX;
-        if (knobX + knobSize > trackX + trackW) knobX = trackX + trackW - knobSize;
-        int knobY = trackY - (knobSize - trackH) / 2;
-        boolean hoverKnob = mx >= knobX && mx < knobX + knobSize
-            && my >= knobY && my < knobY + knobSize;
-        int knobColor = disabled ? 0xFFCCCCCC : (hoverKnob ? 0xFFFFFFFF : 0xFFE0E0E0);
-        g.fill(knobX, knobY, knobX + knobSize, knobY + knobSize, knobColor);
-        g.fill(knobX, knobY, knobX + knobSize, knobY + 1, 0xFF555555);
-        g.fill(knobX, knobY + knobSize - 1, knobX + knobSize, knobY + knobSize, 0xFF555555);
-        g.fill(knobX, knobY, knobX + 1, knobY + knobSize, 0xFF555555);
-        g.fill(knobX + knobSize - 1, knobY, knobX + knobSize, knobY + knobSize, 0xFF555555);
-        if (knobOut != null) {
-            knobOut[0] = knobX; knobOut[1] = knobY; knobOut[2] = knobSize; knobOut[3] = knobSize;
-        }
-        if (trackOut != null) {
-            trackOut[0] = trackX; trackOut[1] = trackY; trackOut[2] = trackW; trackOut[3] = trackH;
-        }
-        // (原 this.settingsSliderId = sliderId; 死代码, 字段从未被读取, 已删除)
-        return y + trackH + 4;
-    }
-
-    /** 画一个按钮行 (居中标签). */
-    private void drawButtonRow(GuiGraphics g, int x, int y, int w, int h, int mx, int my,
-                               String label, int[] rectOut) {
-        boolean hover = mx >= x && mx < x + w && my >= y && my < y + h;
-        g.fill(x, y, x + w, y + h, hover ? BTN_BG_HOVER : BTN_BG);
-        g.fill(x, y, x + w, y + 1, CARD_BORDER);
-        g.fill(x, y + h - 1, x + w, y + h, CARD_BORDER);
-        g.fill(x, y, x + 1, y + h, CARD_BORDER);
-        g.fill(x + w - 1, y, x + w, y + h, CARD_BORDER);
-        g.drawString(this.font, label,
-            x + (w - this.font.width(label)) / 2, y + 6, LABEL_COLOR, false);
-        if (rectOut != null) {
-            rectOut[0] = x; rectOut[1] = y; rectOut[2] = w; rectOut[3] = h;
-        }
-    }
-
-    /** 推进滑条拖拽: 鼠标 x 位置 → 1..100 百分比. */
-    private int sliderXToPercent(int mouseX, int trackX, int trackW) {
-        if (trackW <= 0) return 1;
-        double ratio = (double) (mouseX - trackX) / trackW;
-        if (ratio < 0) ratio = 0;
-        if (ratio > 1) ratio = 1;
-        return Math.max(1, Math.min(100, (int) Math.round(ratio * 100)));
-    }
-
-    private void setSettingsStatus(String msg, int color) {
-        this.settingsStatus = msg;
-        this.settingsStatusColor = color;
-        this.settingsStatusTick = 120;
-    }
-
-    // ============================================================
-    // 输入
-    // ============================================================
-    @Override
-    public boolean mouseClicked(double mouseX, double mouseY, int button) {
-        int mx = (int) mouseX, my = (int) mouseY;
-        // 1) 左侧 tab 点击
-        int tx = this.grayBoxX + 2;
-        int ty = this.grayBoxY + 2;
-        int tw = TABS_W;
-        int th = TAB_H;
-        if (mx >= tx && mx < tx + tw) {
-            int idx = (my - ty) / th;
-            if (idx >= 0 && idx < Tab.values().length) {
-                Tab t = Tab.values()[idx];
-                // 联动: KubeJS 没装也能切到 "制作蓝图" / "蓝图管理" — 切进去后会画一个
-                // "需要安装 KubeJS" 的提示界面, 比直接静默吞掉点击反馈更好.
-                switchTab(t);
-                return true;
-            }
-        }
-        // 2) 编辑 tab 卡片按钮点击
-        if (this.currentTab == Tab.EDIT) {
-            // 2a) 翻页按钮
-            int[] pr = this.editPagingRects;
-            if (pr[2] > 0 && pr[6] > 0) {
-                // 上一页
-                if (mx >= pr[0] && mx < pr[0] + pr[2] && my >= pr[1] && my < pr[1] + pr[3]) {
-                    if (this.editPage > 1) {
-                        this.editPage--;
-                        return true;
-                    }
-                }
-                // 下一页
-                if (mx >= pr[4] && mx < pr[4] + pr[6] && my >= pr[5] && my < pr[5] + pr[7]) {
-                    int totalPages = Math.max(1, (this.editFiltered.size() + this.editPageSize - 1) / this.editPageSize);
-                    if (this.editPage < totalPages) {
-                        this.editPage++;
-                        return true;
-                    }
-                }
-            }
-            // 2b) 卡片 "查看" 按钮
-            for (int i = 0; i < this.editViewBtnRects.size(); i++) {
-                int[] r = this.editViewBtnRects.get(i);
-                if (mx >= r[0] && mx < r[0] + r[2] && my >= r[1] && my < r[1] + r[3]) {
-                    // 索引 i 对应的是 editFiltered 当前页的第 i 个, 需要换算到原始列表索引
-                    int startIdx = (this.editPage - 1) * this.editPageSize;
-                    int realIdx = startIdx + i;
-                    if (realIdx >= 0 && realIdx < this.editFiltered.size()) {
-                        openConstructionDetail(this.editFiltered.get(realIdx));
-                    }
-                    return true;
-                }
-            }
-            // 2c) 卡片 "编辑" 按钮
-            for (int i = 0; i < this.editEditBtnRects.size(); i++) {
-                int[] r = this.editEditBtnRects.get(i);
-                if (mx >= r[0] && mx < r[0] + r[2] && my >= r[1] && my < r[1] + r[3]) {
-                    int startIdx = (this.editPage - 1) * this.editPageSize;
-                    int realIdx = startIdx + i;
-                    if (realIdx >= 0 && realIdx < this.editFiltered.size()) {
-                        openEditBuilding(this.editFiltered.get(realIdx));
-                    }
-                    return true;
-                }
-            }
-        }
-        // 2.5) 蓝图管理 tab 交互
-        if (this.currentTab == Tab.MANAGE_BLUEPRINT) {
-            // 刷新按钮
-            int[] rr = this.mbManageRefreshRect;
-            if (rr[2] > 0 && mx >= rr[0] && mx < rr[0] + rr[2]
-                && my >= rr[1] && my < rr[1] + rr[3]) {
-                rebuildManagedBlueprints();
-                this.mgmtStatus = "§7已刷新 (" + this.managedBlueprints.size() + " 条)";
-                this.mgmtStatusColor = 0x55FF55;
-                this.mgmtStatusTick = 60;
-                return true;
-            }
-            // "删除" 按钮 (玩家要求: 去掉 "打开脚本" 按钮, 只保留删除)
-            for (int i = 0; i < this.mbManageDeleteBtnRects.size(); i++) {
-                int[] r = this.mbManageDeleteBtnRects.get(i);
-                if (r[2] > 0 && mx >= r[0] && mx < r[0] + r[2]
-                    && my >= r[1] && my < r[1] + r[3]) {
-                    if (i < this.managedBlueprints.size()) {
-                        deleteManagedBlueprint(this.managedBlueprints.get(i));
-                    }
-                    return true;
-                }
-            }
-        }
-        // 3) 设置 tab 交互
-        if (this.currentTab == Tab.SETTINGS) {
-            // 翻页按钮 (顶部右上角, 任意页都响应)
-            int[] spr = this.settingsPagingRects;
-            // 上一页
-            if (spr[2] > 0 && mx >= spr[0] && mx < spr[0] + spr[2]
-                && my >= spr[1] && my < spr[1] + spr[3] && this.settingsPage > 1) {
-                this.settingsPage--;
-                return true;
-            }
-            // 下一页
-            if (spr[6] > 0 && mx >= spr[4] && mx < spr[4] + spr[6]
-                && my >= spr[5] && my < spr[5] + spr[7] && this.settingsPage < SETTINGS_TOTAL_PAGES) {
-                this.settingsPage++;
-                return true;
-            }
-            // 自动检测依赖 toggle (idx=0) - 客户端个人设置, 不需 OP
-            int[] tr0 = this.settingsToggleRect[0];
-            if (tr0[2] > 0 && mx >= tr0[0] && mx < tr0[0] + tr0[2] && my >= tr0[1] && my < tr0[1] + tr0[3]) {
-                PlayerPreferences p = PlayerPreferences.get();
-                boolean newVal = !p.autoDepCheckOnOpen;
-                p.autoDepCheckOnOpen = newVal;
-                p.save();
-                setSettingsStatus(newVal ? "§a打开建筑时自动检测依赖 已开启" : "§7自动检测依赖 已关闭", 0x55FF55);
-                return true;
-            }
-            // 强制启用 KubeJS 联动 toggle (idx=1) - 客户端个人设置
-            // 勾上后 KubeJSIntegration.isLoaded() 始终返回 true, "制作蓝图" tab 立即显示
-            int[] tr1 = this.settingsToggleRect[1];
-            if (tr1[2] > 0 && mx >= tr1[0] && mx < tr1[0] + tr1[2] && my >= tr1[1] && my < tr1[1] + tr1[3]) {
-                PlayerPreferences p = PlayerPreferences.get();
-                boolean newVal = !p.forceKubeJSTab;
-                p.forceKubeJSTab = newVal;
-                p.save();
-                com.prefab.addon.integration.KubeJSIntegration.setForceEnabled(newVal);
-                com.prefab.addon.integration.KubeJSIntegration.invalidateCache();
-                setSettingsStatus(PrefabCustomAddon.tr(newVal
-                    ? "gui.settings.force_kubejs_on"
-                    : "gui.settings.force_kubejs_off"), 0x55FF55);
-                return true;
-            }
-            // 建造动画 mode cycle 按钮 - 客户端个人设置, 不需 OP
-            // 点击循环: OFF → FALL → RAIN → THROW → OFF.
-            int[] cr2 = this.settingsModeCycleRect;
-            if (cr2[2] > 0 && mx >= cr2[0] && mx < cr2[0] + cr2[2] && my >= cr2[1] && my < cr2[1] + cr2[3]) {
-                PlayerPreferences p = PlayerPreferences.get();
-                BuildAnimationMode next = p.getBuildAnimationMode().next();
-                p.setBuildAnimationMode(next);
-                String label = switch (next) {
-                    case OFF   -> "§7OFF (瞬建, 不放动画)";
-                    case FALL  -> "§aFALL (竖直下落, 1 块/tick)";
-                    case RAIN  -> "§bRAIN (方块雨, 起点随机偏移)";
-                    case THROW -> "§dTHROW (四周抛过来, 抛物线)";
-                };
-                setSettingsStatus("§f建造动画: " + label, 0x55FF55);
-                return true;
-            }
-            // (删除: 建造 / 预览速度滑条, 默认 1 tick 放完所有方块, 开启下落动画时强制 1%/tick)
-            // 重置偏好 (清空收藏 + 重置动画)
-            int[] rr = this.settingsResetRect;
-            if (rr[2] > 0 && mx >= rr[0] && mx < rr[0] + rr[2] && my >= rr[1] && my < rr[1] + rr[3]) {
-                try {
-                    PlayerPreferences p = PlayerPreferences.get();
-                    int removedFavs = p.favoriteKeys != null ? p.favoriteKeys.size() : 0;
-                    p.favoriteKeys = new java.util.ArrayList<>();
-                    p.autoDepCheckOnOpen = false;
-                    p.buildAnimationMode = BuildAnimationMode.OFF;
-                    p.save();
-                    setSettingsStatus("§a已重置偏好 (清空 " + removedFavs + " 个收藏)", 0x55FF55);
-                } catch (Throwable t) {
-                    setSettingsStatus("§c重置失败: " + t.getMessage(), 0xFF5555);
-                }
-                return true;
-            }
-            // 完成
-            int[] dr = this.settingsDoneRect;
-            if (dr[2] > 0 && mx >= dr[0] && mx < dr[0] + dr[2] && my >= dr[1] && my < dr[1] + dr[3]) {
-                Minecraft.getInstance().setScreen(null);
-                return true;
-            }
-        }
-        // 4) 制作蓝图 tab 交互
-        if (this.currentTab == Tab.MAKE_BLUEPRINT) {
-            // 4a) 选建筑文件 (.nbt) - 用 pickNbtForBlueprint 回调直接更新, 不打开创建建筑界面
-            int[] bf = this.mbSelectBuildingFileRect;
-            if (bf[2] > 0 && mx >= bf[0] && mx < bf[0] + bf[2]
-                && my >= bf[1] && my < bf[1] + bf[3]) {
-                try {
-                    // 先关当前 GUI (选 NBT 是异步模态对话框, 关掉主屏避免双层渲染)
-                    final GuiExtensionPackEditor self = this;
-                    self.mbStatus = PrefabCustomAddon.tr("gui.make_blueprint.poll.wait_nbt");
-                    self.mbStatusTick = 200;
-                    com.prefab.addon.client.gui.GuiCreateBuildingInfo.pickNbtForBlueprint(
-                        (res, err) -> Minecraft.getInstance().execute(() -> {
-                            // 回到自己 (主屏), 不弹创建建筑界面
-                            if (Minecraft.getInstance().screen != self) {
-                                Minecraft.getInstance().setScreen(self);
-                            }
-                            self.handleNbtPickedForBlueprint(res, err);
-                        }));
-                } catch (Throwable t) {
-                    this.mbStatus = PrefabCustomAddon.tr("gui.make_blueprint.status.picker_err", t.getMessage());
-                    this.mbStatusColor = 0xFF5555;
-                    this.mbStatusTick = 150;
-                }
-                return true;
-            }
-            // 4a2) 游戏内选建筑 - 用 pickInGameForBlueprint 回调直接更新, 不打开创建建筑界面.
-            // 注意: 必须先 setScreen(null) 关掉 editor 界面, 否则玩家看不见游戏世界,
-            // 看不见选区预览 (问题: "点后没自动关闭这个界面, 要手动关闭后才能看到选择预览界面").
-            int[] bi = this.mbSelectInGameRect;
-            if (bi[2] > 0 && mx >= bi[0] && mx < bi[0] + bi[2]
-                && my >= bi[1] && my < bi[1] + bi[3]) {
-                try {
-                    final GuiExtensionPackEditor self = this;
-                    self.mbStatus = PrefabCustomAddon.tr("gui.make_blueprint.poll.wait_ingame");
-                    self.mbStatusTick = 200;
-                    // 先关掉当前屏, 玩家在游戏里选区 (左键角点1, 右键角点2, ALT 确认)
-                    Minecraft.getInstance().setScreen(null);
-                    com.prefab.addon.client.gui.GuiCreateBuildingInfo.pickInGameForBlueprint(
-                        (res, err) -> Minecraft.getInstance().execute(() -> {
-                            if (Minecraft.getInstance().screen != self) {
-                                Minecraft.getInstance().setScreen(self);
-                            }
-                            self.handleInGamePickedForBlueprint(res, err);
-                        }));
-                } catch (Throwable t) {
-                    this.mbStatus = PrefabCustomAddon.tr("gui.make_blueprint.status.picker_err", t.getMessage());
-                    this.mbStatusColor = 0xFF5555;
-                    this.mbStatusTick = 150;
-                }
-                return true;
-            }
-            // 4b) 选贴图按钮
-            int[] tr = this.mbSelectTextureRect;
-            if (tr[2] > 0 && mx >= tr[0] && mx < tr[0] + tr[2]
-                && my >= tr[1] && my < tr[1] + tr[3]) {
-                openTextureFileDialog();
-                return true;
-            }
-            // 4c) 锁定 toggle
-            int[] lr = this.mbLockedRect;
-            if (lr[2] > 0 && mx >= lr[0] && mx < lr[0] + lr[2]
-                && my >= lr[1] && my < lr[1] + lr[3]) {
-                this.blueprintLocked = !this.blueprintLocked;
-                this.mbStatus = this.blueprintLocked
-                    ? PrefabCustomAddon.tr("gui.make_blueprint.status.locked_on")
-                    : PrefabCustomAddon.tr("gui.make_blueprint.status.locked_off");
-                this.mbStatusColor = 0x55FF55;
-                this.mbStatusTick = 80;
-                return true;
-            }
-            // 4d) 9 宫格点击: 左键 = 弹小搜索框选物品, 右键 = 清空
-            int[] gr = this.mbRecipeGridRect;
-            if (gr[2] > 0 && gr[3] > 0
-                && mx >= gr[0] && mx < gr[0] + gr[2]
-                && my >= gr[1] && my < gr[1] + gr[3]) {
-                int cellSize = 22;
-                int cellGap = 2;
-                int relX = mx - gr[0];
-                int relY = my - gr[1];
-                int col = relX / (cellSize + cellGap);
-                int row = relY / (cellSize + cellGap);
-                if (col >= 0 && col < 3 && row >= 0 && row < 3) {
-                    int idx = row * 3 + col;
-                    if (button == 1) {
-                        // 右键清空
-                        this.recipeItems.set(idx, null);
-                        this.mbStatus = PrefabCustomAddon.tr("gui.make_blueprint.status.cell_cleared", idx + 1);
-                        this.mbStatusColor = 0xAAAAAA;
-                        this.mbStatusTick = 60;
-                    } else {
-                        // 左键: 弹小搜索框
-                        this.mbEditingCell = idx;
-                        GuiItemSearchPopup.open(this, idx, currentItemId -> {
-                            this.recipeItems.set(idx, currentItemId);
-                            this.mbStatus = PrefabCustomAddon.tr("gui.make_blueprint.status.cell_set", idx + 1, currentItemId);
-                            this.mbStatusColor = 0x55FF55;
-                            this.mbStatusTick = 80;
-                            this.mbEditingCell = -1;
-                        });
-                    }
-                }
-                return true;
-            }
-            // 4e) 滚动条点击: 进入拖动
-            int[] sb = this.mbScrollBarRect;
-            int[] thb = this.mbScrollThumbRect;
-            if (sb[2] > 0 && mx >= sb[0] && mx < sb[0] + sb[2]
-                && my >= sb[1] && my < sb[1] + sb[3]) {
-                if (thb[2] > 0 && mx >= thb[0] && mx < thb[0] + thb[2]
-                    && my >= thb[1] && my < thb[1] + thb[3]) {
-                    // 点中拇指: 进入拖动
-                    this.mbScrollDragging = true;
-                    this.mbScrollDragOffset = my - thb[1];
-                } else {
-                    // 点空槽: 跳到该位置
-                    int[] cr = contentRect();
-                    int scrollH = (cr[1] + cr[3] - 32 - 14 - 4) - cr[1];
-                    int maxScroll = Math.max(1, mbContentHeight - scrollH);
-                    int barH = sb[3];
-                    int thumbH = thb[2] > 0 ? thb[3] : 20;
-                    int clickRatio = (my - sb[1] - thumbH / 2) / (barH - thumbH);
-                    clickRatio = Math.max(0, Math.min(1, clickRatio));
-                    this.mbScroll = (int) (clickRatio * maxScroll);
-                }
-                return true;
-            }
-            // 4f) 生成并注册
-            int[] gr2 = this.mbGenerateRect;
-            if (gr2[2] > 0 && mx >= gr2[0] && mx < gr2[0] + gr2[2]
-                && my >= gr2[1] && my < gr2[1] + gr2[3]) {
-                doGenerateBlueprint();
-                return true;
-            }
-            // 4g) 打开 kubejs 文件夹
-            int[] or = this.mbOpenFolderRect;
-            if (or[2] > 0 && mx >= or[0] && mx < or[0] + or[2]
-                && my >= or[1] && my < or[1] + or[3]) {
-                openKubejsFolder();
-                return true;
-            }
-        }
-        return super.mouseClicked(mouseX, mouseY, button);
-    }
-
-    /** 滚轮: 在 MAKE_BLUEPRINT tab 滚轮调 mbScroll. */
-    @Override
-    public boolean mouseScrolled(double mouseX, double mouseY, double scrollY) {
-        if (this.currentTab == Tab.MAKE_BLUEPRINT) {
-            int maxScroll = Math.max(0, mbContentHeight
-                - Math.max(0, (contentRect()[1] + contentRect()[3] - 32 - 14 - 4) - contentRect()[1]));
-            int step = 18;
-            if (scrollY > 0) this.mbScroll = Math.max(0, this.mbScroll - step);
-            else if (scrollY < 0) this.mbScroll = Math.min(maxScroll, this.mbScroll + step);
-            return true;
-        }
-        return super.mouseScrolled(mouseX, mouseY, scrollY);
-    }
-
-    /** 鼠标拖动: 拖滚动条. */
-    @Override
-    public boolean mouseDragged(double mouseX, double mouseY, int button, double dragX, double dragY) {
-        if (this.mbScrollDragging && this.currentTab == Tab.MAKE_BLUEPRINT) {
-            int my = (int) mouseY;
-            int[] cr = contentRect();
-            int scrollH = (cr[1] + cr[3] - 32 - 14 - 4) - cr[1];
-            int maxScroll = Math.max(1, mbContentHeight - scrollH);
-            int[] sb = this.mbScrollBarRect;
-            int[] th = this.mbScrollThumbRect;
-            int barH = sb[3];
-            int thumbH = th[2] > 0 ? th[3] : 20;
-            int newThumbY = my - this.mbScrollDragOffset - sb[1];
-            newThumbY = Math.max(0, Math.min(barH - thumbH, newThumbY));
-            int newRatio = (barH - thumbH) <= 0 ? 0
-                : (int) ((newThumbY / (double) (barH - thumbH)) * maxScroll);
-            this.mbScroll = Math.max(0, Math.min(maxScroll, newRatio));
-            return true;
-        }
-        return super.mouseDragged(mouseX, mouseY, button, dragX, dragY);
-    }
-
-    /** 鼠标松开: 结束滚动条拖动. */
-    @Override
-    public boolean mouseReleased(double mouseX, double mouseY, int button) {
-        if (this.mbScrollDragging) {
-            this.mbScrollDragging = false;
-            return true;
-        }
-        return super.mouseReleased(mouseX, mouseY, button);
-    }
-
-    // (删除: 滑条拖拽 mouseReleased / mouseDragged, 不再需要)
-    // 现在默认: 1 tick 全放完; 开启建造动画 (FALL/RAIN/THROW) 时, 1 块/tick 建造.
-    // 强制 1 块/tick 的逻辑在 AsyncBuildManager.processTick 里通过 task.isAnimationEnabled() 实现,
-    //   客户端 BuildAnimationRenderer 按 buildAnimationMode 渲染不同轨迹.
-
-    private void openConstructionDetail(LocalBuilding lb) {
-        // 查看: 打开 GuiConstructionDetail (成熟的详细界面, 已带 3D 预览 Scene 渲染)
-        // 不再走自写的 GuiExtensionConstructionDetail (那张只显示 2D PNG 缩略图, 没有 3D 旋转预览).
-        if (lb.filePath == null || !Files.exists(lb.filePath)) {
-            this.statusMessage = "建筑文件不存在: " + lb.id;
-            this.statusColor = 0xFFAA55;
-            this.statusTick = 120;
+    private static void buildManageBlueprintTab(UIElement listArea) {
+        if (!KubeJSIntegration.isLoaded()) {
+            buildKubeJSRequiredPanel(listArea);
             return;
         }
+        UIElement panel = new UIElement();
+        panel.layout(l -> l.flexDirection(FlexDirection.COLUMN).flexGrow(1).widthPercent(100).gapAll(3));
+        panel.setOverflowVisible(false);
+        listArea.addChild(panel);
+
+        // 1.20.1 lang 没有 editor.manage.hint, 硬编码中文
+        panel.addChild(cardLabel("§7管理由本 mod 注册的自定义蓝图 (KubeJS / 自定义纹理)", 0x888888, 11));
+
+        if (managedBlueprints.isEmpty()) {
+            UIElement grid = new UIElement();
+            grid.layout(l -> l.flexDirection(FlexDirection.ROW).flexGrow(1).minWidth(0));
+            grid.setOverflowVisible(false);
+            panel.addChild(grid);
+            // 1.20.1 lang 没有 editor.manage.empty*, 硬编码中文
+            fillEmpty(grid, "没有可管理的自定义蓝图", "在 '制作蓝图' tab 生成蓝图后会显示在这里");
+            return;
+        }
+
+        ScrollerView scroller = scroller(panel);
+        UIElement col = new UIElement();
+        col.layout(l -> l.flexDirection(FlexDirection.COLUMN).widthPercent(100).paddingAll(2).gapAll(4));
+        scroller.addScrollViewChild(col);
+
+        int cw = wideCardW();
+        int c = wideCols();
+        int perPage = Math.max(1, c * rowsPerPageFor(44));
+        int totalPages = Math.max(1, (managedBlueprints.size() + perPage - 1) / perPage);
+        mgmtPage = clampPage(mgmtPage, totalPages);
+        int from = mgmtPage * perPage;
+        int to = Math.min(from + perPage, managedBlueprints.size());
+        for (int i = from; i < to; i += c) {
+            UIElement row = new UIElement();
+            row.layout(l -> l.flexDirection(FlexDirection.ROW).gapAll(4));
+            for (int j = i; j < Math.min(i + c, to); j++) {
+                row.addChild(managedBlueprintCard(managedBlueprints.get(j), cw));
+            }
+            col.addChild(row);
+        }
+        if (totalPages > 1) {
+            col.addChild(pager(totalPages, () -> mgmtPage, p -> mgmtPage = p));
+        }
+    }
+
+    /** 蓝图管理卡片: 物品图标 + 名称 / ns:id / 文件状态 + [✗ 删除]; 卡片本体不可点. */
+    private static UIElement managedBlueprintCard(ManagedBlueprint bp, int cw) {
+        UIElement card = new UIElement();
+        card.layout(l -> l.flexDirection(FlexDirection.ROW).width(cw).height(44)
+            .paddingAll(3).gapAll(4).alignItems(AlignItems.CENTER));
+        card.style(s -> s.background(Sprites.RECT_DARK));
+        card.setOverflowVisible(false);
+
+        ItemSlot icon = new ItemSlot();
+        try {
+            icon.setValue(new ItemStack(bp.item));
+        } catch (Throwable ignore) {}
+        icon.layout(l -> l.width(18).height(18));
+        card.addChild(icon);
+
+        UIElement info = new UIElement();
+        info.layout(l -> l.flexDirection(FlexDirection.COLUMN).flexGrow(1).gapAll(1).minWidth(0));
+        card.addChild(info);
+        info.addChild(cardLabel(truncateW(bp.displayName, cw - 140), 0xFFFFFF, 10));
+        info.addChild(cardLabel(truncateW(bp.nsItem(), cw - 140), 0x888888, 9));
+        List<String> missing = new ArrayList<>();
+        if (!Files.exists(bp.jsFile)) missing.add("脚本");     // 1.20.1 lang 无 editor.manage.file.script
+        if (!Files.exists(bp.textureFile)) missing.add("纹理"); // 1.20.1 lang 无 editor.manage.file.texture
+        boolean recipeMissing = !Files.exists(bp.recipeFile);
+        String statusLine;
+        int statusColor;
+        if (!missing.isEmpty()) {
+            // 脚本/纹理缺了蓝图就没法注册, 属于真缺失
+            statusLine = truncateW("✗ 缺失文件: " + String.join("、", missing), cw - 140);
+            statusColor = 0xFFAA55;
+        } else if (recipeMissing) {
+            // 配方只是合成途径, 缺了物品照样能用 → 视为可用
+            statusLine = "✓ 可使用 (无配方)";
+            statusColor = 0x55FF55;
+        } else {
+            statusLine = "✓ 关联文件完整";
+            statusColor = 0x55FF55;
+        }
+        info.addChild(cardLabel(statusLine, statusColor, 9));
+
+        Button del = new Button().setText(tr("gui.category.delete"), false);
+        del.textStyle(s -> s.textColor(0xFF8888));
+        del.layout(l -> l.width(48).height(16));
+        del.setOnClick(e -> deleteManagedBlueprint(bp));
+        card.addChild(del);
+        return card;
+    }
+
+    // ==================== 3D 原理图编辑 (签名保持, TerminalGui 复用) ====================
+
+    /**
+     * 启动 3D 原理图编辑 (世界内幽灵预览, 左键删除 / 右键放置 / ALT 保存).
+     * 成功返回 null (内部会关 GUI 进 edit mode), 失败返回错误消息.
+     */
+    public static String startSchematicEdit(LocalBuilding lb) {
+        if (lb.filePath == null || !Files.exists(lb.filePath)) {
+            return "建筑文件不存在: " + lb.id;
+        }
+        // 1) 包成 ConstructionInfo 喂给 CustomStructureBuilder (复用现有 NBT 解析链路)
+        ConstructionInfo ci = new ConstructionInfo(lb.id);
+        ci.setName(lb.getDisplayName());
+        ci.setAuthor(lb.author == null ? "" : lb.author);
+        ci.setDescription(lb.description == null ? "" : lb.description);
+        ci.setLocalNbtPath(lb.filePath);
+
+        // 2) NBT → Prefab Structure
+        Structure structure = CustomStructureBuilder.parseToPrefabStructure(ci);
+        if (structure == null || structure.getBlocks() == null || structure.getBlocks().isEmpty()) {
+            return "建筑 NBT 解析失败或为空: " + lb.id;
+        }
+
+        // 3) 玩家朝向 (初始化: 反向, prefab 内部约定)
+        Minecraft mc = Minecraft.getInstance();
+        net.minecraft.client.player.LocalPlayer player = mc.player;
+        Direction houseFacing = (player != null) ? player.getDirection().getOpposite() : Direction.SOUTH;
+        BlockPos playerPos = (player != null) ? player.blockPosition() : BlockPos.ZERO;
+        BlockPos basePos = playerPos.above();
+
+        // 4) 把每个 BuildBlock.blockPos 从 localPos 转为 worldPos (renderer 直接读 worldPos)
+        StructureConfiguration cfg = new StructureConfiguration();
+        cfg.Initialize();
+        cfg.pos = basePos;
+        cfg.houseFacing = houseFacing;
+        CustomStructureBuilder.offsetStructureBlocks(structure, cfg.pos, cfg.houseFacing);
+
+        // 5) 拿原始 NBT byte[]
+        byte[] nbtBytes = ci.getNbtData();
+        if (nbtBytes == null) {
+            return "无法读取 NBT 字节: " + lb.id;
+        }
+
+        // 6) 提取 world / local 两个 map (EditModeController 新架构用)
+        LinkedHashMap<BlockPos, BlockState> worldMap = new LinkedHashMap<>();
+        for (BuildBlock bb : structure.getBlocks()) {
+            if (bb == null || bb.getBlockState() == null) continue;
+            worldMap.put(bb.blockPos, bb.getBlockState());
+        }
+        LinkedHashMap<BlockPos, BlockState> localMap = new LinkedHashMap<>();
+        int parseFailCount = 0;
+        try {
+            // 1.20.1: NbtIo.read(DataInputStream) 无 NbtAccounter 参数
+            CompoundTag tag = NbtIo.read(new DataInputStream(new ByteArrayInputStream(nbtBytes)));
+            ListTag blocks = tag.getList("blocks", 10);
+            for (int i = 0; i < blocks.size(); i++) {
+                CompoundTag entry = blocks.getCompound(i);
+                int[] p = entry.getIntArray("pos");
+                if (p.length != 3) continue;
+                BlockPos lp = new BlockPos(p[0], p[1], p[2]);
+                BlockState s = parseStateFromNbtEntry(entry);
+                if (s != null) localMap.put(lp, s);
+                else parseFailCount++;
+            }
+        } catch (Exception ex1) {
+            // 原 NBT 是 GZIP 压缩的, 重试
+            try {
+                // 1.20.1: NbtIo.readCompressed(InputStream) 无 NbtAccounter 参数
+                CompoundTag tag = NbtIo.readCompressed(new ByteArrayInputStream(nbtBytes));
+                ListTag blocks = tag.getList("blocks", 10);
+                for (int i = 0; i < blocks.size(); i++) {
+                    CompoundTag entry = blocks.getCompound(i);
+                    int[] p = entry.getIntArray("pos");
+                    if (p.length != 3) continue;
+                    BlockPos lp = new BlockPos(p[0], p[1], p[2]);
+                    BlockState s = parseStateFromNbtEntry(entry);
+                    if (s != null) localMap.put(lp, s);
+                    else parseFailCount++;
+                }
+            } catch (Exception ex2) {
+                PrefabCustomAddon.LOGGER.warn("[EDIT-MODE] failed to parse NBT for local map, falling back to worldToLocal", ex2);
+            }
+        }
+        // 补齐缺失: NBT 的 state 可能是 palette index (int) 格式, 解析失败时用 worldToLocal 反推
+        if (localMap.size() < worldMap.size() / 2) {
+            int added = 0;
+            for (var e : worldMap.entrySet()) {
+                BlockPos wp = e.getKey();
+                BlockPos lp = worldToLocalHelper(wp, basePos, houseFacing);
+                if (!localMap.containsKey(lp)) {
+                    localMap.put(lp, e.getValue());
+                    added++;
+                }
+            }
+            PrefabCustomAddon.LOGGER.info("[EDIT-MODE] localMap补齐: 解析成功={} 失败={} 兜底补={} (total {})",
+                localMap.size() - added, parseFailCount, added, localMap.size());
+        }
+
+        // 7) 设置 addon 预览状态
+        CustomStructureGui.setAddonPreviewStructure(structure);
+        CustomStructureGui.setAddonPreviewConfig(cfg);
+        CustomStructureGui.markAddonPreviewActive();
+        // 8) 关闭 GUI
+        mc.setScreen(null);
+        // 9) 进入 edit mode. 保存成功后清掉所有引用该文件的 ConstructionInfo 的 nbtData 缓存.
+        EditModeController.setOnSavedCallback(() -> {
+            for (com.prefab.addon.extension.ExtensionPack p : com.prefab.addon.extension.ExtensionPackManager.getInstance().getPacks()) {
+                for (ConstructionInfo c : p.getConstructions()) {
+                    if (c.getLocalNbtPath() != null && c.getLocalNbtPath().equals(lb.filePath)) {
+                        c.setNbtData(null);
+                    }
+                }
+            }
+        });
+        EditModeController.enterEditMode(worldMap, localMap, cfg, nbtBytes, lb.filePath);
+        return null; // 成功
+    }
+
+    private static int facingToSteps(Direction facing) {
+        if (facing == null) return 0;
+        return switch (facing) {
+            case SOUTH -> 0;
+            case EAST  -> 1;
+            case NORTH -> 2;
+            case WEST  -> 3;
+            default    -> 0;
+        };
+    }
+
+    /** world pos → local pos helper. 跟 EditModeController.worldToLocal 一致. */
+    private static BlockPos worldToLocalHelper(BlockPos worldPos, BlockPos basePos, Direction facing) {
+        int steps = facingToSteps(facing);
+        int rx = worldPos.getX() - basePos.getX();
+        int ry = worldPos.getY() - basePos.getY();
+        int rz = worldPos.getZ() - basePos.getZ();
+        for (int s = 0; s < steps; s++) {
+            int newRx = -rz;
+            int newRz =  rx;
+            rx = newRx;
+            rz = newRz;
+        }
+        return new BlockPos(rx, ry, rz);
+    }
+
+    private static BlockState parseStateFromNbtEntry(CompoundTag entry) {
+        if (entry.contains("state", 10)) {
+            CompoundTag st = entry.getCompound("state");
+            if (st.contains("Name", 8)) {
+                String name = st.getString("Name");
+                // 1.20.1: ResourceLocation 用 new 构造 (无 parse), 非法名抛异常 → catch 掉返回 null
+                Block block;
+                try {
+                    block = BuiltInRegistries.BLOCK.get(new ResourceLocation(name));
+                } catch (Exception e) {
+                    return null;
+                }
+                if (block == null) return null;
+                BlockState state = block.defaultBlockState();
+                if (st.contains("Properties", 10)) {
+                    CompoundTag props = st.getCompound("Properties");
+                    for (var prop : state.getProperties()) {
+                        if (props.contains(prop.getName(), 8)) {
+                            String val = props.getString(prop.getName());
+                            try {
+                                var optVal = prop.getValue(val);
+                                if (optVal.isPresent()) {
+                                    Object raw = optVal.get();
+                                    @SuppressWarnings({"unchecked", "rawtypes"})
+                                    Comparable cval = (Comparable) raw;
+                                    @SuppressWarnings("unchecked")
+                                    BlockState newState = state.setValue(
+                                        (net.minecraft.world.level.block.state.properties.Property) prop, cval);
+                                    state = newState;
+                                }
+                            } catch (Exception ignored) {}
+                        }
+                    }
+                }
+                return state;
+            }
+        }
+        return null;
+    }
+
+    // ==================== 详情信息 (外部签名, TerminalGui 复用) ====================
+
+    /**
+     * 把 LocalBuilding 包成 {@link GuiConstructionDetail} 用的 ConstructionInfo
+     * (元信息 + 本地三件套路径一并带上).
+     */
+    public static ConstructionInfo buildDetailInfo(LocalBuilding lb) {
         ConstructionInfo ci = new ConstructionInfo(lb.id);
         ci.setName(lb.getDisplayName());
         ci.setAuthor(lb.author == null ? "" : lb.author);
@@ -2469,363 +1899,45 @@ public class GuiExtensionPackEditor extends GuiBase {
         if (deps == null) deps = parseInfoTxt(lb.infoPath, "依赖模组");
         if (deps == null) deps = parseInfoTxt(lb.infoPath, "dependencies");
         if (deps != null && !deps.isEmpty()) {
-            ci.setDependencies(java.util.Arrays.asList(deps.split("\\s*,\\s*")));
+            ci.setDependencies(Arrays.asList(deps.split("\\s*,\\s*")));
         }
         // 设置本地路径, GuiConstructionDetail 的 startAsyncParse 会懒加载 NBT
         ci.setLocalNbtPath(lb.filePath);
         if (lb.imagePath != null && Files.exists(lb.imagePath)) {
             ci.setLocalImagePath(lb.imagePath);
         }
-        // "← 返回" 按钮: 编辑建筑 → 查看 → 返回, 应该回到编辑建筑 tab,
-        // 而不是默认的 GuiExtensionPackBrowser (云端/下载那个界面).
-        GuiConstructionDetail.open(ci, () -> GuiExtensionPackEditor.open(Tab.EDIT));
-    }
-
-    private void openEditBuilding(LocalBuilding lb) {
-        // 编辑: 构造 BuildingWorkInfo, 调 GuiCreateBuildingInfo.open(packId, info, null) 走编辑模式
-        // (不能调 openFullEditor(), 那会进入创建模式 = 玩家看到第 3 个图的空表单)
-        if (lb.filePath == null || !Files.exists(lb.filePath)) {
-            this.statusMessage = "建筑文件不存在: " + lb.id;
-            this.statusColor = 0xFFAA55;
-            this.statusTick = 120;
-            return;
-        }
-        String deps = parseInfoTxt(lb.infoPath, "依赖模组");
-        if (deps == null) deps = parseInfoTxt(lb.infoPath, "dependencies");
-        if (deps == null) deps = "";
-        // 分类: 从 .txt 读 "分类: xxx", 找不到默认 "未分类" (走空字符串, ConstructionInfo 解析时归到 "未分类")
-        String category = parseInfoTxt(lb.infoPath, "分类");
-        if (category == null) category = parseInfoTxt(lb.infoPath, "category");
-        if (category == null) category = "";
-        PackCreator.BuildingWorkInfo info = new PackCreator.BuildingWorkInfo(
-            lb.id,
-            lb.filePath,
-            lb.imagePath,
-            lb.infoPath,
-            lb.getDisplayName(),
-            lb.author == null ? "" : lb.author,
-            formatSize(lb.fileSize),
-            deps,
-            lb.description == null ? "" : lb.description,
-            "",  // icon 物品 id: 单文件模式用 PNG 不用, 留空
-            category  // 分类: 让玩家能在编辑界面改
-        );
-        // packId 传空串: GuiCreateBuildingInfo 走 editor/edit 模式
-        com.prefab.addon.client.gui.GuiCreateBuildingInfo.open("", info, null);
-    }
-
-    // ============================================================
-    // 制作蓝图 tab — 工具方法
-    // ============================================================
-
-    /**
-     * 弹出系统文件选择对话框, 玩家选完 .png 后设到 {@link #selectedTextureSource}.
-     * <p>复用项目里的 {@link SystemFilePicker}: 优先 Windows 原生 OpenFileDialog (PowerShell 启动),
-     * 回退 AWT FileDialog, 最后回退游戏内文件浏览器. 这样 PCL/HMCL headless 启动器也能用.</p>
-     */
-    private void openTextureFileDialog() {
-        try {
-            SystemFilePicker.openAsync(
-                com.prefab.addon.PrefabCustomAddon.tr("gui.make_blueprint.pick_texture", "选蓝图贴图 (.png)"),
-                java.util.Arrays.asList("png"),
-                result -> {
-                    if (result.isOk() && result.file != null && result.file.exists()) {
-                        selectedTextureSource = result.file.toPath();
-                        mbStatus = "§a已选贴图: §f" + selectedTextureSource.getFileName();
-                        mbStatusColor = 0x55FF55;
-                        mbStatusTick = 120;
-                        PrefabCustomAddon.LOGGER.info("[MAKE-BLUEPRINT] texture: {}", selectedTextureSource);
-                    } else if (result.isCancelled()) {
-                        mbStatus = "§7取消选贴图";
-                        mbStatusColor = 0xFFAA55;
-                        mbStatusTick = 60;
-                    } else {
-                        mbStatus = "§c选贴图失败: §7" + (result.message == null ? "未知错误" : result.message);
-                        mbStatusColor = 0xFF5555;
-                        mbStatusTick = 100;
-                    }
-                });
-        } catch (Throwable th) {
-            PrefabCustomAddon.LOGGER.error("[MAKE-BLUEPRINT] SystemFilePicker 打开失败", th);
-            mbStatus = "§c打开文件选择器失败: §7" + th.getMessage();
-            mbStatusColor = 0xFF5555;
-            mbStatusTick = 100;
-        }
-    }
-
-    /**
-     * 收集表单, 构造 {@link CustomBlueprintCodeGenerator.Spec}, 调
-     * {@link CustomBlueprintCodeGenerator#generate}. 成功 / 失败都更新状态 + 聊天栏.
-     */
-    private void doGenerateBlueprint() {
-        try {
-            // 1) 收集表单 — 简化: 只让玩家填显示名, ns/id 自动生成
-            String displayName = edBlueprintName == null ? "" : edBlueprintName.getValue().trim();
-            // 命名空间固定 player_pack (避免和其他 mod 撞名)
-            String subNamespace = "player_pack";
-            // 物品 id 固定 player_blueprint, 已存在自动加 _2, _3, ...
-            String itemId = "player_blueprint";
-            itemId = autoIncrementItemIdIfTaken(subNamespace, itemId);
-
-            // 2) 校验关键字段
-            if (selectedBuilding == null) {
-                mbStatus = PrefabCustomAddon.tr("gui.make_blueprint.status.need_building");
-                mbStatusColor = 0xFF5555;
-                mbStatusTick = 100;
-                return;
-            }
-            if (selectedTextureSource == null || !Files.exists(selectedTextureSource)) {
-                mbStatus = PrefabCustomAddon.tr("gui.make_blueprint.status.need_texture");
-                mbStatusColor = 0xFF5555;
-                mbStatusTick = 100;
-                return;
-            }
-            if (recipeItems.stream().allMatch(s -> s == null || s.isBlank())) {
-                mbStatus = PrefabCustomAddon.tr("gui.make_blueprint.status.need_recipe");
-                mbStatusColor = 0xFF5555;
-                mbStatusTick = 100;
-                return;
-            }
-
-            // 2.5) 关键: KubeJS 蓝图 NBT 里只存 packName + constructionId 两个字符串,
-            // 右键时蓝图链路按 id 找文件. "选择建筑文件"进来的临时 LocalBuilding
-            // (external/in_game) 原路径不在扫描目录里, 直接绑定会永远"找不到建筑" —
-            // 生成前先把文件复制进 prefab-extension/blueprint-buildings/ (蓝图专属目录,
-            // 不进建筑选择列表), 绑定复制后的 id. 蓝图右键走 findBlueprintBuilding 兜底.
-            // (已在扫描目录里的 source: extension / download / legacy-pack:*, 以及
-            //  已持久化到 blueprint-buildings 的 source: blueprint, 不重复复制)
-            com.prefab.addon.extension.LocalBuildingScanner.migrateLegacyBlueprintBuildings();
-            if (selectedBuilding.filePath != null && Files.exists(selectedBuilding.filePath)
-                    && !"extension".equals(selectedBuilding.source)
-                    && !"download".equals(selectedBuilding.source)
-                    && !"blueprint".equals(selectedBuilding.source)
-                    && (selectedBuilding.source == null || !selectedBuilding.source.startsWith("legacy-pack"))) {
-                try {
-                    byte[] bytes = Files.readAllBytes(selectedBuilding.filePath);
-                    String origName = selectedBuilding.filePath.getFileName().toString();
-                    String ext = origName.contains(".") ? origName.substring(origName.lastIndexOf('.')) : ".nbt";
-                    int fh = java.util.Arrays.hashCode(bytes);
-                    String newId = String.format("mb_%d_%06x", System.currentTimeMillis() / 1000L, fh & 0xFFFFFF);
-                    java.nio.file.Path extRoot = LocalBuildingScanner.getBlueprintBuildingsRoot();
-                    Files.createDirectories(extRoot);
-                    java.nio.file.Path newPath = extRoot.resolve(newId + ext);
-                    Files.write(newPath, bytes);
-                    String copyName = (selectedBuilding.name == null || selectedBuilding.name.isBlank())
-                        ? newId : selectedBuilding.name;
-                    java.nio.file.Path origPath = selectedBuilding.filePath;
-                    selectedBuilding = new LocalBuilding(
-                        newId, copyName, selectedBuilding.author, selectedBuilding.description,
-                        selectedBuilding.dependencies, selectedBuilding.category,
-                        ext, (long) bytes.length, null, "blueprint",
-                        newPath, null, null);
-                    PrefabCustomAddon.LOGGER.info("[MAKE-BLUEPRINT] 外部建筑已复制进 blueprint-buildings: {} -> {}",
-                        origPath, newPath);
-                } catch (Throwable t) {
-                    PrefabCustomAddon.LOGGER.error("[MAKE-BLUEPRINT] 复制外部建筑失败", t);
-                    mbStatus = "§c复制建筑文件到 blueprint-buildings/ 失败: §7" + t.getMessage();
-                    mbStatusColor = 0xFF5555;
-                    mbStatusTick = 150;
-                    return;
-                }
-            }
-
-            // 3) 构造 Spec (validate() 会自动加 player_ 前缀)
-            CustomBlueprintCodeGenerator.Spec spec = new CustomBlueprintCodeGenerator.Spec();
-            // 留空时用建筑名当 fallback, 比用 itemId ("player_blueprint") 有意义
-            String displayNameFallback = (selectedBuilding != null && selectedBuilding.getDisplayName() != null
-                && !selectedBuilding.getDisplayName().isBlank())
-                    ? selectedBuilding.getDisplayName()
-                    : (itemId);
-            spec.displayName = displayName.isEmpty() ? displayNameFallback : displayName;
-            PrefabCustomAddon.LOGGER.info("[MAKE-BLUEPRINT] 最终 displayName='{}' (input='{}', fallback='{}')",
-                spec.displayName, displayName, displayNameFallback);
-            spec.namespace = subNamespace;
-            spec.itemId = itemId;
-            spec.packName = selectedBuilding.source == null ? "local" : selectedBuilding.source;
-            spec.constructionId = selectedBuilding.id;
-            spec.locked = this.blueprintLocked;
-            spec.sourceTexture = selectedTextureSource;
-            // 直接传 9 槽位 (row-major 0..8), null/空字符串表示该位置无物品.
-            // 之前错误的版本是 "过滤掉 null/空" 后压成紧凑 list, 但
-            // {@link CustomBlueprintCodeGenerator#buildRecipeJs} 按 i=0..8 索引位置构造 pattern,
-            // 压缩后所有 item 整体前移, 玩家放在 idx=8 (右下) 的物品会被写到 idx=0 (左上),
-            // 看起来像"配方位置被打乱". 这里直接传原列表, 由生成器处理 null.
-            spec.recipeItems = new java.util.ArrayList<>(recipeItems);
-
-            // 3.5) 自动加序号: 检查 itemId 对应的 startup script / recipe js / texture 是否已存在.
-            // 存在就把 itemId 改成 "<原id>_2", 已存在再 "_3"... 避免 "我建了 3 次, 全是 blueprint_1, KubeJS 只看得到 1 个"
-            spec.itemId = autoIncrementItemIdIfTaken(spec.namespace, spec.itemId);
-
-            // 4) 调用生成器
-            CustomBlueprintCodeGenerator.Result result = CustomBlueprintCodeGenerator.generate(spec);
-
-            // 5) 状态 + 聊天栏反馈
-            String nsItem = spec.namespace + ":" + spec.itemId;
-            mbStatus = PrefabCustomAddon.tr("gui.make_blueprint.status.generated", nsItem);
-            mbStatusColor = 0x55FF55;
-            mbStatusTick = 200;
-            Minecraft mc = Minecraft.getInstance();
-            if (mc.player != null) {
-                mc.player.sendSystemMessage(Component.literal(
-                    "§a[制作蓝图] 已生成 KubeJS 文件: §f" + nsItem
-                    + "§a. 脚本=" + result.jsFile.getFileName()
-                    + ", 配方=" + result.jsonFile.getFileName()
-                    + ", 贴图=" + result.textureFile.getFileName()
-                    + ".\n§e请重启游戏 (startup_scripts 只在启动时跑)").withStyle(ChatFormatting.AQUA));
-            }
-            PrefabCustomAddon.LOGGER.info("[MAKE-BLUEPRINT] generated {}: js={} json={} tex={}",
-                nsItem, result.jsFile, result.jsonFile, result.textureFile);
-
-            // 6) 生成成功后清空表单, 避免下一张蓝图还带着上一次的选择 (建筑/贴图/配方/名称)
-            selectedBuilding = null;
-            selectedTextureSource = null;
-            for (int i = 0; i < recipeItems.size(); i++) {
-                recipeItems.set(i, null);
-            }
-            if (edBlueprintName != null) {
-                edBlueprintName.setValue("");
-            }
-
-            // 不再回填输入框 — ns/id 已自动生成, 玩家不需要知道
-        } catch (IllegalArgumentException iae) {
-            mbStatus = PrefabCustomAddon.tr("gui.make_blueprint.status.param_err", iae.getMessage());
-            mbStatusColor = 0xFF5555;
-            mbStatusTick = 150;
-            PrefabCustomAddon.LOGGER.error("[MAKE-BLUEPRINT] 参数校验失败", iae);
-        } catch (Throwable t) {
-            mbStatus = PrefabCustomAddon.tr("gui.make_blueprint.status.gen_fail", t.getMessage());
-            mbStatusColor = 0xFF5555;
-            mbStatusTick = 200;
-            PrefabCustomAddon.LOGGER.error("[MAKE-BLUEPRINT] 生成失败", t);
-            Minecraft mc2 = Minecraft.getInstance();
-            if (mc2.player != null) {
-                mc2.player.sendSystemMessage(Component.literal(
-                    "§c[制作蓝图] 生成失败: " + t.getMessage()).withStyle(ChatFormatting.RED));
-            }
-        }
-    }
-
-    /** 打开 minecraft/kubejs 文件夹 (Desktop.open). 失败给个状态提示. */
-    private void openKubejsFolder() {
-        try {
-            Minecraft mc = Minecraft.getInstance();
-            if (mc == null) {
-                mbStatus = "§cMC 实例未就绪";
-                mbStatusColor = 0xFF5555;
-                return;
-            }
-            Path kubejsDir = mc.gameDirectory.toPath().resolve("kubejs");
-            if (!Files.exists(kubejsDir)) {
-                Files.createDirectories(kubejsDir);
-            }
-            if (Desktop.isDesktopSupported()) {
-                Desktop.getDesktop().open(kubejsDir.toFile());
-                mbStatus = PrefabCustomAddon.tr("gui.make_blueprint.status.folder_opened");
-                mbStatusColor = 0x55FF55;
-                mbStatusTick = 100;
-            } else {
-                mbStatus = PrefabCustomAddon.tr("gui.make_blueprint.status.folder_no_desktop", kubejsDir.toString());
-                mbStatusColor = 0xFFAA55;
-                mbStatusTick = 200;
-            }
-        } catch (Throwable t) {
-            mbStatus = PrefabCustomAddon.tr("gui.make_blueprint.status.folder_fail", t.getMessage());
-            mbStatusColor = 0xFF5555;
-            mbStatusTick = 150;
-            PrefabCustomAddon.LOGGER.error("[MAKE-BLUEPRINT] 打开 kubejs 文件夹失败", t);
-        }
-    }
-
-    /**
-     * 取当前 Minecraft 客户端 .minecraft/ 根目录 (用于解析 kubejs/, 截图等).
-     * 跟 {@link CustomBlueprintCodeGenerator#minecraftDir()} 同一份实现, 复制过来避免改包级 private.
-     */
-    private static java.nio.file.Path minecraftDir() {
-        net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
-        if (mc == null) {
-            throw new IllegalStateException("GuiExtensionPackEditor 必须在 client 端调用");
-        }
-        return mc.gameDirectory.toPath();
-    }
-
-    /** 把 LocalBuilding 的字段填到 GuiCreateBuildingInfo static 字段, 包括 NBT 字节. */
-    private void syncLocalBuildingToCb(LocalBuilding lb) {
-        com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldIdValue = lb.id;
-        com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldNameValue = lb.name == null ? "" : lb.name;
-        com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldAuthorValue = lb.author == null ? "" : lb.author;
-        // 依赖从 .txt 的 依赖: 字段解析 (如果没有就空)
-        String deps = parseInfoTxt(lb.infoPath, "依赖");
-        if (deps == null) deps = parseInfoTxt(lb.infoPath, "依赖模组");
-        if (deps == null) deps = parseInfoTxt(lb.infoPath, "dependencies");
-        if (deps == null) deps = "";
-        com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldDepsValue = deps;
-        com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldDescValue = lb.description == null ? "" : lb.description;
-        com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldSizeValue = formatSize(lb.fileSize);
-        com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldFormatValue = lb.fileExt == null ? "nbt" : lb.fileExt.replace(".", "");
-        // 加载图标字节
-        if (lb.imagePath != null && Files.exists(lb.imagePath)) {
-            try {
-                com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldIconData = Files.readAllBytes(lb.imagePath);
-            } catch (Exception ex) {
-                com.prefab.addon.client.gui.GuiCreateBuildingInfo.fieldIconData = null;
-            }
-        }
-        // 加载 NBT 字节
-        try {
-            com.prefab.addon.client.gui.GuiCreateBuildingInfo.nbtData = Files.readAllBytes(lb.filePath);
-            com.prefab.addon.client.gui.GuiCreateBuildingInfo.nbtPath = lb.filePath.toString();
-        } catch (Exception ex) {
-            this.statusMessage = "读取 NBT 失败: " + ex.getMessage();
-            this.statusColor = 0xFF5555;
-            this.statusTick = 120;
-        }
+        return ci;
     }
 
     /** 解析 .txt 元信息中的 "key: value", 找不到返回 null. */
     private static String parseInfoTxt(Path infoPath, String key) {
-        if (infoPath == null) { com.prefab.addon.PrefabCustomAddon.LOGGER.info("[DIAG-PT] parseInfoTxt: infoPath=null key={}", key); return null; }
-        if (!Files.exists(infoPath)) { com.prefab.addon.PrefabCustomAddon.LOGGER.info("[DIAG-PT] parseInfoTxt: file not exist: {} key={}", infoPath, key); return null; }
+        if (infoPath == null || !Files.exists(infoPath)) return null;
         try {
             String content = Files.readString(infoPath);
-            // 剥 UTF-8 BOM (Windows 记事本常带, 不剥会让第一行 key 带 \uFEFF 匹配不上)
+            // 剥 UTF-8 BOM (Windows 记事本常带)
             if (!content.isEmpty() && content.charAt(0) == '\uFEFF') {
                 content = content.substring(1);
             }
-            com.prefab.addon.PrefabCustomAddon.LOGGER.info("[DIAG-PT] parseInfoTxt: file={} key={} content={}",
-                infoPath.getFileName(), key, content.replace("\n", "\\n"));
             for (String line : content.split("\\r?\\n")) {
                 String[] kv = line.split("[:：]", 2);
                 if (kv.length != 2) continue;
                 if (kv[0].trim().equalsIgnoreCase(key)) return kv[1].trim();
             }
         } catch (Exception e) {
-            com.prefab.addon.PrefabCustomAddon.LOGGER.warn("[DIAG-PT] parseInfoTxt exception: {}", e.getMessage());
+            PrefabCustomAddon.LOGGER.warn("[EDITOR] parseInfoTxt exception: {}", e.getMessage());
         }
         return null;
     }
 
     /**
-     * 缓存的建筑预览图: ResourceLocation + 真实尺寸 (避免 blit 用错 texW/texH 失败).
-     */
-    private static final class CachedImage {
-        final ResourceLocation loc;
-        final int width;
-        final int height;
-        CachedImage(ResourceLocation l, int w, int h) { loc = l; width = w; height = h; }
-    }
-
-    /**
-     * 把配方格 item id 字符串 (例如 {@code minecraft:diamond} 或
-     * {@code {id:"minecraft:diamond",Count:3b}}) 解析为 {@link ItemStack}.
-     * 解析失败返回 null (走文字 fallback).
+     * 把配方格 item id 字符串解析为 {@link ItemStack} (支持 SNBT {id:"..."} 复合 tag).
+     * 解析失败返回 null.
      */
     private static ItemStack parseItemStack(String id) {
         if (id == null || id.isBlank()) return null;
         String s = id.trim();
-        // 1) 简写形式: namespace:path
         try {
             if (s.startsWith("{") && s.endsWith("}")) {
-                // 跳过 SNBT 复合 tag, 提取 id 字段
                 int p = s.indexOf("id:");
                 if (p < 0) p = s.indexOf("\"id\"");
                 if (p >= 0) {
@@ -2839,7 +1951,7 @@ public class GuiExtensionPackEditor extends GuiBase {
             if (s.contains(":")) {
                 ResourceLocation key = ResourceLocation.tryParse(s);
                 if (key != null) {
-                    var item = net.minecraft.core.registries.BuiltInRegistries.ITEM.get(key);
+                    var item = BuiltInRegistries.ITEM.get(key);
                     if (item != null) return new ItemStack(item);
                 }
             }
@@ -2847,40 +1959,31 @@ public class GuiExtensionPackEditor extends GuiBase {
         return null;
     }
 
+    /** 取当前 Minecraft 客户端 .minecraft/ 根目录. */
+    private static Path minecraftDir() {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc == null) {
+            throw new IllegalStateException("GuiExtensionPackEditor 必须在 client 端调用");
+        }
+        return mc.gameDirectory.toPath();
+    }
+
     /**
-     * 加载 LocalBuilding 的缩略图为 ResourceLocation, 并记下真实尺寸.
-     * 失败返回 null (用占位符). 用缓存避免重复加载.
+     * 清洗文件名: 替换 Windows 非法字符为下划线, 去首尾空白与末尾的点, 限长 50 字符.
      */
-    private final java.util.Map<String, CachedImage> imageCache = new java.util.HashMap<>();
-    private CachedImage imageLocationFor(LocalBuilding lb) {
-        if (lb.imagePath == null || !Files.exists(lb.imagePath)) return null;
-        String key = lb.imagePath.toString();
-        if (this.imageCache.containsKey(key)) {
-            CachedImage cached = this.imageCache.get(key);
-            // null 也缓存, 避免每次都尝试加载
-            return cached;
+    private static String sanitizeFileName(String s) {
+        if (s == null) return "";
+        String cleaned = s.replaceAll("[\\\\/:*?\"<>|\\x00-\\x1f]", "_").trim();
+        while (cleaned.endsWith(".")) {
+            cleaned = cleaned.substring(0, cleaned.length() - 1);
         }
-        try {
-            byte[] bytes = Files.readAllBytes(lb.imagePath);
-            // 1.21.1: NativeImage.read(InputStream) + DynamicTexture(NativeImage)
-            com.mojang.blaze3d.platform.NativeImage img =
-                com.mojang.blaze3d.platform.NativeImage.read(new java.io.ByteArrayInputStream(bytes));
-            int w = img.getWidth();
-            int h = img.getHeight();
-            ResourceLocation loc = new ResourceLocation(
-                "prefab_extension_editor", "buildings/" + lb.id + (lb.imageExt == null ? ".png" : lb.imageExt));
-            net.minecraft.client.renderer.texture.DynamicTexture tex =
-                new net.minecraft.client.renderer.texture.DynamicTexture(img);
-            Minecraft.getInstance().getTextureManager().register(loc, tex);
-            CachedImage ci = new CachedImage(loc, w, h);
-            this.imageCache.put(key, ci);
-            return ci;
-        } catch (Exception ex) {
-            PrefabCustomAddon.LOGGER.warn("[EDITOR] 加载建筑预览图失败 ({}): {}", lb.imagePath, ex.getMessage());
-            // 缓存 null 避免反复尝试
-            this.imageCache.put(key, null);
-            return null;
+        if (cleaned.length() > 50) {
+            cleaned = cleaned.substring(0, 50).trim();
+            while (cleaned.endsWith(".")) {
+                cleaned = cleaned.substring(0, cleaned.length() - 1);
+            }
         }
+        return cleaned;
     }
 
     private static String formatSize(long bytes) {
@@ -2888,5 +1991,235 @@ public class GuiExtensionPackEditor extends GuiBase {
         if (bytes < 1024) return bytes + " B";
         if (bytes < 1024 * 1024) return (bytes / 1024) + " KB";
         return (bytes / 1024 / 1024) + " MB";
+    }
+
+    // ==================== Tab 切换 ====================
+
+    private static void switchTab(Tab tab) {
+        if (tab == currentTab) return;
+        currentTab = tab;
+        // 进入编辑 tab 时重新扫描 (玩家可能在外面删/加了建筑)
+        if (tab == Tab.EDIT) {
+            refreshEditBuildings();
+        }
+        // 进入蓝图管理 tab 时重新枚举 (玩家可能 /reload)
+        if (tab == Tab.MANAGE_BLUEPRINT) {
+            rebuildManagedBlueprints();
+        }
+        rebuild();
+    }
+
+    // ==================== 通用小部件 ====================
+
+    private static ScrollerView scroller(UIElement parent) {
+        ScrollerView scroll = new ScrollerView();
+        scroll.scrollerStyle(s -> s.mode(ScrollerMode.VERTICAL));
+        scroll.verticalScroller(v -> v.setScrollBarSize(6f));
+        scroll.layout(l -> l.flexGrow(1).widthPercent(100).minHeight(0));
+        parent.addChild(scroll);
+        return scroll;
+    }
+
+    private static void fillEmpty(UIElement area, String title, String hint) {
+        UIElement box = new UIElement();
+        box.layout(l -> l.flexDirection(FlexDirection.COLUMN).flexGrow(1).widthPercent(100)
+            .alignItems(AlignItems.CENTER).justifyContent(AlignContent.CENTER).gapAll(3));
+        area.addChild(box);
+        Label t = new Label();
+        t.setText(title, false);
+        t.textStyle(s -> s.textColor(0xAAAAAA));
+        t.layout(l -> l.widthPercent(100).height(12).alignItems(AlignItems.CENTER)
+            .justifyContent(AlignContent.CENTER));
+        box.addChild(t);
+        Label h = new Label();
+        h.setText(hint, false);
+        h.textStyle(s -> s.textColor(0x777777));
+        h.layout(l -> l.widthPercent(100).height(12).alignItems(AlignItems.CENTER)
+            .justifyContent(AlignContent.CENTER));
+        box.addChild(h);
+    }
+
+    private static UIElement cardLabel(String text, int color, int height) {
+        Label l = new Label();
+        l.setText(text, false);
+        l.textStyle(t -> t.textColor(color));
+        l.layout(el -> el.widthPercent(100).height(height));
+        return l;
+    }
+
+    private static UIElement rowLabel(String text, int width) {
+        Label l = new Label();
+        l.setText(text, false);
+        l.textStyle(t -> t.textColor(0xAAAAAA));
+        l.layout(el -> el.width(width).height(16).alignItems(AlignItems.CENTER));
+        return l;
+    }
+
+    private static UIElement sectionLabel(String text) {
+        Label l = new Label();
+        l.setText(text, false);
+        l.textStyle(t -> t.textColor(0xFFDD66));
+        l.layout(el -> el.widthPercent(100).height(12));
+        return l;
+    }
+
+    private static void addReadonlyRow(UIElement panel, String text) {
+        Label l = new Label();
+        l.setText(truncateW(stripCodes(text), 300), false);
+        l.textStyle(t -> t.textColor(0x999999));
+        l.layout(el -> el.widthPercent(100).height(12).marginBottom(4));
+        panel.addChild(l);
+    }
+
+    /** 页码收敛到 [0, totalPages-1]. */
+    private static int clampPage(int page, int totalPages) {
+        if (page >= totalPages) return totalPages - 1;
+        return Math.max(0, page);
+    }
+
+    /** 通用翻页条: ◀ 页码/总页数 ▶ (点击后重建列表区, 不打断搜索框输入). */
+    private static UIElement pager(int totalPages, IntSupplier get, IntConsumer set) {
+        UIElement nav = new UIElement();
+        nav.layout(l -> l.flexDirection(FlexDirection.ROW).widthPercent(100).height(14).gapAll(4)
+            .alignItems(AlignItems.CENTER).justifyContent(AlignContent.CENTER));
+        nav.setOverflowVisible(false);
+        Button prev = new Button().setText("◀", false);
+        prev.textStyle(s -> s.textColor(0xCCCCCC));
+        prev.layout(l -> l.width(24).height(14));
+        prev.setOnClick(e -> {
+            int p = get.getAsInt();
+            if (p > 0) {
+                set.accept(p - 1);
+                rebuildList();
+            }
+        });
+        nav.addChild(prev);
+        Label lbl = new Label();
+        lbl.setText((get.getAsInt() + 1) + " / " + totalPages, false);
+        lbl.textStyle(t -> t.textColor(0xAAAAAA));
+        lbl.layout(l -> l.width(44).height(14).alignItems(AlignItems.CENTER)
+            .justifyContent(AlignContent.CENTER));
+        nav.addChild(lbl);
+        Button next = new Button().setText("▶", false);
+        next.textStyle(s -> s.textColor(0xCCCCCC));
+        next.layout(l -> l.width(24).height(14));
+        next.setOnClick(e -> {
+            int p = get.getAsInt();
+            if (p < totalPages - 1) {
+                set.accept(p + 1);
+                rebuildList();
+            }
+        });
+        nav.addChild(next);
+        return nav;
+    }
+
+    // ==================== 布局尺寸 ====================
+
+    /** 宽卡片 (编辑建筑/蓝图管理) 动态列数. */
+    private static int wideCols() {
+        int avail = Minecraft.getInstance().getWindow().getGuiScaledWidth() - TAB_W - 30;
+        return Math.max(1, Math.min(avail / 240, 3));
+    }
+
+    private static int wideCardW() {
+        int avail = Minecraft.getInstance().getWindow().getGuiScaledWidth() - TAB_W - 30;
+        return Math.max(180, (avail - (wideCols() - 1) * 4) / wideCols());
+    }
+
+    /** 每页行数 (按窗口高度与卡片高度算, 行距 4). */
+    private static int rowsPerPageFor(int cardH) {
+        int availH = Minecraft.getInstance().getWindow().getGuiScaledHeight() - 70;
+        return Math.max(1, availH / (cardH + 4));
+    }
+
+    // ==================== 纹理工具 ====================
+
+    /** 把 BufferedImage 像素 (ARGB→ABGR) 写进 DynamicTexture. */
+    private static void copyPixels(BufferedImage img, DynamicTexture tex) {
+        NativeImage pixels = tex.getPixels();
+        int w = img.getWidth();
+        int h = img.getHeight();
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                int argb = img.getRGB(x, y);
+                int abgr = (argb & 0xFF00FF00) | ((argb & 0xFF0000) >> 16) | ((argb & 0xFF) << 16);
+                pixels.setPixelRGBA(x, y, abgr);
+            }
+        }
+    }
+
+    /** 居中裁方 + 限宽 256 → DynamicTexture (双线性过滤, 失败返回 null). */
+    private static DynamicTexture uploadIconTexture(BufferedImage img) {
+        if (img == null) return null;
+        try {
+            int w = img.getWidth();
+            int h = img.getHeight();
+            if (w <= 0 || h <= 0) return null;
+            int cropSide = Math.min(w, h);
+            if (cropSide < w || cropSide < h) {
+                BufferedImage cropped = img.getSubimage((w - cropSide) / 2, (h - cropSide) / 2, cropSide, cropSide);
+                BufferedImage croppedCopy = new BufferedImage(cropSide, cropSide, BufferedImage.TYPE_INT_ARGB);
+                Graphics2D cg = croppedCopy.createGraphics();
+                cg.drawImage(cropped, 0, 0, null);
+                cg.dispose();
+                img = croppedCopy;
+            }
+            if (img.getWidth() > 256) {
+                BufferedImage scaled = new BufferedImage(256, 256, BufferedImage.TYPE_INT_ARGB);
+                Graphics2D g = scaled.createGraphics();
+                g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+                g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
+                g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                g.drawImage(img, 0, 0, 256, 256, null);
+                g.dispose();
+                img = scaled;
+            }
+            // 本工程 1.20.1 映射下 DynamicTexture 是 (int,int,boolean useCalloc) 三参构造
+            DynamicTexture tex = new DynamicTexture(img.getWidth(), img.getHeight(), false);
+            tex.setFilter(true, true);
+            copyPixels(img, tex);
+            tex.upload();
+            return tex;
+        } catch (Exception e) {
+            PrefabCustomAddon.LOGGER.warn("[EDITOR] uploadIconTexture 失败: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    // ==================== 状态栏 / 小工具 ====================
+
+    private static void setStatus(String msg) {
+        setStatus(msg, 0xAAAAAA);
+    }
+
+    private static void setStatus(String msg, int color) {
+        lastStatus = msg == null ? "" : msg;
+        lastStatusColor = color;
+        if (statusLabel != null) {
+            statusLabel.setText(stripCodes(lastStatus), false);
+            statusLabel.textStyle(t -> t.textColor(color));
+        }
+    }
+
+    /** 去掉旧版手绘状态消息里的 § 颜色码 (LDLib2 Label 不解析 § 代码). */
+    private static String stripCodes(String s) {
+        if (s == null) return "";
+        return s.replaceAll("§.", "");
+    }
+
+    private static String tr(String key, Object... args) {
+        return PrefabCustomAddon.tr(key, args);
+    }
+
+    /** 按像素宽截断 (CJK 按 9px, 其余按 6px 估算), 超出补 "..". */
+    private static String truncateW(String s, int maxPx) {
+        if (s == null) return "";
+        int w = 0;
+        for (int i = 0; i < s.length(); i++) {
+            w += s.charAt(i) > 0x2E7F ? 9 : 6;
+            if (w > maxPx) return s.substring(0, i) + "..";
+        }
+        return s;
     }
 }
